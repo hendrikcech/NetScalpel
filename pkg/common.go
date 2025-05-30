@@ -38,7 +38,7 @@ func RandDir(suffix string) (string, error) {
 func waitUntil(startAt time.Time) error {
 	if !startAt.IsZero() {
 		now := time.Now()
-		if !now.Before(startAt) {
+		if now.After(startAt) {
 			return fmt.Errorf("StartAt %v already passed by: %v", startAt, now)
 		}
 		sleepFor := startAt.Sub(now)

@@ -227,7 +227,8 @@ func (s *Server) handleSender(conn *ipv4.PacketConn, id uuid.UUID, sender Sender
 	}
 
 	conn.SetReadDeadline(time.Now().Add(req.Timeout))
-	if result.Res, result.Err = sender.Run(conn, raddr.(*net.UDPAddr)); result.Err != nil {
+	result.Res, result.Err = sender.Run(conn, raddr.(*net.UDPAddr))
+	if result.Err != nil {
 		return
 	}
 	log.Printf("Sent %v local messages to %v\n", len(result.Res), raddr)
@@ -256,7 +257,7 @@ func (r *RequestUdpServerResultReply) MsgSent() []MsgSent {
 }
 
 func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *RequestUdpServerResultReply) error {
-	log.Printf("Received RequestUdpServerResult...\n")
+	log.Printf("RequestUdpServerResult: request for %v ...", args.Id)
 
 	s.resultsLock.Lock()
 	cRcvd, okRcvd := s.resultsRcvdC[args.Id]
@@ -264,20 +265,30 @@ func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *
 	s.resultsLock.Unlock()
 
 	if okRcvd {
-		result := <-cRcvd
+		result, closed := <-cRcvd
 		if result.Err != nil {
 			log.Printf("Returning error: %v", result.Err.Error())
 			return result.Err
+		}
+		if closed && len(result.Res) == 0 {
+			err := fmt.Errorf("Result was already retrieved")
+			log.Printf("%v", err.Error())
+			return err
 		}
 		reply.Msgs = make([]interface{}, len(result.Res))
 		for i, d := range result.Res {
 			reply.Msgs[i] = d
 		}
 	} else if okSent {
-		result := <-cSent
+		result, closed := <-cSent
 		if result.Err != nil {
 			log.Printf("Returning error: %v", result.Err.Error())
 			return result.Err
+		}
+		if closed && len(result.Res) == 0 {
+			err := fmt.Errorf("Result was already retrieved")
+			log.Printf("%v", err.Error())
+			return err
 		}
 		reply.Msgs = make([]interface{}, len(result.Res))
 		for i, d := range result.Res {
@@ -286,6 +297,8 @@ func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *
 	} else {
 		return logErr("No test with id %v started\n", args.Id)
 	}
+
+	log.Printf("RequestUdpServerResult: ... responded for %v", args.Id)
 
 	return nil
 }

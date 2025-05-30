@@ -167,6 +167,7 @@ func receiveFrom(conn *ipv4.PacketConn, num uint) ([]MsgRcvd, error) {
 			var msg Msg
 			packet := rx[i]
 			if packet.N == 0 {
+				// Ignore probe packets
 				continue
 			}
 			msg.Decode(packet.Buffers[0][:packet.N])

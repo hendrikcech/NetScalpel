@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"log"
+	"net"
 	"net/rpc"
 	"os"
 	"path/filepath"
@@ -100,32 +101,45 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		defer conn.Close()
 
 		// TODO: implement retry loop
+		probeReplyReceived := false
+		for try := range 5 {
+			// Send an UDP packet to the newly opened server UDP socket to poke
+			// a hole into a potentially existing NAT and wait for the reply.
+			log.Printf("Sending NAT probe %v from %v to %v...", try, laddr, raddr)
+			if _, err := conn.WriteTo([]byte{}, nil, raddr); err != nil {
+				return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
+			}
 
-		// Send a single UDP packet to the newly opened server UDP socket
-		// to poke a hole into a potentially existing NAT and wait for the reply
-		log.Printf("Sending NAT probe from %v to %v...", laddr, raddr)
-		if _, err := conn.WriteTo([]byte{}, nil, raddr); err != nil {
-			return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
+			probeDeadline := time.Now().Add(time.Second)
+			if !c.StartAt.IsZero() && probeDeadline.After(c.StartAt) {
+				probeDeadline = c.StartAt
+			}
+			if err := conn.SetReadDeadline(probeDeadline); err != nil {
+				return fmt.Errorf("Failed to probe deadline: %v\n", err.Error())
+			}
+
+			if !c.StartAt.IsZero() && time.Now().After(c.StartAt) {
+				return fmt.Errorf("StartAt %v already passed before received probe reply at %v", c.StartAt, time.Now())
+			}
+
+			var buf [1500]byte
+			_, _, _, err = conn.ReadFrom(buf[:])
+			if err != nil {
+				if e, ok := err.(net.Error); !ok || !e.Timeout() {
+					return fmt.Errorf("Failed ReadFrom: %v", err.Error())
+				}
+				// Timeout occured
+				continue
+			}
+			// log.Printf("Received NAT probe reply")
+			probeReplyReceived = true
+			break
+		}
+		if !probeReplyReceived {
+			return fmt.Errorf("No probe reply received")
 		}
 
-		var probeDeadline time.Time
-		if c.StartAt.IsZero() {
-			probeDeadline = c.StartAt
-		} else {
-			probeDeadline = time.Now().Add(args.Timeout + time.Second)
-		}
-		if err := conn.SetReadDeadline(probeDeadline); err != nil {
-			return fmt.Errorf("Failed to probe deadline: %v\n", err.Error())
-		}
-
-		var buf [1500]byte
-		_, _, _, err = conn.ReadFrom(buf[:])
-		if err != nil {
-			return fmt.Errorf("Failed ReadFrom: %v", err.Error())
-		}
-		log.Printf("Received NAT probe reply")
-
-		log.Printf("Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
+		// log.Printf("Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
 
 		if err := waitUntil(c.StartAt); err != nil {
 			return err
@@ -146,6 +160,8 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 }
 
 func (c *SenderClient) Gather(client *rpc.Client) error {
+	log.Printf("Requesting results for %T %v", c.Sender, c.id)
+
 	if !c.Reverse {
 		// Gather results
 		var result RequestUdpServerResultReply
@@ -156,13 +172,13 @@ func (c *SenderClient) Gather(client *rpc.Client) error {
 		c.MsgsRcvd = result.MsgRcvd()
 	} else {
 		var result RequestUdpServerResultReply
-		log.Printf("Sending RequestUdpServerResult\n")
 		if err := client.Call("Server.RequestUdpServerResult",
 			RequestUdpServerResultArgs{Id: c.id}, &result); err != nil {
 			return fmt.Errorf("Call Server.RequestUdpServerResult failed: %v", err.Error())
 		}
 		c.MsgsSent = result.MsgSent()
 	}
+	log.Printf("Received results for %T %v", c.Sender, c.id)
 
 	c.Results = processMessages(c.MsgsSent, c.MsgsRcvd)
 
@@ -222,11 +238,16 @@ func writeResult(out string, results []MsgResult) error {
 			tsRcvd = ""
 		}
 
+		owdStr := ""
+		if !r.Lost {
+			owdStr = strconv.FormatFloat(float64(r.Owd.Nanoseconds())/1e6, 'f', -1, 64)
+		}
+
 		rows[i+1] = []string{
 			strconv.FormatUint(r.Seq, 10),
 			r.TsSent.Format(time.RFC3339Nano),
 			tsRcvd,
-			strconv.FormatFloat(float64(r.Owd.Nanoseconds())/1e6, 'f', -1, 64),
+			owdStr,
 			strconv.FormatUint(uint64(r.Len), 10),
 			strconv.FormatBool(r.Lost),
 		}
@@ -331,10 +352,14 @@ func (c *CommandClient) Gather(client *rpc.Client) error {
 			return fmt.Errorf("No command ID set")
 		}
 
+		log.Printf("Requesting results for %T %v", c.Params, c.id)
+
 		var result RequestRunCommandResultReply
 		if err := client.Call("Server.RequestRunCommandResult", RequestRunCommandResultArgs{Id: c.id}, &result); err != nil {
 			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
 		}
+
+		log.Printf("Received results for %T %v", c.Params, c.id)
 
 		for filename, bufEnc := range result.Files {
 			path := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zstd", filename))

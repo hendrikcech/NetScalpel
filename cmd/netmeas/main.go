@@ -15,7 +15,7 @@ import (
 func main() {
 	burstCmd := flag.NewFlagSet("burst", flag.ExitOnError)
 	burstIp := burstCmd.String("ip", "", "ip")
-	burstPort := burstCmd.Uint("port", 0, "port")
+	burstPort := burstCmd.Uint("port", 8500, "port")
 	burstNum := burstCmd.Uint("num", 10, "num")
 	burstPad := burstCmd.Uint("pad", 0, "pad")
 	burstTimeout := burstCmd.Uint("timeout", 1000, "server timeout in milliseconds")
@@ -24,7 +24,7 @@ func main() {
 
 	rateCmd := flag.NewFlagSet("rate", flag.ExitOnError)
 	rateIp := rateCmd.String("ip", "", "ip")
-	ratePort := rateCmd.Uint("port", 0, "port")
+	ratePort := rateCmd.Uint("port", 8500, "port")
 	rateRate := rateCmd.Float64("rate", 0, "rate in Mbps")
 	rateDuration := rateCmd.Float64("duration", 5, "duration in seconds")
 	rateOut := rateCmd.String("o", "", "write csv to logfile (default stdout)")
@@ -32,7 +32,7 @@ func main() {
 
 	periodicCmd := flag.NewFlagSet("periodic", flag.ExitOnError)
 	periodicIp := periodicCmd.String("ip", "", "ip")
-	periodicPort := periodicCmd.Uint("port", 0, "port")
+	periodicPort := periodicCmd.Uint("port", 8500, "port")
 	periodicPad := periodicCmd.Uint("pad", 0, "pad")
 	periodicInterval := periodicCmd.Uint("interval", 1000, "interval in milliseconds")
 	periodicDuration := periodicCmd.Float64("duration", 5, "duration in seconds")
