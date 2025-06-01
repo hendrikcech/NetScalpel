@@ -296,7 +296,7 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string) []pkg.Client {
 		Reverse: false,
 		StartAt: rateStart,
 		Sender: &pkg.RateSender{Params: pkg.RateParams{
-			RateMbps:    70,
+			Pps:         70 * 1e6 / 8 / 1400,
 			Interval:    time.Millisecond,
 			Duration:    time.Duration(10) * time.Second, // 10
 			PayloadSize: 1400,
@@ -310,7 +310,7 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string) []pkg.Client {
 		Reverse: true,
 		StartAt: rateStart,
 		Sender: &pkg.RateSender{Params: pkg.RateParams{
-			RateMbps:    700,
+			Pps:         700 * 1e6 / 8 / 1400,
 			Interval:    time.Millisecond,
 			Duration:    time.Duration(10) * time.Second, // 10
 			PayloadSize: 1400,
@@ -356,11 +356,11 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 		if idx == len(nums) {
 			duration := 2 * time.Second
 			timeout = duration + largeTimeout
-			var rate float64
+			var pps uint
 			if direction == UL {
-				rate = 70
+				pps = 70 * 1e6 / 8 / 1400
 			} else {
-				rate = 700
+				pps = 700 * 1e6 / 8 / 1400
 			}
 			e.RunClient(&pkg.SenderClient{
 				Ip:      e.Ip,
@@ -369,7 +369,7 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 				Reverse: direction.Reverse(),
 				StartAt: start,
 				Sender: &pkg.RateSender{Params: pkg.RateParams{
-					RateMbps:    rate,
+					Pps:         pps,
 					Interval:    time.Millisecond,
 					Duration:    duration,
 					PayloadSize: 1400,
@@ -434,11 +434,11 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 	duration := time.Duration(800) * time.Millisecond
 	deadline := nextRi(ts).Add(-time.Second)
 
-	var rate float64
+	var pps uint
 	if direction == UL {
-		rate = 70
+		pps = 70 * 1e6 / 8 / 1400
 	} else {
-		rate = 700
+		pps = 700 * 1e6 / 8 / 1400
 	}
 
 	e.RunClient(&pkg.SenderClient{
@@ -448,7 +448,7 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 		Reverse: direction.Reverse(),
 		StartAt: start,
 		Sender: &pkg.RateSender{Params: pkg.RateParams{
-			RateMbps:    rate,
+			Pps:         pps,
 			Interval:    time.Millisecond,
 			Duration:    duration,
 			PayloadSize: 1400,
@@ -485,7 +485,7 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 			Reverse: direction.Reverse(),
 			StartAt: start,
 			Sender: &pkg.RateSender{Params: pkg.RateParams{
-				RateMbps:    rate,
+				Pps:         pps,
 				Interval:    time.Millisecond,
 				Duration:    duration,
 				PayloadSize: 1400,

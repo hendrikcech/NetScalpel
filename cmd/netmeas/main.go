@@ -105,10 +105,10 @@ func main() {
 			Reverse: *rateRev,
 
 			Sender: &pkg.RateSender{Params: pkg.RateParams{
-				RateMbps:    *rateRate,
+				Pps:         uint(*rateRate * 1e6 / 8 / 1400),
 				Interval:    time.Duration(100) * time.Millisecond,
 				Duration:    time.Duration(*rateDuration) * time.Second,
-				PayloadSize: 1200,
+				PayloadSize: 1400,
 			}},
 		}
 

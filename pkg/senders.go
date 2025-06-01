@@ -333,7 +333,7 @@ func (r *PeriodicSender) Run(conn *ipv4.PacketConn, raddr *net.UDPAddr) ([]MsgSe
 }
 
 type RateParams struct {
-	RateMbps    float64
+	Pps         uint
 	Interval    time.Duration
 	Duration    time.Duration
 	PayloadSize uint
@@ -342,14 +342,15 @@ type RateParams struct {
 var _ SenderParams = (*RateParams)(nil)
 
 func (r RateParams) NumPackets() uint {
-	return uint(float64(uint(r.RateMbps*float64(1e6))/8/r.PayloadSize) * r.Duration.Seconds())
+	// return uint(float64(uint(r.RateMbps*float64(1e6))/8/r.PayloadSize) * r.Duration.Seconds())
+	return uint(float64(r.Pps) * r.Duration.Seconds())
 }
 
 func (r RateParams) GetDuration() time.Duration {
 	return r.Duration
 }
 
-// Tries to generate packets to match RateMbps
+// Generate Params.Pps many packets per second
 type RateSender struct {
 	Params RateParams
 	seq    uint64
@@ -370,15 +371,23 @@ func (r *RateSender) Run(conn *ipv4.PacketConn, raddr *net.UDPAddr) ([]MsgSent, 
 	ticker := time.NewTicker(r.Params.Interval)
 	duration := time.After(r.Params.Duration)
 
-	bytesPerInterval := uint(r.Params.RateMbps*float64(1e6)) / 8 / 1000 * uint(r.Params.Interval.Milliseconds())
-	log.Printf("Sending %v Bytes per interval", bytesPerInterval)
-
 	r.msgs = make([]MsgSent, 0, r.Params.NumPackets())
+
+	start := time.Now()
+	numPacketsSent := uint(0)
 
 	for {
 		select {
 		case <-ticker.C:
-			if err := r.sendRound(conn, raddr, bytesPerInterval); err != nil {
+			numPacketsGoal := uint(time.Since(start).Seconds() * float64(r.Params.Pps))
+			if numPacketsSent > numPacketsGoal {
+				panic("numPacketsSent > numPacketsGoal")
+			}
+			numPackets := numPacketsGoal - numPacketsSent
+			if numPackets == 0 {
+				continue
+			}
+			if err := r.sendRound(conn, raddr, numPackets); err != nil {
 				return nil, err
 			}
 		case <-duration:
@@ -387,27 +396,18 @@ func (r *RateSender) Run(conn *ipv4.PacketConn, raddr *net.UDPAddr) ([]MsgSent, 
 	}
 }
 
-func (r *RateSender) sendRound(conn *ipv4.PacketConn, raddr *net.UDPAddr, numBytes uint) error {
-	sendPackets := numBytes / r.Params.PayloadSize
-	lastPacketSize := numBytes % r.Params.PayloadSize
-	if lastPacketSize > 0 {
-		sendPackets += 1
-	}
-
-	for sendPackets > 0 {
+func (r *RateSender) sendRound(conn *ipv4.PacketConn, raddr *net.UDPAddr, packets uint) error {
+	packetsLeft := packets
+	for packetsLeft > 0 {
 		tsSent := time.Now()
-		numPackets := sendPackets
-		if sendPackets > 1024 {
-			numPackets = 1024
-			lastPacketSize = 0 // don't worry about this if the rate is that high
+		packetsRound := packetsLeft
+		if packetsRound > 1024 {
+			packetsRound = 1024
 		}
-		tx := make([]ipv4.Message, numPackets)
-		for i := uint64(0); i < uint64(numPackets); i++ {
+		tx := make([]ipv4.Message, packetsRound)
+		for i := uint64(0); i < uint64(packetsRound); i++ {
 			msg := ipv4.Message{}
 			padSize := r.Params.PayloadSize
-			if i == uint64(numPackets-1) && lastPacketSize != 0 {
-				padSize = lastPacketSize
-			}
 			b := Msg{Seq: r.seq + i, Pad: make([]byte, padSize)}
 			buf := make([]byte, 1500)
 			n, err := b.Encode(buf)
@@ -427,10 +427,11 @@ func (r *RateSender) sendRound(conn *ipv4.PacketConn, raddr *net.UDPAddr, numByt
 			return err
 		}
 		r.seq += uint64(n)
-		sendPackets -= uint(n)
-		if n != int(numPackets) {
-			log.Printf("Only sent %v packets instead of %v (len tx=%v)\n", n, numPackets, len(tx))
-			r.msgs = r.msgs[:len(r.msgs)-(int(numPackets)-n)]
+		packetsLeft -= uint(n)
+		if n != int(packetsRound) {
+			log.Printf("Only sent %v packets instead of %v (len tx=%v)\n", n, packetsRound, len(tx))
+			r.msgs = r.msgs[:len(r.msgs)-(int(packetsRound)-n)]
+			r.seq -= uint64(packetsRound) - uint64(n)
 			break
 		}
 	}

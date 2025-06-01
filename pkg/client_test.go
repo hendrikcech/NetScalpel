@@ -69,7 +69,7 @@ func TestRate(t *testing.T) {
 		Reverse: false,
 
 		Sender: &RateSender{Params: RateParams{
-			RateMbps:    10,
+			Pps:         1000,
 			Interval:    time.Duration(100) * time.Millisecond,
 			Duration:    time.Duration(1) * time.Second,
 			PayloadSize: 1200,
@@ -87,7 +87,7 @@ func TestRateReverse(t *testing.T) {
 		Reverse: true,
 
 		Sender: &RateSender{Params: RateParams{
-			RateMbps:    1,
+			Pps:         1000,
 			Interval:    time.Duration(100) * time.Millisecond,
 			Duration:    time.Duration(1) * time.Second,
 			PayloadSize: 1200,
