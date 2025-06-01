@@ -204,6 +204,10 @@ func (d Direction) String() string {
 	}
 }
 
+func (d Direction) StringLower() string {
+	return strings.ToLower(d.String())
+}
+
 type Executor struct {
 	Ip        string
 	Port      uint
@@ -428,6 +432,7 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 
 	start := ts.Add(1 * time.Second)
 	duration := time.Duration(800) * time.Millisecond
+	deadline := nextRi(ts).Add(-time.Second)
 
 	var rate float64
 	if direction == UL {
@@ -439,7 +444,7 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 	e.RunClient(&pkg.SenderClient{
 		Ip:      e.Ip,
 		Port:    e.Port,
-		Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_init.csv", strings.ToLower(direction.String()))),
+		Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_init.csv", direction.StringLower())),
 		Reverse: direction.Reverse(),
 		StartAt: start,
 		Sender: &pkg.RateSender{Params: pkg.RateParams{
@@ -451,17 +456,32 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 	})
 	start = start.Add(duration)
 
-	coolDowns := []int{0, 10, 50, 100, 500, 1000, 4000}
-	for _, idx := range rand.Perm(len(coolDowns)) {
-		coolDownMs := coolDowns[idx]
+	// coolDowns := []int{0, 10, 50, 100, 500, 1000, 4000}
+	// for _, idx := range rand.Perm(len(coolDowns)) {
+	var coolDowns []int
+	for {
+		// coolDownMs := coolDowns[idx]
+		// coolDownMs := 130 + rand.Intn(3000)
+
+		x := rand.ExpFloat64() / 1.5
+		y := 2 / math.Pi * math.Atan(x)
+		minCoolDownMs := 200
+		maxCoolDownMs := min(deadline.Sub(start.Add(duration)).Milliseconds(), 3000-int64(minCoolDownMs))
+		coolDownMs := minCoolDownMs + int(y*float64(maxCoolDownMs))
 
 		// Add cool down before starting rate test
-		start = start.Add(time.Duration(coolDownMs) * time.Millisecond)
+		nextStart := start.Add(time.Duration(coolDownMs) * time.Millisecond)
+		if start.Add(duration).After(deadline) {
+			// Would take too long
+			break
+		}
+		start = nextStart
+		coolDowns = append(coolDowns, coolDownMs)
 
 		e.RunClient(&pkg.SenderClient{
 			Ip:      e.Ip,
 			Port:    e.Port,
-			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", strings.ToLower(direction.String()), coolDownMs)),
+			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
 			Reverse: direction.Reverse(),
 			StartAt: start,
 			Sender: &pkg.RateSender{Params: pkg.RateParams{
@@ -475,6 +495,8 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 		// Start next test after this one was run
 		start = start.Add(duration)
 	}
+
+	log.Printf("Scheduled with cooldowns: %v", coolDowns)
 
 	for _, local := range []bool{true, false} {
 		var name string
