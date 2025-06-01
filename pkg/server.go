@@ -99,8 +99,6 @@ func (s *Server) Stop() {
 }
 
 type RequestUdpServerArgs struct {
-	// Number of packets to expect
-	NumPackets uint
 	// Server stops reading from socket after Timeout
 	Timeout time.Duration
 
@@ -178,7 +176,7 @@ func (s *Server) handleReceive(conn *ipv4.PacketConn, id uuid.UUID, req RequestU
 	}
 
 	conn.SetReadDeadline(time.Now().Add(req.Timeout))
-	if result.Res, result.Err = receiveFrom(conn, req.NumPackets); result.Err != nil {
+	if result.Res, result.Err = receiveFrom(conn); result.Err != nil {
 		return
 	}
 	log.Printf("Received %v packets\n", len(result.Res))

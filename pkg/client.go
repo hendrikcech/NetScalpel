@@ -53,10 +53,9 @@ type SenderClient struct {
 func (c *SenderClient) Run(client *rpc.Client) error {
 	if !c.Reverse {
 		args := RequestUdpServerArgs{
-			NumPackets: c.Sender.GetParams().NumPackets(),
-			Timeout:    c.Sender.GetParams().GetDuration() + time.Second,
-			StartAt:    c.StartAt,
-			Mode:       Receive,
+			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
+			StartAt: c.StartAt,
+			Mode:    Receive,
 		}
 		var reply RequestUdpServerReply
 		if err := client.Call("Server.RequestUdpServer", args, &reply); err != nil {
@@ -82,11 +81,10 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		}
 	} else {
 		args := RequestUdpServerArgs{
-			NumPackets: c.Sender.GetParams().NumPackets(),
-			Timeout:    c.Sender.GetParams().GetDuration() + time.Second,
-			StartAt:    c.StartAt,
-			Mode:       c.Sender.Mode(),
-			Params:     c.Sender.GetParams(),
+			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
+			StartAt: c.StartAt,
+			Mode:    c.Sender.Mode(),
+			Params:  c.Sender.GetParams(),
 		}
 		var reply RequestUdpServerReply
 		if err := client.Call("Server.RequestUdpServer", args, &reply); err != nil {
@@ -149,7 +147,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			return fmt.Errorf("Failed to SetReadDeadline: %v\n", err.Error())
 		}
 
-		c.MsgsRcvd, err = receiveFrom(conn, args.NumPackets)
+		c.MsgsRcvd, err = receiveFrom(conn)
 		if err != nil {
 			log.Printf("Failed receiveFrom: %v", err.Error())
 		}
@@ -271,8 +269,6 @@ func writeResult(out string, results []MsgResult) error {
 
 	return w.Error()
 }
-
-//func ClientSummary(sent []MsgSent, rcvd []MsgRcvd) string {
 
 func (c *SenderClient) Summary() string {
 	var b strings.Builder

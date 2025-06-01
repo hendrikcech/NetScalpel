@@ -141,9 +141,9 @@ func receiveFromSingle(conn *ipv4.PacketConn, num uint) []MsgRcvd {
 	return msgs
 }
 
-func receiveFrom(conn *ipv4.PacketConn, num uint) ([]MsgRcvd, error) {
+func receiveFrom(conn *ipv4.PacketConn) ([]MsgRcvd, error) {
 	// conn ReadDeadline must be set, otherwise this function never returns
-	msgs := make([]MsgRcvd, 0, num)
+	msgs := make([]MsgRcvd, 0, 1024)
 
 	// batch size
 	rx := make([]ipv4.Message, 1024)
