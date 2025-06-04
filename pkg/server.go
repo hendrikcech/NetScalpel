@@ -142,7 +142,7 @@ func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpSe
 		case SendBurst:
 			sender = &BurstSender{Params: args.Params.(BurstParams)}
 		case SendRate:
-			sender = &RateSender{Params: args.Params.(RateParams)}
+			sender = &RateSender{Params: args.Params.(RateParamsW)}
 		case SendPeriodic:
 			sender = &PeriodicSender{Params: args.Params.(PeriodicParams)}
 		default:

@@ -19,6 +19,7 @@ func RegisterGob() {
 	gob.Register(MsgSent{})
 	gob.Register(BurstParams{})
 	gob.Register(RateParams{})
+	gob.Register(RateParamsW{})
 	gob.Register(PeriodicParams{})
 	gob.Register(TcpdumpParams{})
 }

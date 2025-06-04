@@ -77,8 +77,14 @@ func main() {
 				e.TraceRi(ri, resultPath)
 			case "burst":
 				ri := nextRi(now)
-				resultPath = mkResultPath(*clientResults, ri, "_burst")
-				direction := DL
+				resultPath = mkResultPath(*clientResults, ri, "_burst_ul")
+				direction := UL
+				log.Printf("[Round %v] Schedule %s burst in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
+				e.BurstRi(ri, resultPath, direction)
+
+				ri = nextRi(now.Add(15 * time.Second))
+				resultPath = mkResultPath(*clientResults, ri, "_burst_dl")
+				direction = DL
 				log.Printf("[Round %v] Schedule %s burst in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
 				e.BurstRi(ri, resultPath, direction)
 			case "cooldown":
@@ -93,6 +99,18 @@ func main() {
 				direction = DL
 				log.Printf("[Round %v] Schedule %s %s in %.2f s at %v", i+1, direction, *clientProcedure, ri.Sub(time.Now()).Seconds(), ri)
 				e.CoolDown(ri, resultPath, direction)
+			case "cdsf":
+				ri := nextRi(now)
+				resultPath = mkResultPath(*clientResults, ri, "_cdsf_ul")
+				direction := UL
+				log.Printf("[Round %v] Schedule %s %s in %.2f s at %v", i+1, direction, *clientProcedure, ri.Sub(time.Now()).Seconds(), ri)
+				e.CoolDownSameFlow(ri, resultPath, direction)
+
+				ri = nextRi(now.Add(15 * time.Second))
+				resultPath = mkResultPath(*clientResults, ri, "_cdsf_dl")
+				direction = DL
+				log.Printf("[Round %v] Schedule %s %s in %.2f s at %v", i+1, direction, *clientProcedure, ri.Sub(time.Now()).Seconds(), ri)
+				e.CoolDownSameFlow(ri, resultPath, direction)
 			default:
 				log.Fatalf("Unknown -procedure '%v'", *clientProcedure)
 			}
@@ -295,12 +313,12 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string) []pkg.Client {
 		Out:     filepath.Join(resultPath, "rate_ul.csv"),
 		Reverse: false,
 		StartAt: rateStart,
-		Sender: &pkg.RateSender{Params: pkg.RateParams{
+		Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 			Pps:         70 * 1e6 / 8 / 1400,
 			Interval:    time.Millisecond,
 			Duration:    time.Duration(10) * time.Second, // 10
 			PayloadSize: 1400,
-		}},
+		}}},
 	})
 
 	e.RunClient(&pkg.SenderClient{
@@ -309,12 +327,12 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string) []pkg.Client {
 		Out:     filepath.Join(resultPath, "rate_dl.csv"),
 		Reverse: true,
 		StartAt: rateStart,
-		Sender: &pkg.RateSender{Params: pkg.RateParams{
+		Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 			Pps:         700 * 1e6 / 8 / 1400,
 			Interval:    time.Millisecond,
 			Duration:    time.Duration(10) * time.Second, // 10
 			PayloadSize: 1400,
-		}},
+		}}},
 	})
 
 	for _, local := range []bool{true, false} {
@@ -343,11 +361,13 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 	var clients []pkg.Client
 
 	smallTimeout := 500 * time.Millisecond
-	largeTimeout := 1000 * time.Millisecond
+	largeTimeout := 2000 * time.Millisecond
 	start := ts.Add(1 * time.Second)
+	deadline := nextRi(ts).Add(-time.Second)
 
 	// nums := []uint{1, 10, 50, 100, 150, 200, 250, 300, 400, 550, 700, 850, 1000, 2000}
-	nums := []uint{1, 10, 20, 30, 40, 50, 100, 150, 200, 250, 300, 400, 500, 1000, 2000}
+	// nums := []uint{1, 10, 20, 30, 40, 50, 100, 150, 200, 250, 300, 400, 500, 1000, 2000}
+	nums := []uint{100, 1000, 2000, 3000, 4000, 5000, 6000}
 
 	// Execute the bursts in random order
 	for _, idx := range rand.Perm(len(nums) + 1) {
@@ -365,27 +385,28 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 			e.RunClient(&pkg.SenderClient{
 				Ip:      e.Ip,
 				Port:    e.Port,
-				Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v.csv", strings.ToLower(direction.String()))),
+				Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v.csv", direction.StringLower())),
 				Reverse: direction.Reverse(),
 				StartAt: start,
-				Sender: &pkg.RateSender{Params: pkg.RateParams{
+				Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 					Pps:         pps,
 					Interval:    time.Millisecond,
 					Duration:    duration,
 					PayloadSize: 1400,
-				}},
+				}}},
 			})
 		} else {
 			num := nums[idx]
-			if num <= 500 {
-				timeout = smallTimeout
-			} else if num > 500 {
-				timeout = largeTimeout
-			}
+			timeout = smallTimeout
+			// if num <= 500 {
+			// 	timeout = smallTimeout
+			// } else if num > 500 {
+			// 	timeout = largeTimeout
+			// }
 			e.RunClient(&pkg.SenderClient{
 				Ip:      e.Ip,
 				Port:    e.Port,
-				Out:     filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d.csv", strings.ToLower(direction.String()), num)),
+				Out:     filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d.csv", direction.StringLower(), num)),
 				Reverse: direction.Reverse(),
 				StartAt: start,
 				Sender: &pkg.BurstSender{Params: pkg.BurstParams{
@@ -397,6 +418,10 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 		}
 
 		start = start.Add(timeout)
+	}
+
+	if start.After(deadline) {
+		panic(fmt.Sprintf("Too many tests: %v > %v", start, deadline))
 	}
 
 	for _, local := range []bool{true, false} {
@@ -447,12 +472,12 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 		Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_init.csv", direction.StringLower())),
 		Reverse: direction.Reverse(),
 		StartAt: start,
-		Sender: &pkg.RateSender{Params: pkg.RateParams{
+		Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 			Pps:         pps,
 			Interval:    time.Millisecond,
 			Duration:    duration,
 			PayloadSize: 1400,
-		}},
+		}}},
 	})
 	start = start.Add(duration)
 
@@ -484,16 +509,120 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
 			Reverse: direction.Reverse(),
 			StartAt: start,
-			Sender: &pkg.RateSender{Params: pkg.RateParams{
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         pps,
 				Interval:    time.Millisecond,
 				Duration:    duration,
 				PayloadSize: 1400,
-			}},
+			}}},
 		})
 
 		// Start next test after this one was run
 		start = start.Add(duration)
+	}
+
+	log.Printf("Scheduled with cooldowns: %v", coolDowns)
+
+	for _, local := range []bool{true, false} {
+		var name string
+		if local {
+			name = "local"
+		} else {
+			name = "remote"
+		}
+		e.RunClient(&pkg.CommandClient{
+			Params: pkg.TcpdumpParams{
+				Name_:    fmt.Sprintf("tcpdump_%v", name),
+				Timeout_: start.Sub(ts) + time.Second,
+				Filter:   "udp",
+			},
+			Local:    local,
+			StartAt:  ts,
+			LocalDir: resultPath,
+		})
+	}
+
+	if start.After(nextRi(ts).Add(time.Second)) {
+		panic("Test takes longer than one RI")
+	}
+
+	// e.G.Go(func() error {
+	// 	// Leave a gap between sending the last burst and requesting the results
+	// 	time.Sleep(time.Until(start.Add(len(nums) * timeout)))
+	// 	return nil
+	// })
+
+	return clients
+}
+
+func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, direction Direction) []pkg.Client {
+	var clients []pkg.Client
+
+	start := ts.Add(1 * time.Second)
+	duration := time.Duration(800) * time.Millisecond
+	spacing := time.Duration(2000) * time.Millisecond
+	deadline := nextRi(ts).Add(-time.Second)
+
+	var pps uint
+	if direction == UL {
+		pps = 70 * 1e6 / 8 / 1400
+	} else {
+		pps = 700 * 1e6 / 8 / 1400
+	}
+
+	// coolDowns := []int{0, 10, 50, 100, 500, 1000, 4000}
+	// for _, idx := range rand.Perm(len(coolDowns)) {
+	var coolDowns []int64
+	for {
+		// coolDownMs := coolDowns[idx]
+		// coolDownMs := 130 + rand.Intn(3000)
+
+		// Exponential distribution: test small values more
+		x := rand.ExpFloat64() / 2      // increase rate / lambda
+		y := 2 / math.Pi * math.Atan(x) // map to interval [0, 1]
+		minCoolDownMs := int64(50)
+		maxCoolDownMs := min(deadline.Sub(start.Add(2*duration)).Milliseconds()+minCoolDownMs, 5000-int64(minCoolDownMs))
+		coolDownMs := minCoolDownMs + int64(y*float64(maxCoolDownMs))
+		coolDownDuration := time.Duration(coolDownMs) * time.Millisecond
+
+		// Check if test still fits into the current RI
+		nextStart := start.Add(2 * duration).Add(coolDownDuration)
+		if nextStart.After(deadline) {
+			break
+		}
+		start = nextStart
+		coolDowns = append(coolDowns, coolDownMs)
+
+		e.RunClient(&pkg.SenderClient{
+			Ip:      e.Ip,
+			Port:    e.Port,
+			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
+			Reverse: direction.Reverse(),
+			StartAt: start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{
+				pkg.RateParams{
+					Pps:         pps,
+					Interval:    time.Millisecond,
+					Duration:    duration,
+					PayloadSize: 1400,
+				},
+				pkg.RateParams{
+					Pps:         0,
+					Interval:    time.Millisecond,
+					Duration:    coolDownDuration,
+					PayloadSize: 1400,
+				},
+				pkg.RateParams{
+					Pps:         pps,
+					Interval:    time.Millisecond,
+					Duration:    duration,
+					PayloadSize: 1400,
+				},
+			}},
+		})
+
+		// Start next test after this one was run
+		start = start.Add(spacing)
 	}
 
 	log.Printf("Scheduled with cooldowns: %v", coolDowns)

@@ -104,12 +104,12 @@ func main() {
 			Out:     *rateOut,
 			Reverse: *rateRev,
 
-			Sender: &pkg.RateSender{Params: pkg.RateParams{
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         uint(*rateRate * 1e6 / 8 / 1400),
 				Interval:    time.Duration(100) * time.Millisecond,
 				Duration:    time.Duration(*rateDuration) * time.Second,
 				PayloadSize: 1400,
-			}},
+			}}},
 		}
 
 	case "periodic":

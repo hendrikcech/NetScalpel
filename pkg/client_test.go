@@ -39,8 +39,8 @@ func TestBurst(t *testing.T) {
 		}},
 	}
 
-	testSender(t, client)
-	testBurst(t, client)
+	testSender(t, &client)
+	testBurst(t, &client)
 }
 
 func TestBurstReverse(t *testing.T) {
@@ -57,47 +57,85 @@ func TestBurstReverse(t *testing.T) {
 		}},
 	}
 
-	testSender(t, client)
-	testBurst(t, client)
+	testSender(t, &client)
+	testBurst(t, &client)
 }
 
-func TestRate(t *testing.T) {
+func TestRateUL(t *testing.T) {
+	pps := uint(100)
+	durationS := uint(1)
+	packets := pps * durationS
+
 	client := SenderClient{
 		Ip:      ip,
 		Port:    serverPort(),
 		Out:     "",
 		Reverse: false,
 
-		Sender: &RateSender{Params: RateParams{
-			Pps:         1000,
-			Interval:    time.Duration(100) * time.Millisecond,
-			Duration:    time.Duration(1) * time.Second,
+		Sender: &RateSender{Params: []RateParams{RateParams{
+			Pps:         pps,
+			Interval:    time.Duration(10) * time.Millisecond,
+			Duration:    time.Duration(durationS) * time.Second,
 			PayloadSize: 1200,
-		}},
+		}}},
 	}
 
-	testSender(t, client)
+	testSender(t, &client)
+
+	if len(client.MsgsSent) != int(packets) {
+		t.Errorf("Expected %v packets but %v were sent", packets, len(client.MsgsSent))
+	}
 }
 
 func TestRateReverse(t *testing.T) {
+	pps := uint(100)
+	durationS := uint(1)
+	packets := pps * durationS
+
 	client := SenderClient{
 		Ip:      ip,
 		Port:    serverPort(),
 		Out:     "",
 		Reverse: true,
 
-		Sender: &RateSender{Params: RateParams{
-			Pps:         1000,
+		Sender: &RateSender{Params: []RateParams{RateParams{
+			Pps:         pps,
+			Interval:    time.Duration(10) * time.Millisecond,
+			Duration:    time.Duration(durationS) * time.Second,
+			PayloadSize: 1200,
+		}}},
+	}
+
+	testSender(t, &client)
+
+	if len(client.MsgsSent) != int(packets) {
+		t.Errorf("Expected %v packets but %v were sent", packets, len(client.MsgsSent))
+	}
+}
+
+func TestRateZeroPps(t *testing.T) {
+	client := SenderClient{
+		Ip:      ip,
+		Port:    serverPort(),
+		Out:     "",
+		Reverse: false,
+
+		Sender: &RateSender{Params: []RateParams{RateParams{
+			Pps:         0,
 			Interval:    time.Duration(100) * time.Millisecond,
 			Duration:    time.Duration(1) * time.Second,
 			PayloadSize: 1200,
-		}},
+		}}},
 	}
 
-	testSender(t, client)
+	testSender(t, &client)
+
+	if len(client.MsgsSent) != 0 {
+		t.Errorf("Expected 0 packets but %v were sent", len(client.MsgsSent))
+	}
 }
 
-func testSender(t *testing.T, c SenderClient) {
+func testSender(t *testing.T, c *SenderClient) {
 	RegisterGob()
 
 	server := RunServer(c.Ip, c.Port)
@@ -135,7 +173,7 @@ func testSender(t *testing.T, c SenderClient) {
 	}
 }
 
-func testBurst(t *testing.T, client SenderClient) {
+func testBurst(t *testing.T, client *SenderClient) {
 	for i, msg := range client.MsgsSent {
 		if msg.Seq != uint64(i) {
 			t.Errorf("expected seq %v, got %v in msgsSent", i, msg.Seq)
