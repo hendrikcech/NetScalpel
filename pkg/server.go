@@ -51,7 +51,7 @@ func RunServer(ip string, port uint) *Server {
 				return
 			}
 			s.wg.Add(1)
-			log.Printf("New RPC client at %v\n", s.listener.Addr())
+			log.Printf("New RPC client at %v\n", conn.RemoteAddr())
 			go func() {
 				handler.ServeConn(conn)
 				s.wg.Done()
@@ -62,9 +62,9 @@ func RunServer(ip string, port uint) *Server {
 	return s
 }
 
-type Result[T any] struct {
+type Result[S []T, T any] struct {
 	Err error
-	Res T
+	Res S
 }
 
 type ResultPath struct {
@@ -77,8 +77,8 @@ type Server struct {
 	wg       sync.WaitGroup
 	quit     chan any
 
-	resultsRcvdC map[uuid.UUID]chan Result[[]MsgRcvd]
-	resultsSentC map[uuid.UUID]chan Result[[]MsgSent]
+	resultsRcvdC map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd]
+	resultsSentC map[uuid.UUID]chan *Result[[]MsgSent, MsgSent]
 	resultsPathC map[uuid.UUID]chan ResultPath
 	resultsLock  sync.RWMutex
 }
@@ -86,8 +86,8 @@ type Server struct {
 func NewServer() *Server {
 	s := new(Server)
 	s.quit = make(chan any)
-	s.resultsRcvdC = make(map[uuid.UUID]chan Result[[]MsgRcvd])
-	s.resultsSentC = make(map[uuid.UUID]chan Result[[]MsgSent])
+	s.resultsRcvdC = make(map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd])
+	s.resultsSentC = make(map[uuid.UUID]chan *Result[[]MsgSent, MsgSent])
 	s.resultsPathC = make(map[uuid.UUID]chan ResultPath)
 	return s
 }
@@ -158,14 +158,14 @@ func (s *Server) handleReceive(conn *ipv4.PacketConn, id uuid.UUID, req RequestU
 	defer conn.Close()
 
 	s.resultsLock.Lock()
-	s.resultsRcvdC[id] = make(chan Result[[]MsgRcvd], 1)
+	s.resultsRcvdC[id] = make(chan *Result[[]MsgRcvd, MsgRcvd], 1)
 	s.resultsLock.Unlock()
 
-	var result Result[[]MsgRcvd]
+	var result Result[[]MsgRcvd, MsgRcvd]
 
 	defer func() {
 		s.resultsLock.Lock()
-		s.resultsRcvdC[id] <- result
+		s.resultsRcvdC[id] <- &result
 		close(s.resultsRcvdC[id])
 		s.resultsLock.Unlock()
 	}()
@@ -186,14 +186,14 @@ func (s *Server) handleSender(conn *ipv4.PacketConn, id uuid.UUID, sender Sender
 	defer conn.Close()
 
 	s.resultsLock.Lock()
-	s.resultsSentC[id] = make(chan Result[[]MsgSent], 1)
+	s.resultsSentC[id] = make(chan *Result[[]MsgSent, MsgSent], 1)
 	s.resultsLock.Unlock()
 
-	var result Result[[]MsgSent]
+	var result Result[[]MsgSent, MsgSent]
 
 	defer func() {
 		s.resultsLock.Lock()
-		s.resultsSentC[id] <- result
+		s.resultsSentC[id] <- &result
 		close(s.resultsSentC[id])
 		s.resultsLock.Unlock()
 	}()
@@ -263,34 +263,12 @@ func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *
 	s.resultsLock.Unlock()
 
 	if okRcvd {
-		result, closed := <-cRcvd
-		if result.Err != nil {
-			log.Printf("Returning error: %v", result.Err.Error())
-			return result.Err
-		}
-		if closed && len(result.Res) == 0 {
-			err := fmt.Errorf("Result was already retrieved")
-			log.Printf("%v", err.Error())
-			return err
-		}
-		reply.Msgs = make([]interface{}, len(result.Res))
-		for i, d := range result.Res {
-			reply.Msgs[i] = d
+		if err := handleChanResult(cRcvd, args.Id, reply); err != nil {
+			return logErr("Receive from RcvdC: %v", err)
 		}
 	} else if okSent {
-		result, closed := <-cSent
-		if result.Err != nil {
-			log.Printf("Returning error: %v", result.Err.Error())
-			return result.Err
-		}
-		if closed && len(result.Res) == 0 {
-			err := fmt.Errorf("Result was already retrieved")
-			log.Printf("%v", err.Error())
-			return err
-		}
-		reply.Msgs = make([]interface{}, len(result.Res))
-		for i, d := range result.Res {
-			reply.Msgs[i] = d
+		if err := handleChanResult(cSent, args.Id, reply); err != nil {
+			return logErr("Receive from SentC: %v", err)
 		}
 	} else {
 		return logErr("No test with id %v started\n", args.Id)
@@ -298,6 +276,24 @@ func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *
 
 	log.Printf("RequestUdpServerResult: ... responded for %v", args.Id)
 
+	return nil
+}
+
+func handleChanResult[S []T, T any](c chan *Result[S, T], id uuid.UUID, reply *RequestUdpServerResultReply) error {
+	result, closed := <-c
+	if closed && result == nil {
+		return fmt.Errorf("Result %v was already retrieved", id)
+	}
+	if result == nil {
+		panic("result.Res == nil")
+	}
+	if result.Err != nil {
+		return fmt.Errorf("handleChanResult: %v", result.Err.Error())
+	}
+	reply.Msgs = make([]interface{}, len(result.Res))
+	for i, d := range result.Res {
+		reply.Msgs[i] = d
+	}
 	return nil
 }
 
