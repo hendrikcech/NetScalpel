@@ -87,6 +87,18 @@ func main() {
 				direction = DL
 				log.Printf("[Round %v] Schedule %s burst in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
 				e.BurstRi(ri, resultPath, direction)
+			case "prograte":
+				ri := nextRi(now)
+				resultPath = mkResultPath(*clientResults, ri, "_prograte_ul")
+				direction := UL
+				log.Printf("[Round %v] Schedule %s prograte in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
+				e.ProgressiveRate(ri, resultPath, direction)
+
+				ri = nextRi(now.Add(15 * time.Second))
+				resultPath = mkResultPath(*clientResults, ri, "_prograte_dl")
+				direction = DL
+				log.Printf("[Round %v] Schedule %s prograte in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
+				e.ProgressiveRate(ri, resultPath, direction)
 			case "cooldown":
 				ri := nextRi(now)
 				resultPath = mkResultPath(*clientResults, ri, "_cooldown_ul")
@@ -350,6 +362,75 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string) []pkg.Client {
 			},
 			Local:    local,
 			StartAt:  owdStart.Add(-500 * time.Millisecond),
+			LocalDir: resultPath,
+		})
+	}
+
+	return clients
+}
+
+func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, direction Direction) []pkg.Client {
+	var clients []pkg.Client
+
+	smallGap := 500 * time.Millisecond
+	largeGap := 1500 * time.Millisecond
+	start := ts.Add(1 * time.Second)
+	deadline := nextRi(ts).Add(-time.Second)
+
+	durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
+
+	// Execute the bursts in random order
+	for _, idx := range rand.Perm(len(durationsMs)) {
+		durationMs := durationsMs[idx]
+		duration := time.Duration(durationMs) * time.Millisecond
+		var gap time.Duration
+		if durationMs < 1000 {
+			gap = smallGap
+		} else {
+			gap = largeGap
+		}
+		var pps uint
+		if direction == UL {
+			pps = 70 * 1e6 / 8 / 1400
+		} else {
+			pps = 700 * 1e6 / 8 / 1400
+		}
+		e.RunClient(&pkg.SenderClient{
+			Ip:      e.Ip,
+			Port:    e.Port,
+			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), durationMs)),
+			Reverse: direction.Reverse(),
+			StartAt: start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         pps,
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
+		})
+
+		start = start.Add(duration).Add(gap)
+	}
+
+	if start.After(deadline) {
+		panic(fmt.Sprintf("Too many tests: %v > %v", start, deadline))
+	}
+
+	for _, local := range []bool{true, false} {
+		var name string
+		if local {
+			name = "local"
+		} else {
+			name = "remote"
+		}
+		e.RunClient(&pkg.CommandClient{
+			Params: pkg.TcpdumpParams{
+				Name_:    fmt.Sprintf("tcpdump_%v", name),
+				Timeout_: 15 * time.Second,
+				Filter:   "udp",
+			},
+			Local:    local,
+			StartAt:  ts,
 			LocalDir: resultPath,
 		})
 	}

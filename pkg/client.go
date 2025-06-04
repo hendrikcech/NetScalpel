@@ -69,7 +69,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		}
 		defer conn.Close()
 
-		log.Printf("Client %v %+v to %v", c.Sender.Mode(), c.Sender.GetParams(), raddr)
+		log.Printf("Client %T %+v to %v", c.Sender, c.Sender.GetParams(), raddr)
 
 		if err := waitUntil(c.StartAt); err != nil {
 			return err
@@ -103,7 +103,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		for try := range 5 {
 			// Send an UDP packet to the newly opened server UDP socket to poke
 			// a hole into a potentially existing NAT and wait for the reply.
-			log.Printf("Sending NAT probe %v from %v to %v...", try, laddr, raddr)
+			log.Printf("Sending NAT probe %v/5 from %v to %v...", try+1, laddr, raddr)
 			if _, err := conn.WriteTo([]byte{}, nil, raddr); err != nil {
 				return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
 			}
@@ -279,7 +279,10 @@ func (c *SenderClient) Summary() string {
 
 	numSent := uint64(len(c.MsgsSent))
 	numRcvd := len(c.MsgsRcvd)
-	b.WriteString(fmt.Sprintf("%v packets sent, %v received (%.2f%% lost)", numSent, numRcvd, 100.0-float64(numRcvd)/float64(numSent)*100))
+	numPackets := c.Sender.GetParams().NumPackets()
+	duration := c.Sender.GetParams().GetDuration()
+	b.WriteString(fmt.Sprintf("%s\t%v packets sent (target %v), %v rcvd (%.2f%% lost)",
+		duration.Seconds(), numSent, numPackets, numRcvd, 100.0-float64(numRcvd)/float64(numSent)*100))
 
 	bytesRcvd := uint(0)
 	for i := range c.MsgsRcvd {
@@ -289,10 +292,10 @@ func (c *SenderClient) Summary() string {
 	if len(c.MsgsRcvd) > 0 {
 		avgGoodput = float64(bytesRcvd) / c.MsgsRcvd[len(c.MsgsRcvd)-1].TsRcvd.Sub(c.MsgsRcvd[0].TsRcvd).Seconds() * 8 / 1e6
 	}
-	b.WriteString(fmt.Sprintf(" -> %.2f Mbps", avgGoodput))
+	b.WriteString(fmt.Sprintf("\t%.2f Mbps", avgGoodput))
 
 	if !c.StartAt.IsZero() {
-		b.WriteString(fmt.Sprintf(", started at %v", c.StartAt))
+		b.WriteString(fmt.Sprintf("\t%v", c.StartAt))
 	}
 
 	return b.String()

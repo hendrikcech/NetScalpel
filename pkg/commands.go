@@ -25,7 +25,7 @@ func RunCommand(cmd *exec.Cmd, timeout time.Duration) error {
 
 	stdin.Close()
 
-	log.Printf("Sleep for command %v", timeout)
+	// log.Printf("Sleep for command %v", timeout)
 	time.Sleep(timeout)
 
 	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL} {
@@ -41,7 +41,7 @@ func RunCommand(cmd *exec.Cmd, timeout time.Duration) error {
 	// 	return fmt.Errorf("Failed to wait for termination: %v", err.Error())
 	// }
 
-	log.Printf("Returning from RunCommand")
+	// log.Printf("Returning from RunCommand")
 	return nil
 }
 
