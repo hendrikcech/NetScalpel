@@ -155,7 +155,13 @@ func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params Param
 	deadline := nextRi(ts).Add(-time.Second)
 
 	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
-	durationsMs := []int{100, 200, 300, 350, 400, 450, 500}
+	durationsMs := []uint{100, 200, 300, 350, 400, 450, 500}
+	if _, ok := params["durations"]; ok {
+		var err error
+		if durationsMs, err = params.Uints("durations"); err != nil {
+			log.Fatalf("%v", err.Error())
+		}
+	}
 
 	// Execute the bursts in random order
 	for _, idx := range rand.Perm(len(durationsMs)) {

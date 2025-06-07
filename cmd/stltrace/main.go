@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -25,7 +26,7 @@ func main() {
 	clientResults := clientCmd.String("results", "results", "path to results folder")
 	clientRounds := clientCmd.Uint("rounds", 0, "number of measurement rounds to run; 0 = infinite")
 	clientProcedure := clientCmd.String("procedure", "trace", "test procedure")
-	clientParams := clientCmd.String("params", "", "comma-separated key=value pairs passed to procedure")
+	clientParams := clientCmd.String("params", "", "semicolon-separated key=value pairs passed to procedure")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	serverIp := serverCmd.String("ip", "0.0.0.0", "ip")
@@ -110,21 +111,44 @@ func (p ParamMap) Direction() (pkg.Direction, error) {
 	return direction, nil
 }
 
-// Parses comma-separated key=value pairs
-// If value contains whitespace, value is parsed as a list
+func (p ParamMap) Uints(key string) ([]uint, error) {
+	value, ok := p[key]
+	if !ok {
+		return nil, fmt.Errorf("Parameter %v not present", key)
+	}
+	listStr, ok := value.([]string)
+	if !ok {
+		return nil, fmt.Errorf("Parameter %v must be a list of uints", key)
+	}
+	list := make([]uint, len(listStr))
+	for i := range listStr {
+		var err error
+		parsed, err := strconv.ParseUint(listStr[i], 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("Parameter %v: failed parsing '%s' as uint", key, listStr[i])
+		}
+		list[i] = uint(parsed)
+	}
+	return list, nil
+}
+
+// Parses semicolon-separated key=value pairs
+// If value contains a comma, the value is parsed as a list
+// Example:
+// direction=ul;durations=100,200
 func parseParams(paramStr string) (ParamMap, error) {
 	params := make(map[string]any)
 	if paramStr == "" {
 		return params, nil
 	}
-	for _, kv := range strings.Split(paramStr, ",") {
+	for _, kv := range strings.Split(paramStr, ";") {
 		parts := strings.Split(kv, "=")
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("Invalid key-value pair: %v", kv)
 		}
 		key := parts[0]
 		value := parts[1]
-		valueParts := strings.Split(value, " ")
+		valueParts := strings.Split(value, ",")
 		if len(valueParts) == 1 {
 			params[key] = value
 		} else {
@@ -161,16 +185,16 @@ func (c *Client) Run() {
 
 		if fn, ok := proceduresUlDl[c.Procedure]; ok {
 			if _, ok := c.Params["direction"]; ok {
-				c.executeProcedure(now, fn, c.Params)
+				resultPath = c.executeProcedure(now, fn, c.Params)
 			} else {
 				params := maps.Clone(c.Params)
 				params["direction"] = pkg.UL.String()
-				c.executeProcedure(now, fn, params)
+				resultPath = c.executeProcedure(now, fn, params)
 				params["direction"] = pkg.DL.String()
-				c.executeProcedure(now.Add(15*time.Second), fn, params)
+				resultPath = c.executeProcedure(now.Add(15*time.Second), fn, params)
 			}
 		} else if c.Procedure == "trace" {
-			c.executeProcedure(now, fn, c.Params)
+			resultPath = c.executeProcedure(now, fn, c.Params)
 		} else {
 			log.Fatalf("Unknown -procedure '%v'", c.Procedure)
 		}
@@ -193,7 +217,7 @@ func (c *Client) Run() {
 	}
 }
 
-func (c *Client) executeProcedure(ts time.Time, fn ProcedureFunc, params ParamMap) {
+func (c *Client) executeProcedure(ts time.Time, fn ProcedureFunc, params ParamMap) string {
 	ri := nextRi(ts)
 	log.Printf("[Round %v] Schedule %s %s in %.2fs at %v", c.round, params["direction"], c.Procedure, ri.Sub(time.Now()).Seconds(), ri)
 	name := "_" + c.Procedure
@@ -202,6 +226,7 @@ func (c *Client) executeProcedure(ts time.Time, fn ProcedureFunc, params ParamMa
 	}
 	resultPath := mkResultPath(c.Results, ri, name)
 	fn(ri, resultPath, params)
+	return resultPath
 }
 
 func nextRi(ts time.Time) time.Time {
