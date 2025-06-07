@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"math/rand"
 	"net/rpc"
@@ -28,6 +29,7 @@ func main() {
 	clientResults := clientCmd.String("results", "results", "path to results folder")
 	clientRounds := clientCmd.Uint("rounds", 0, "number of measurement rounds to run; 0 = infinite")
 	clientProcedure := clientCmd.String("procedure", "trace", "test procedure")
+	clientParams := clientCmd.String("params", "", "comma-separated key=value pairs passed to procedure")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	serverIp := serverCmd.String("ip", "0.0.0.0", "ip")
@@ -59,90 +61,20 @@ func main() {
 			*clientRounds = math.MaxUint
 		}
 
-		for i := range *clientRounds {
-			e := NewExecutor(*clientIp, *clientPort)
-			now := time.Now()
-			resultPath := ""
-
-			switch *clientProcedure {
-			case "trace":
-				ri := nextRi(now)
-				resultPath = mkResultPath(*clientResults, ri, "_trace")
-				log.Printf("[Round %v] Schedule trace in %.2f s at %v", i+1, ri.Sub(time.Now()).Seconds(), ri)
-				e.TraceRi(ri, resultPath)
-
-				ri = nextRi(now.Add(15 * time.Second))
-				resultPath = mkResultPath(*clientResults, ri, "_trace")
-				log.Printf("[Round %v] Schedule trace in %.2f s at %v", i+1, ri.Sub(time.Now()).Seconds(), ri)
-				e.TraceRi(ri, resultPath)
-			case "burst":
-				ri := nextRi(now)
-				resultPath = mkResultPath(*clientResults, ri, "_burst_ul")
-				direction := UL
-				log.Printf("[Round %v] Schedule %s burst in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
-				e.BurstRi(ri, resultPath, direction)
-
-				ri = nextRi(now.Add(15 * time.Second))
-				resultPath = mkResultPath(*clientResults, ri, "_burst_dl")
-				direction = DL
-				log.Printf("[Round %v] Schedule %s burst in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
-				e.BurstRi(ri, resultPath, direction)
-			case "prograte":
-				ri := nextRi(now)
-				resultPath = mkResultPath(*clientResults, ri, "_prograte_ul")
-				direction := UL
-				log.Printf("[Round %v] Schedule %s prograte in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
-				e.ProgressiveRate(ri, resultPath, direction)
-
-				ri = nextRi(now.Add(15 * time.Second))
-				resultPath = mkResultPath(*clientResults, ri, "_prograte_dl")
-				direction = DL
-				log.Printf("[Round %v] Schedule %s prograte in %.2f s at %v", i+1, direction, ri.Sub(time.Now()).Seconds(), ri)
-				e.ProgressiveRate(ri, resultPath, direction)
-			case "cooldown":
-				ri := nextRi(now)
-				resultPath = mkResultPath(*clientResults, ri, "_cooldown_ul")
-				direction := UL
-				log.Printf("[Round %v] Schedule %s %s in %.2f s at %v", i+1, direction, *clientProcedure, ri.Sub(time.Now()).Seconds(), ri)
-				e.CoolDown(ri, resultPath, direction)
-
-				ri = nextRi(now.Add(15 * time.Second))
-				resultPath = mkResultPath(*clientResults, ri, "_cooldown_dl")
-				direction = DL
-				log.Printf("[Round %v] Schedule %s %s in %.2f s at %v", i+1, direction, *clientProcedure, ri.Sub(time.Now()).Seconds(), ri)
-				e.CoolDown(ri, resultPath, direction)
-			case "cdsf":
-				ri := nextRi(now)
-				resultPath = mkResultPath(*clientResults, ri, "_cdsf_ul")
-				direction := UL
-				log.Printf("[Round %v] Schedule %s %s in %.2f s at %v", i+1, direction, *clientProcedure, ri.Sub(time.Now()).Seconds(), ri)
-				e.CoolDownSameFlow(ri, resultPath, direction)
-
-				ri = nextRi(now.Add(15 * time.Second))
-				resultPath = mkResultPath(*clientResults, ri, "_cdsf_dl")
-				direction = DL
-				log.Printf("[Round %v] Schedule %s %s in %.2f s at %v", i+1, direction, *clientProcedure, ri.Sub(time.Now()).Seconds(), ri)
-				e.CoolDownSameFlow(ri, resultPath, direction)
-			default:
-				log.Fatalf("Unknown -procedure '%v'", *clientProcedure)
-			}
-
-			if err := e.G.Wait(); err != nil {
-				log.Fatalf("%v", err.Error())
-			}
-
-			log.Printf("Gathering results...")
-			start := time.Now()
-			if err := e.GatherResults(); err != nil {
-				log.Fatalf("Failed gathering results: %v", err.Error())
-			}
-			duration := time.Now().Sub(start)
-			log.Printf("Gathered results in %.2f seconds", duration.Seconds())
-
-			if err := e.WriteInfo(resultPath); err != nil {
-				log.Printf("Failed writing info: %v", err.Error())
-			}
+		params, err := parseParams(*clientParams)
+		if err != nil {
+			log.Fatalf("Failed parsing params: %v", err.Error())
 		}
+
+		client := Client{
+			Ip:        *clientIp,
+			Port:      *clientPort,
+			Results:   *clientResults,
+			Rounds:    *clientRounds,
+			Procedure: *clientProcedure,
+			Params:    params,
+		}
+		client.Run()
 
 	case "server":
 		serverCmd.Parse(os.Args[2:])
@@ -160,6 +92,120 @@ func main() {
 		fmt.Println("expected 'client' or 'server' subcommands")
 		os.Exit(1)
 	}
+}
+
+type ParamMap map[string]any
+
+func (p ParamMap) Direction() (Direction, error) {
+	value, ok := p["direction"]
+	if !ok {
+		return 999, fmt.Errorf("Direction parameter not present")
+	}
+	directionStr, ok := value.(string)
+	if !ok {
+		return 999, fmt.Errorf("Direction parameter must be string")
+	}
+	direction, err := ParseDirection(directionStr)
+	if err != nil {
+		return 999, err
+	}
+	return direction, nil
+}
+
+// Parses comma-separated key=value pairs
+// If value contains whitespace, value is parsed as a list
+func parseParams(paramStr string) (ParamMap, error) {
+	params := make(map[string]any)
+	if paramStr == "" {
+		return params, nil
+	}
+	for _, kv := range strings.Split(paramStr, ",") {
+		parts := strings.Split(kv, "=")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("Invalid key-value pair: %v", kv)
+		}
+		key := parts[0]
+		value := parts[1]
+		valueParts := strings.Split(value, " ")
+		if len(valueParts) == 1 {
+			params[key] = value
+		} else {
+			params[key] = valueParts
+		}
+	}
+	return params, nil
+}
+
+type ProcedureFunc func(time.Time, string, ParamMap)
+
+type Client struct {
+	Ip        string
+	Port      uint
+	Results   string
+	Rounds    uint
+	Procedure string
+	Params    map[string]any
+
+	round uint
+}
+
+func (c *Client) Run() {
+	for i := range c.Rounds {
+		e := NewExecutor(c.Ip, c.Port)
+		now := time.Now()
+		resultPath := ""
+		c.round = i
+
+		proceduresUlDl := map[string]ProcedureFunc{
+			"burst":    e.BurstRi,
+			"prograte": e.ProgressiveRate,
+			"cooldown": e.CoolDown,
+			"cdsf":     e.CoolDownSameFlow,
+		}
+
+		if fn, ok := proceduresUlDl[c.Procedure]; ok {
+			if _, ok := c.Params["direction"]; ok {
+				c.executeProcedure(now, fn, c.Params)
+			} else {
+				params := maps.Clone(c.Params)
+				params["direction"] = UL.String()
+				c.executeProcedure(now, fn, params)
+				params["direction"] = DL.String()
+				c.executeProcedure(now.Add(15*time.Second), fn, params)
+			}
+		} else if c.Procedure == "trace" {
+			c.executeProcedure(now, fn, c.Params)
+		} else {
+			log.Fatalf("Unknown -procedure '%v'", c.Procedure)
+		}
+
+		if err := e.G.Wait(); err != nil {
+			log.Fatalf("%v", err.Error())
+		}
+
+		log.Printf("Gathering results...")
+		start := time.Now()
+		if err := e.GatherResults(); err != nil {
+			log.Fatalf("Failed gathering results: %v", err.Error())
+		}
+		duration := time.Now().Sub(start)
+		log.Printf("Gathered results in %.2f seconds", duration.Seconds())
+
+		if err := e.WriteInfo(resultPath); err != nil {
+			log.Printf("Failed writing info: %v", err.Error())
+		}
+	}
+}
+
+func (c *Client) executeProcedure(ts time.Time, fn ProcedureFunc, params ParamMap) {
+	ri := nextRi(ts)
+	log.Printf("[Round %v] Schedule %s %s in %.2fs at %v", c.round, params["direction"], c.Procedure, ri.Sub(time.Now()).Seconds(), ri)
+	name := "_" + c.Procedure
+	if direction, ok := params["direction"]; ok {
+		name += "_" + strings.ToLower(direction.(string))
+	}
+	resultPath := mkResultPath(c.Results, ri, name)
+	fn(ri, resultPath, params)
 }
 
 func nextRi(ts time.Time) time.Time {
@@ -238,6 +284,17 @@ func (d Direction) StringLower() string {
 	return strings.ToLower(d.String())
 }
 
+func ParseDirection(direction string) (Direction, error) {
+	switch direction {
+	case "ul", "UL":
+		return UL, nil
+	case "dl", "DL":
+		return DL, nil
+	default:
+		return 999, fmt.Errorf("Unknown Direction value '%s'", direction)
+	}
+}
+
 type Executor struct {
 	Ip        string
 	Port      uint
@@ -288,9 +345,7 @@ func (e *Executor) WriteInfo(path string) error {
 	return nil
 }
 
-func (e *Executor) TraceRi(ts time.Time, resultPath string) []pkg.Client {
-	var clients []pkg.Client
-
+func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	owdStart := ts.Add(7 * time.Second)
 	e.RunClient(&pkg.SenderClient{
 		Ip:      e.Ip,
@@ -365,19 +420,21 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string) []pkg.Client {
 			LocalDir: resultPath,
 		})
 	}
-
-	return clients
 }
 
-func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, direction Direction) []pkg.Client {
-	var clients []pkg.Client
+func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params ParamMap) {
+	direction, err := params.Direction()
+	if err != nil {
+		log.Fatalf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
 
 	smallGap := 500 * time.Millisecond
 	largeGap := 1500 * time.Millisecond
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
+	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
+	durationsMs := []int{100, 200, 300, 350, 400, 450, 500}
 
 	// Execute the bursts in random order
 	for _, idx := range rand.Perm(len(durationsMs)) {
@@ -434,29 +491,42 @@ func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, direction Di
 			LocalDir: resultPath,
 		})
 	}
-
-	return clients
 }
 
-func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction) []pkg.Client {
-	var clients []pkg.Client
+func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
+	direction, err := params.Direction()
+	if err != nil {
+		log.Fatalf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
 
-	smallTimeout := 500 * time.Millisecond
-	largeTimeout := 2000 * time.Millisecond
+	// smallTimeout := 500 * time.Millisecond
+	// largeTimeout := 2000 * time.Millisecond
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
 	// nums := []uint{1, 10, 50, 100, 150, 200, 250, 300, 400, 550, 700, 850, 1000, 2000}
 	// nums := []uint{1, 10, 20, 30, 40, 50, 100, 150, 200, 250, 300, 400, 500, 1000, 2000}
-	nums := []uint{100, 1000, 2000, 3000, 4000, 5000, 6000}
+	var nums []uint
+	var gaps []time.Duration
+	if direction == UL {
+		nums = []uint{100, 500, 750, 1000, 2000, 3000, 4000, 5000}
+		gaps = []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond, 2500 * time.Millisecond}
+	} else {
+		nums = []uint{100, 500, 750, 1000, 2000, 3000, 4000, 5000}
+		gaps = []time.Duration{500 * time.Millisecond, 1000 * time.Millisecond, 1500 * time.Millisecond}
+	}
 
 	// Execute the bursts in random order
-	for _, idx := range rand.Perm(len(nums) + 1) {
-		timeout := time.Duration(0)
+	for i, idx := range rand.Perm(len(nums) + 1) {
+		var gap time.Duration
 		// Special case: execute rate test
 		if idx == len(nums) {
 			duration := 2 * time.Second
-			timeout = duration + largeTimeout
+			gap = duration + gaps[2]
+			if start.Add(gap).After(deadline) {
+				log.Printf("Only executing %v/%v %v tests", i, len(nums), direction)
+				break
+			}
 			var pps uint
 			if direction == UL {
 				pps = 70 * 1e6 / 8 / 1400
@@ -478,12 +548,16 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 			})
 		} else {
 			num := nums[idx]
-			timeout = smallTimeout
-			// if num <= 500 {
-			// 	timeout = smallTimeout
-			// } else if num > 500 {
-			// 	timeout = largeTimeout
-			// }
+			gap = gaps[0]
+			if num <= 2000 {
+				gap = gaps[1]
+			} else {
+				gap = gaps[2]
+			}
+			if start.Add(gap).After(deadline) {
+				log.Printf("Only executing %v/%v %v tests", i, len(nums), direction)
+				break
+			}
 			e.RunClient(&pkg.SenderClient{
 				Ip:      e.Ip,
 				Port:    e.Port,
@@ -491,14 +565,14 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 				Reverse: direction.Reverse(),
 				StartAt: start,
 				Sender: &pkg.BurstSender{Params: pkg.BurstParams{
-					Timeout: timeout,
+					Timeout: 4 * time.Second,
 					Num:     num,
 					Pad:     1400,
 				}},
 			})
 		}
 
-		start = start.Add(timeout)
+		start = start.Add(gap)
 	}
 
 	if start.After(deadline) {
@@ -523,18 +597,13 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, direction Direction)
 			LocalDir: resultPath,
 		})
 	}
-
-	// e.G.Go(func() error {
-	// 	// Leave a gap between sending the last burst and requesting the results
-	// 	time.Sleep(time.Until(start.Add(len(nums) * timeout)))
-	// 	return nil
-	// })
-
-	return clients
 }
 
-func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction) []pkg.Client {
-	var clients []pkg.Client
+func (e *Executor) CoolDown(ts time.Time, resultPath string, params ParamMap) {
+	direction, err := params.Direction()
+	if err != nil {
+		log.Fatalf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
 
 	start := ts.Add(1 * time.Second)
 	duration := time.Duration(800) * time.Millisecond
@@ -626,18 +695,13 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, direction Direction
 	if start.After(nextRi(ts).Add(time.Second)) {
 		panic("Test takes longer than one RI")
 	}
-
-	// e.G.Go(func() error {
-	// 	// Leave a gap between sending the last burst and requesting the results
-	// 	time.Sleep(time.Until(start.Add(len(nums) * timeout)))
-	// 	return nil
-	// })
-
-	return clients
 }
 
-func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, direction Direction) []pkg.Client {
-	var clients []pkg.Client
+func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params ParamMap) {
+	direction, err := params.Direction()
+	if err != nil {
+		log.Fatalf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
 
 	start := ts.Add(1 * time.Second)
 	duration := time.Duration(800) * time.Millisecond
@@ -730,12 +794,4 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, direction D
 	if start.After(nextRi(ts).Add(time.Second)) {
 		panic("Test takes longer than one RI")
 	}
-
-	// e.G.Go(func() error {
-	// 	// Leave a gap between sending the last burst and requesting the results
-	// 	time.Sleep(time.Until(start.Add(len(nums) * timeout)))
-	// 	return nil
-	// })
-
-	return clients
 }

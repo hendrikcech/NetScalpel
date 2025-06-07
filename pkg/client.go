@@ -281,7 +281,7 @@ func (c *SenderClient) Summary() string {
 	numRcvd := len(c.MsgsRcvd)
 	numPackets := c.Sender.GetParams().NumPackets()
 	duration := c.Sender.GetParams().GetDuration()
-	b.WriteString(fmt.Sprintf("%s\t%v packets sent (target %v), %v rcvd (%.2f%% lost)",
+	b.WriteString(fmt.Sprintf("%f\t%v packets sent (target %v), %v rcvd (%.2f%% lost)",
 		duration.Seconds(), numSent, numPackets, numRcvd, 100.0-float64(numRcvd)/float64(numSent)*100))
 
 	bytesRcvd := uint(0)

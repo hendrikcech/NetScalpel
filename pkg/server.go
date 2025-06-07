@@ -170,7 +170,6 @@ func (s *Server) handleReceive(conn *ipv4.PacketConn, id uuid.UUID, req RequestU
 		s.resultsLock.Unlock()
 	}()
 
-	log.Printf("%v", req.StartAt)
 	if result.Err = waitUntil(req.StartAt); result.Err != nil {
 		return
 	}
@@ -179,7 +178,7 @@ func (s *Server) handleReceive(conn *ipv4.PacketConn, id uuid.UUID, req RequestU
 	if result.Res, result.Err = receiveFrom(conn); result.Err != nil {
 		return
 	}
-	log.Printf("Received %v packets\n", len(result.Res))
+	log.Printf("Received %v packets for %v\n", len(result.Res), id)
 }
 
 func (s *Server) handleSender(conn *ipv4.PacketConn, id uuid.UUID, sender Sender, req RequestUdpServerArgs) {
