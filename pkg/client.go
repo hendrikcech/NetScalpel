@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"bufio"
 	"encoding/csv"
 	"fmt"
 	"github.com/google/uuid"
@@ -283,7 +284,7 @@ func (c *SenderClient) Summary() string {
 	numRcvd := len(c.MsgsRcvd)
 	numPackets := c.Sender.GetParams().NumPackets()
 	duration := c.Sender.GetParams().GetDuration()
-	b.WriteString(fmt.Sprintf("%f\t%v packets sent (target %v), %v rcvd (%.2f%% lost)",
+	b.WriteString(fmt.Sprintf("%.3fs\t%v packets sent (target %v), %v rcvd (%.2f%% lost)",
 		duration.Seconds(), numSent, numPackets, numRcvd, 100.0-float64(numRcvd)/float64(numSent)*100))
 
 	bytesRcvd := uint(0)
@@ -309,7 +310,8 @@ type CommandClient struct {
 	StartAt  time.Time
 	LocalDir string
 
-	id uuid.UUID
+	id      uuid.UUID
+	tempDir string
 }
 
 func (c *CommandClient) Run(client *rpc.Client) error {
@@ -322,12 +324,18 @@ func (c *CommandClient) Run(client *rpc.Client) error {
 			return fmt.Errorf("Unknown params %v", c.Params)
 		}
 
-		cmd, err := command.Cmd(c.LocalDir)
+		var err error
+		c.tempDir, err = RandDir(c.Params.Name())
+		if err != nil {
+			return logErr("RunCommand: failed RandDir: %v", err.Error())
+		}
+
+		cmd, err := command.Cmd(c.tempDir)
 		if err != nil {
 			return logErr("RunCommand: failed command.Cmd: %v", err.Error())
 		}
 
-		log.Printf("Writing %v result to %v", c.Params.Name(), c.LocalDir)
+		log.Printf("Writing %v result to %v", c.Params.Name(), c.tempDir)
 
 		if err := waitUntil(c.StartAt); err != nil {
 			return err
@@ -348,7 +356,45 @@ func (c *CommandClient) Run(client *rpc.Client) error {
 }
 
 func (c *CommandClient) Gather(client *rpc.Client) error {
-	if !c.Local {
+	if c.Local {
+		entries, err := os.ReadDir(c.tempDir)
+		if err != nil {
+			return logErr("Failed os.ReadDir(%v): %v", c.tempDir, err.Error())
+		}
+
+		for _, entry := range entries {
+			path := filepath.Join(c.tempDir, entry.Name())
+
+			if entry.IsDir() {
+				log.Printf("Skipping directory %v", path)
+				continue
+			}
+
+			encPath := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", entry.Name()))
+			f, err := os.Create(encPath)
+			if err != nil {
+				return fmt.Errorf("Failed os.Create(%v): %v", encPath, err.Error())
+			}
+
+			fW := bufio.NewWriter(f)
+			if err := CompressFile(path, fW); err != nil {
+				return fmt.Errorf("Failed compression: %v", err.Error())
+			}
+			fW.Flush()
+
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("Failed closing compressed file %v: %v", encPath, err.Error())
+			}
+
+			if err := os.Remove(path); err != nil {
+				log.Printf("Failed to remove %v after reading", path)
+			}
+		}
+
+		if err := os.Remove(c.tempDir); err != nil {
+			log.Printf("Failed to remove result directory %v", c.tempDir)
+		}
+	} else {
 		if c.id == uuid.Nil {
 			return fmt.Errorf("No command ID set")
 		}
@@ -363,7 +409,7 @@ func (c *CommandClient) Gather(client *rpc.Client) error {
 		log.Printf("Received results for %T %v", c.Params, c.id)
 
 		for filename, bufEnc := range result.Files {
-			path := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zstd", filename))
+			path := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", filename))
 			if err := os.WriteFile(path, bufEnc, 0644); err != nil {
 				return fmt.Errorf("Failed writing returned file to %v: %v", path, err.Error())
 			}

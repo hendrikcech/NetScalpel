@@ -1,6 +1,8 @@
 package pkg
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"net"
@@ -382,18 +384,20 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 	reply.Files = make(map[string][]byte, len(entries))
 
 	for _, entry := range entries {
-		if entry.IsDir() {
-			return logErr("Skipping directory %v", entry.Name())
-		}
-
 		path := filepath.Join(result.Path, entry.Name())
 
-		buf, err := CompressFile(path)
-		if err != nil {
-			return logErr("Failed compression: %v", err.Error())
+		if entry.IsDir() {
+			return logErr("Skipping directory %v", path)
 		}
 
-		reply.Files[entry.Name()] = buf
+		var buf bytes.Buffer
+		w := bufio.NewWriter(&buf)
+		if err := CompressFile(path, w); err != nil {
+			return logErr("Failed compression: %v", err.Error())
+		}
+		w.Flush()
+
+		reply.Files[entry.Name()] = buf.Bytes()
 		if err := os.Remove(path); err != nil {
 			log.Printf("Failed to remove %v after reading", path)
 		}

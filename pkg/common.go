@@ -2,7 +2,6 @@ package pkg
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
@@ -50,38 +49,55 @@ func waitUntil(startAt time.Time) error {
 	return nil
 }
 
-func CompressFile(path string) ([]byte, error) {
+func CompressFile(path string, w io.Writer) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to open file %v: %v", path, err)
+		return fmt.Errorf("Failed to open file %v: %v", path, err)
 	}
 	defer f.Close()
 	fr := bufio.NewReader(f)
 
-	var buf bytes.Buffer
-	w := bufio.NewWriter(&buf)
-
 	enc, err := zstd.NewWriter(w)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create compression writer for %v: %v", path, err)
+		return fmt.Errorf("Failed to create compression writer for %v: %v", path, err)
 	}
 
 	// Feed the encoder with input
 	if _, err := io.Copy(enc, fr); err != nil {
 		_ = enc.Close()
-		return nil, fmt.Errorf("Failed to compress file %v: %v", path, err)
+		return fmt.Errorf("Failed to compress file %v: %v", path, err)
 	}
 
 	// Flush the last data from the encoder and close it
 	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("Failed to close the encoder %v: %v", path, err)
+		return fmt.Errorf("Failed to close the encoder %v: %v", path, err)
 	}
 
-	// Important!
-	w.Flush()
+	// Important: don't forget to call Flush on w
 
-	return buf.Bytes(), nil
+	return nil
 }
+
+// Decompress file
+// f, err := os.Create(path)
+// if err != nil {
+// 	return fmt.Errorf("Failed os.Create(%v): %v", path, err.Error())
+// }
+// defer f.Close()
+// fW := bufio.NewWriter(f)
+// defer fW.Flush()
+
+// encR := bytes.NewReader(bufEnc)
+// dec, err := zstd.NewReader(encR)
+// if err != nil {
+// 	return fmt.Errorf("Failed creating decoder for %v: %v", path, err.Error())
+// }
+// defer dec.Close()
+
+// nWritten, err := io.Copy(fW, dec)
+// if err != nil {
+// 	return fmt.Errorf("Failed writing returned file to %v: %v", path, err.Error())
+// }
 
 type Direction int
 
