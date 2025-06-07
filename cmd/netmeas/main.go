@@ -20,7 +20,7 @@ func main() {
 	burstPad := burstCmd.Uint("pad", 0, "pad")
 	burstTimeout := burstCmd.Uint("timeout", 1000, "server timeout in milliseconds")
 	burstOut := burstCmd.String("o", "", "write csv to logfile (default stdout)")
-	burstRev := burstCmd.Bool("reverse", false, "Send from server to client")
+	burstDirection := burstCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
 
 	rateCmd := flag.NewFlagSet("rate", flag.ExitOnError)
 	rateIp := rateCmd.String("ip", "", "ip")
@@ -28,7 +28,7 @@ func main() {
 	rateRate := rateCmd.Float64("rate", 0, "rate in Mbps")
 	rateDuration := rateCmd.Float64("duration", 5, "duration in seconds")
 	rateOut := rateCmd.String("o", "", "write csv to logfile (default stdout)")
-	rateRev := rateCmd.Bool("reverse", false, "Send from server to client")
+	rateDirection := rateCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
 
 	periodicCmd := flag.NewFlagSet("periodic", flag.ExitOnError)
 	periodicIp := periodicCmd.String("ip", "", "ip")
@@ -37,7 +37,7 @@ func main() {
 	periodicInterval := periodicCmd.Uint("interval", 1000, "interval in milliseconds")
 	periodicDuration := periodicCmd.Float64("duration", 5, "duration in seconds")
 	periodicOut := periodicCmd.String("o", "", "write csv to logfile (default stdout)")
-	periodicRev := periodicCmd.Bool("reverse", false, "Send from server to client")
+	periodicDirection := periodicCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	serverIp := serverCmd.String("ip", "0.0.0.0", "ip")
@@ -66,14 +66,19 @@ func main() {
 			fmt.Println("expected -port")
 			os.Exit(1)
 		}
+		direction, err := pkg.ParseDirection(*burstDirection)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
 
 		rpcClient = dialRpcClient(*burstIp, *burstPort)
 
 		client = &pkg.SenderClient{
-			Ip:      *burstIp,
-			Port:    *burstPort,
-			Out:     *burstOut,
-			Reverse: *burstRev,
+			Ip:        *burstIp,
+			Port:      *burstPort,
+			Out:       *burstOut,
+			Direction: direction,
 
 			Sender: &pkg.BurstSender{Params: pkg.BurstParams{
 				Timeout: time.Duration(*burstTimeout) * time.Millisecond,
@@ -95,14 +100,19 @@ func main() {
 			fmt.Println("expected -rate")
 			os.Exit(1)
 		}
+		direction, err := pkg.ParseDirection(*rateDirection)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
 
 		rpcClient = dialRpcClient(*rateIp, *ratePort)
 
 		client = &pkg.SenderClient{
-			Ip:      *rateIp,
-			Port:    *ratePort,
-			Out:     *rateOut,
-			Reverse: *rateRev,
+			Ip:        *rateIp,
+			Port:      *ratePort,
+			Out:       *rateOut,
+			Direction: direction,
 
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         uint(*rateRate * 1e6 / 8 / 1400),
@@ -122,14 +132,19 @@ func main() {
 			fmt.Println("expected -port")
 			os.Exit(1)
 		}
+		direction, err := pkg.ParseDirection(*periodicDirection)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
 
 		rpcClient = dialRpcClient(*periodicIp, *periodicPort)
 
 		client = &pkg.SenderClient{
-			Ip:      *periodicIp,
-			Port:    *periodicPort,
-			Out:     *periodicOut,
-			Reverse: *periodicRev,
+			Ip:        *periodicIp,
+			Port:      *periodicPort,
+			Out:       *periodicOut,
+			Direction: direction,
 
 			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
 				Interval: time.Duration(*periodicInterval) * time.Millisecond,

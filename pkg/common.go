@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -80,4 +81,37 @@ func CompressFile(path string) ([]byte, error) {
 	w.Flush()
 
 	return buf.Bytes(), nil
+}
+
+type Direction int
+
+const (
+	UL Direction = iota
+	DL
+)
+
+func (d Direction) String() string {
+	switch d {
+	case UL:
+		return "UL"
+	case DL:
+		return "DL"
+	default:
+		panic("Unknown Direction enum type")
+	}
+}
+
+func (d Direction) StringLower() string {
+	return strings.ToLower(d.String())
+}
+
+func ParseDirection(direction string) (Direction, error) {
+	switch direction {
+	case "ul", "UL":
+		return UL, nil
+	case "dl", "DL":
+		return DL, nil
+	default:
+		return 999, fmt.Errorf("Unknown Direction value '%s'", direction)
+	}
 }

@@ -94,9 +94,11 @@ func main() {
 	}
 }
 
+type ProcedureFunc func(time.Time, string, ParamMap)
+
 type ParamMap map[string]any
 
-func (p ParamMap) Direction() (Direction, error) {
+func (p ParamMap) Direction() (pkg.Direction, error) {
 	value, ok := p["direction"]
 	if !ok {
 		return 999, fmt.Errorf("Direction parameter not present")
@@ -105,7 +107,7 @@ func (p ParamMap) Direction() (Direction, error) {
 	if !ok {
 		return 999, fmt.Errorf("Direction parameter must be string")
 	}
-	direction, err := ParseDirection(directionStr)
+	direction, err := pkg.ParseDirection(directionStr)
 	if err != nil {
 		return 999, err
 	}
@@ -135,8 +137,6 @@ func parseParams(paramStr string) (ParamMap, error) {
 	}
 	return params, nil
 }
-
-type ProcedureFunc func(time.Time, string, ParamMap)
 
 type Client struct {
 	Ip        string
@@ -168,9 +168,9 @@ func (c *Client) Run() {
 				c.executeProcedure(now, fn, c.Params)
 			} else {
 				params := maps.Clone(c.Params)
-				params["direction"] = UL.String()
+				params["direction"] = pkg.UL.String()
 				c.executeProcedure(now, fn, params)
-				params["direction"] = DL.String()
+				params["direction"] = pkg.DL.String()
 				c.executeProcedure(now.Add(15*time.Second), fn, params)
 			}
 		} else if c.Procedure == "trace" {
@@ -251,50 +251,6 @@ func dumpOnSig() {
 	}
 }
 
-type Direction int
-
-const (
-	UL Direction = iota
-	DL
-)
-
-func (d Direction) Reverse() bool {
-	switch d {
-	case UL:
-		return false
-	case DL:
-		return true
-	default:
-		panic("Unknown Direction enum type")
-	}
-}
-
-func (d Direction) String() string {
-	switch d {
-	case UL:
-		return "UL"
-	case DL:
-		return "DL"
-	default:
-		panic("Unknown Direction enum type")
-	}
-}
-
-func (d Direction) StringLower() string {
-	return strings.ToLower(d.String())
-}
-
-func ParseDirection(direction string) (Direction, error) {
-	switch direction {
-	case "ul", "UL":
-		return UL, nil
-	case "dl", "DL":
-		return DL, nil
-	default:
-		return 999, fmt.Errorf("Unknown Direction value '%s'", direction)
-	}
-}
-
 type Executor struct {
 	Ip        string
 	Port      uint
@@ -348,11 +304,11 @@ func (e *Executor) WriteInfo(path string) error {
 func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	owdStart := ts.Add(7 * time.Second)
 	e.RunClient(&pkg.SenderClient{
-		Ip:      e.Ip,
-		Port:    e.Port,
-		Out:     filepath.Join(resultPath, "owd_ul.csv"),
-		Reverse: false,
-		StartAt: owdStart,
+		Ip:        e.Ip,
+		Port:      e.Port,
+		Out:       filepath.Join(resultPath, "owd_ul.csv"),
+		Direction: pkg.UL,
+		StartAt:   owdStart,
 		Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
 			Interval: time.Millisecond,
 			Duration: time.Duration(3) * time.Second,
@@ -361,11 +317,11 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	})
 
 	e.RunClient(&pkg.SenderClient{
-		Ip:      e.Ip,
-		Port:    e.Port,
-		Out:     filepath.Join(resultPath, "owd_dl.csv"),
-		Reverse: true,
-		StartAt: owdStart,
+		Ip:        e.Ip,
+		Port:      e.Port,
+		Out:       filepath.Join(resultPath, "owd_dl.csv"),
+		Direction: pkg.DL,
+		StartAt:   owdStart,
 		Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
 			Interval: time.Millisecond,
 			Duration: time.Duration(3) * time.Second,
@@ -375,11 +331,11 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 
 	rateStart := ts.Add(11 * time.Second)
 	e.RunClient(&pkg.SenderClient{
-		Ip:      e.Ip,
-		Port:    e.Port,
-		Out:     filepath.Join(resultPath, "rate_ul.csv"),
-		Reverse: false,
-		StartAt: rateStart,
+		Ip:        e.Ip,
+		Port:      e.Port,
+		Out:       filepath.Join(resultPath, "rate_ul.csv"),
+		Direction: pkg.UL,
+		StartAt:   rateStart,
 		Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 			Pps:         70 * 1e6 / 8 / 1400,
 			Interval:    time.Millisecond,
@@ -389,11 +345,11 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	})
 
 	e.RunClient(&pkg.SenderClient{
-		Ip:      e.Ip,
-		Port:    e.Port,
-		Out:     filepath.Join(resultPath, "rate_dl.csv"),
-		Reverse: true,
-		StartAt: rateStart,
+		Ip:        e.Ip,
+		Port:      e.Port,
+		Out:       filepath.Join(resultPath, "rate_dl.csv"),
+		Direction: pkg.DL,
+		StartAt:   rateStart,
 		Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 			Pps:         700 * 1e6 / 8 / 1400,
 			Interval:    time.Millisecond,
@@ -447,17 +403,17 @@ func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params Param
 			gap = largeGap
 		}
 		var pps uint
-		if direction == UL {
+		if direction == pkg.UL {
 			pps = 70 * 1e6 / 8 / 1400
 		} else {
 			pps = 700 * 1e6 / 8 / 1400
 		}
 		e.RunClient(&pkg.SenderClient{
-			Ip:      e.Ip,
-			Port:    e.Port,
-			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), durationMs)),
-			Reverse: direction.Reverse(),
-			StartAt: start,
+			Ip:        e.Ip,
+			Port:      e.Port,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), durationMs)),
+			Direction: direction,
+			StartAt:   start,
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         pps,
 				Interval:    time.Millisecond,
@@ -508,7 +464,7 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
 	// nums := []uint{1, 10, 20, 30, 40, 50, 100, 150, 200, 250, 300, 400, 500, 1000, 2000}
 	var nums []uint
 	var gaps []time.Duration
-	if direction == UL {
+	if direction == pkg.UL {
 		nums = []uint{100, 500, 750, 1000, 2000, 3000, 4000, 5000}
 		gaps = []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond, 2500 * time.Millisecond}
 	} else {
@@ -528,17 +484,17 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
 				break
 			}
 			var pps uint
-			if direction == UL {
+			if direction == pkg.UL {
 				pps = 70 * 1e6 / 8 / 1400
 			} else {
 				pps = 700 * 1e6 / 8 / 1400
 			}
 			e.RunClient(&pkg.SenderClient{
-				Ip:      e.Ip,
-				Port:    e.Port,
-				Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v.csv", direction.StringLower())),
-				Reverse: direction.Reverse(),
-				StartAt: start,
+				Ip:        e.Ip,
+				Port:      e.Port,
+				Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v.csv", direction.StringLower())),
+				Direction: direction,
+				StartAt:   start,
 				Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 					Pps:         pps,
 					Interval:    time.Millisecond,
@@ -559,11 +515,11 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
 				break
 			}
 			e.RunClient(&pkg.SenderClient{
-				Ip:      e.Ip,
-				Port:    e.Port,
-				Out:     filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d.csv", direction.StringLower(), num)),
-				Reverse: direction.Reverse(),
-				StartAt: start,
+				Ip:        e.Ip,
+				Port:      e.Port,
+				Out:       filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d.csv", direction.StringLower(), num)),
+				Direction: direction,
+				StartAt:   start,
 				Sender: &pkg.BurstSender{Params: pkg.BurstParams{
 					Timeout: 4 * time.Second,
 					Num:     num,
@@ -610,18 +566,18 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, params ParamMap) {
 	deadline := nextRi(ts).Add(-time.Second)
 
 	var pps uint
-	if direction == UL {
+	if direction == pkg.UL {
 		pps = 70 * 1e6 / 8 / 1400
 	} else {
 		pps = 700 * 1e6 / 8 / 1400
 	}
 
 	e.RunClient(&pkg.SenderClient{
-		Ip:      e.Ip,
-		Port:    e.Port,
-		Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_init.csv", direction.StringLower())),
-		Reverse: direction.Reverse(),
-		StartAt: start,
+		Ip:        e.Ip,
+		Port:      e.Port,
+		Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_init.csv", direction.StringLower())),
+		Direction: direction,
+		StartAt:   start,
 		Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 			Pps:         pps,
 			Interval:    time.Millisecond,
@@ -654,11 +610,11 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, params ParamMap) {
 		coolDowns = append(coolDowns, coolDownMs)
 
 		e.RunClient(&pkg.SenderClient{
-			Ip:      e.Ip,
-			Port:    e.Port,
-			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
-			Reverse: direction.Reverse(),
-			StartAt: start,
+			Ip:        e.Ip,
+			Port:      e.Port,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
+			Direction: direction,
+			StartAt:   start,
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         pps,
 				Interval:    time.Millisecond,
@@ -709,7 +665,7 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 	deadline := nextRi(ts).Add(-time.Second)
 
 	var pps uint
-	if direction == UL {
+	if direction == pkg.UL {
 		pps = 70 * 1e6 / 8 / 1400
 	} else {
 		pps = 700 * 1e6 / 8 / 1400
@@ -739,11 +695,11 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 		coolDowns = append(coolDowns, coolDownMs)
 
 		e.RunClient(&pkg.SenderClient{
-			Ip:      e.Ip,
-			Port:    e.Port,
-			Out:     filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
-			Reverse: direction.Reverse(),
-			StartAt: start,
+			Ip:        e.Ip,
+			Port:      e.Port,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
+			Direction: direction,
+			StartAt:   start,
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{
 				pkg.RateParams{
 					Pps:         pps,

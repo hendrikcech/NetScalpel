@@ -35,11 +35,11 @@ type MsgResult struct {
 }
 
 type SenderClient struct {
-	Ip      string
-	Port    uint
-	Out     string
-	Reverse bool
-	StartAt time.Time
+	Ip        string
+	Port      uint
+	Out       string
+	Direction Direction
+	StartAt   time.Time
 
 	Sender Sender
 
@@ -51,7 +51,8 @@ type SenderClient struct {
 }
 
 func (c *SenderClient) Run(client *rpc.Client) error {
-	if !c.Reverse {
+	switch c.Direction {
+	case UL:
 		args := RequestUdpServerArgs{
 			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
 			StartAt: c.StartAt,
@@ -79,7 +80,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		if err != nil {
 			return fmt.Errorf("send failed: %v\n", err)
 		}
-	} else {
+	case DL:
 		args := RequestUdpServerArgs{
 			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
 			StartAt: c.StartAt,
@@ -160,7 +161,8 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 func (c *SenderClient) Gather(client *rpc.Client) error {
 	log.Printf("Requesting results for %T %v", c.Sender, c.id)
 
-	if !c.Reverse {
+	switch c.Direction {
+	case UL:
 		// Gather results
 		var result RequestUdpServerResultReply
 		if err := client.Call("Server.RequestUdpServerResult",
@@ -168,7 +170,7 @@ func (c *SenderClient) Gather(client *rpc.Client) error {
 			return fmt.Errorf("Call Server.RequestUdpServerResult failed: %v", err.Error())
 		}
 		c.MsgsRcvd = result.MsgRcvd()
-	} else {
+	case DL:
 		var result RequestUdpServerResultReply
 		if err := client.Call("Server.RequestUdpServerResult",
 			RequestUdpServerResultArgs{Id: c.id}, &result); err != nil {

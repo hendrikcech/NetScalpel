@@ -27,10 +27,10 @@ func dialRpcClient(ip string, port uint) (*rpc.Client, error) {
 
 func TestBurst(t *testing.T) {
 	client := SenderClient{
-		Ip:      ip,
-		Port:    serverPort(),
-		Out:     "",
-		Reverse: false,
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: UL,
 
 		Sender: &BurstSender{Params: BurstParams{
 			Timeout: time.Duration(100) * time.Millisecond,
@@ -45,10 +45,10 @@ func TestBurst(t *testing.T) {
 
 func TestBurstReverse(t *testing.T) {
 	client := SenderClient{
-		Ip:      ip,
-		Port:    serverPort(),
-		Out:     "",
-		Reverse: true,
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: DL,
 
 		Sender: &BurstSender{Params: BurstParams{
 			Timeout: time.Duration(100) * time.Millisecond,
@@ -67,10 +67,10 @@ func TestRateUL(t *testing.T) {
 	packets := pps * durationS
 
 	client := SenderClient{
-		Ip:      ip,
-		Port:    serverPort(),
-		Out:     "",
-		Reverse: false,
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: UL,
 
 		Sender: &RateSender{Params: []RateParams{RateParams{
 			Pps:         pps,
@@ -87,16 +87,16 @@ func TestRateUL(t *testing.T) {
 	}
 }
 
-func TestRateReverse(t *testing.T) {
+func TestRateDL(t *testing.T) {
 	pps := uint(100)
 	durationS := uint(1)
 	packets := pps * durationS
 
 	client := SenderClient{
-		Ip:      ip,
-		Port:    serverPort(),
-		Out:     "",
-		Reverse: true,
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: DL,
 
 		Sender: &RateSender{Params: []RateParams{RateParams{
 			Pps:         pps,
@@ -115,10 +115,10 @@ func TestRateReverse(t *testing.T) {
 
 func TestRateZeroPps(t *testing.T) {
 	client := SenderClient{
-		Ip:      ip,
-		Port:    serverPort(),
-		Out:     "",
-		Reverse: false,
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: UL,
 
 		Sender: &RateSender{Params: []RateParams{RateParams{
 			Pps:         0,
