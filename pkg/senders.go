@@ -79,16 +79,24 @@ func OpenUdpPacketConn(ip string, port uint) (*ipv4.PacketConn, *net.UDPAddr, *n
 
 func setSocketBuffers(conn *net.UDPConn) {
 	udpBufferSize := 15_000_000
+	sndPrev, rcvPrev, _ := getSocketBuffers(conn)
 	errWrite := conn.SetWriteBuffer(udpBufferSize)
 	errRead := conn.SetReadBuffer(udpBufferSize)
-	sndBuf, rcvBuf, errGet := getSocketBuffer(conn)
+	sndBuf, rcvBuf, errGet := getSocketBuffers(conn)
 	if errWrite != nil || errRead != nil || errGet != nil || sndBuf < udpBufferSize || rcvBuf < udpBufferSize {
-		log.Printf("Failed to set the UDP buffers to %v; snd=%v rcv=%v: %v %v %v\n",
-			udpBufferSize, sndBuf, rcvBuf, errWrite, errRead, errGet)
+		// log.Printf("Failed to set the UDP buffers to %v; snd %v->%v, rcv %v->%v; errors: %v %v %v",
+		// 	udpBufferSize, sndPrev, sndBuf, rcvPrev, rcvBuf, errWrite, errRead, errGet)
+
+		errForce := forceSetSocketBuffers(conn, udpBufferSize)
+		sndBuf, rcvBuf, errGet = getSocketBuffers(conn)
+		if sndBuf < udpBufferSize || rcvBuf < udpBufferSize {
+			log.Printf("Failed setting UDP socket buffers to %v: snd %v->%v, rcv %v->%v; errors: %v %v %v %v",
+				udpBufferSize, sndPrev, sndBuf, rcvPrev, rcvBuf, errWrite, errRead, errGet, errForce)
+		}
 	}
 }
 
-func getSocketBuffer(conn *net.UDPConn) (int, int, error) {
+func getSocketBuffers(conn *net.UDPConn) (int, int, error) {
 	fd, err := conn.File()
 	defer fd.Close()
 	if err != nil {
@@ -109,6 +117,24 @@ func getSocketBuffer(conn *net.UDPConn) (int, int, error) {
 	return snd, rcv, nil
 }
 
+func forceSetSocketBuffers(conn *net.UDPConn, size int) error {
+	fd, err := conn.File()
+	defer fd.Close()
+	if err != nil {
+		return err
+	}
+	// Necessary to continue make Deadline work on conn: https://stackoverflow.com/a/74886460
+	defer syscall.SetNonblock(int(fd.Fd()), true)
+
+	if err := syscall.SetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_SNDBUFFORCE, size);err != nil {
+		return err
+	}
+	if err := syscall.SetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_RCVBUFFORCE, size); err != nil {
+		return err
+	}
+
+	return nil
+}
 func receiveFromSingle(conn *ipv4.PacketConn, num uint) []MsgRcvd {
 	msgs := make([]MsgRcvd, 0, num)
 
