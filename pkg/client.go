@@ -150,9 +150,9 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			return fmt.Errorf("Failed to SetReadDeadline: %v\n", err.Error())
 		}
 
-		c.MsgsRcvd, err = receiveFrom(conn, c.Sender.GetParams().NumPackets())
+		c.MsgsRcvd, err = ReceiveFrom(conn, c.Sender.GetParams().NumPackets())
 		if err != nil {
-			log.Printf("Failed receiveFrom: %v", err.Error())
+			log.Printf("Failed ReceiveFrom: %v", err.Error())
 		}
 
 		log.Printf("Received %v packets", len(c.MsgsRcvd))

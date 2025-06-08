@@ -146,15 +146,37 @@ func enableTxTimestamping(conn *net.UDPConn) error {
 	}
 
 	err = rawConn.Control(func(fd uintptr) {
-		timestampingFlags := unix.SOF_TIMESTAMPING_TX_SOFTWARE |
+		flags := unix.SOF_TIMESTAMPING_TX_SOFTWARE |
 			unix.SOF_TIMESTAMPING_TX_HARDWARE |
 			unix.SOF_TIMESTAMPING_SOFTWARE |
 			unix.SOF_TIMESTAMPING_RAW_HARDWARE |
 			unix.SOF_TIMESTAMPING_OPT_ID
 		// unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, timestampingFlags); err != nil {
+		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags); err != nil {
 			err = fmt.Errorf("Failed enabling tx timestamping: %v", err.Error())
+		}
+	})
+
+	return err
+}
+
+func enableRxTimestamping(conn *net.UDPConn) error {
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+
+	err = rawConn.Control(func(fd uintptr) {
+		flags := unix.SOF_TIMESTAMPING_RX_SOFTWARE |
+			unix.SOF_TIMESTAMPING_RX_HARDWARE |
+			unix.SOF_TIMESTAMPING_SOFTWARE |
+			unix.SOF_TIMESTAMPING_RAW_HARDWARE |
+			unix.SOF_TIMESTAMPING_OPT_ID
+		// unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
+
+		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags); err != nil {
+			err = fmt.Errorf("Failed enabling rx timestamping: %v", err.Error())
 		}
 	})
 
@@ -227,7 +249,8 @@ func (t *TxTsReader) run(fd uintptr) {
 				ts := times.Ts[0]
 				msg.TsSent = time.Unix(ts.Sec, ts.Nsec)
 				tsSet = true
-			} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) && (cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
+			} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) &&
+				(cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
 				var sockErr unix.SockExtendedErr
 				sockErrBuf := bytes.NewReader(cm.Data)
 				binary.Read(sockErrBuf, binary.LittleEndian, &sockErr)
@@ -248,39 +271,17 @@ func (t *TxTsReader) run(fd uintptr) {
 	}
 }
 
-func receiveFromSingle(conn *net.UDPConn, num uint) []MsgRcvd {
-	msgs := make([]MsgRcvd, 0, num)
-
-	for {
-		var buf [1500]byte
-		log.Printf("Blocking on ReadFrom...")
-		n, _, err := conn.ReadFrom(buf[0:])
-		if err != nil {
-			if e, ok := err.(net.Error); !ok || !e.Timeout() {
-				// not a timeout
-				log.Printf("receiveFrom: ReadFrom: %v", err.Error())
-				break
-			}
-			break
-		}
-		log.Printf("Received n=%v\n", n)
-
-		var msg Msg
-		msg.Decode(buf[:n])
-		rcvd := MsgRcvd{
-			Seq:    msg.Seq,
-			TsRcvd: time.Now(),
-			Len:    uint(n),
-		}
-		msgs = append(msgs, rcvd)
-
-	}
-	log.Printf("Received %v messages\n", len(msgs))
-
-	return msgs
+func ReceiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
+	return receiveFrom(conn, expectedNumPackets)
 }
 
 func receiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
+	tsEnabled := true
+	if err := enableRxTimestamping(conn); err != nil {
+		log.Fatalf("Failed enabling rx timestamping: %v", err.Error())
+		tsEnabled = false
+	}
+
 	// conn ReadDeadline must be set, otherwise this function never returns
 	msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
 
@@ -288,6 +289,7 @@ func receiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) 
 	rx := make([]ipv4.Message, 1024)
 	for k := range rx {
 		rx[k].Buffers = [][]byte{make([]byte, 1500)}
+		rx[k].OOB = make([]byte, 500)
 	}
 
 	pconn := ipv4.NewPacketConn(conn)
@@ -310,6 +312,7 @@ func receiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) 
 				// Ignore probe packets
 				continue
 			}
+
 			var msg Msg
 			msg.Decode(packet.Buffers[0][:packet.N])
 			rcvd := MsgRcvd{
@@ -317,6 +320,24 @@ func receiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) 
 				TsRcvd: tsRcvd,
 				Len:    uint(packet.N),
 			}
+
+			if tsEnabled {
+				cms, err := unix.ParseSocketControlMessage(packet.OOB[:packet.NN])
+				if err != nil {
+					log.Printf("receiveFrom: Failed parsing cmsg: %v", err.Error())
+				}
+
+				for _, cm := range cms {
+					if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
+						var times unix.ScmTimestamping
+						tsBuf := bytes.NewReader(cm.Data)
+						binary.Read(tsBuf, binary.LittleEndian, &times)
+						ts := times.Ts[0]
+						rcvd.TsRcvd = time.Unix(ts.Sec, ts.Nsec)
+					}
+				}
+			}
+
 			msgs = append(msgs, rcvd)
 		}
 	}

@@ -174,7 +174,7 @@ func (s *Server) handleReceive(conn *net.UDPConn, id uuid.UUID, req RequestUdpSe
 	}
 
 	conn.SetReadDeadline(time.Now().Add(req.Timeout))
-	if result.Res, result.Err = receiveFrom(conn, req.Params.NumPackets()); result.Err != nil {
+	if result.Res, result.Err = ReceiveFrom(conn, req.Params.NumPackets()); result.Err != nil {
 		return
 	}
 	log.Printf("Received %v packets for %v\n", len(result.Res), id)
