@@ -227,7 +227,7 @@ func (s *Server) handleSender(conn *net.UDPConn, id uuid.UUID, sender Sender, re
 	if result.Err != nil {
 		return
 	}
-	log.Printf("Sent %v local messages to %v\n", len(result.Res), raddr)
+	log.Printf("Sent %v messages to %v\n", len(result.Res), raddr)
 }
 
 type RequestUdpServerResultArgs struct {

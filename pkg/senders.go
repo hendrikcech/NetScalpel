@@ -139,6 +139,21 @@ func forceSetSocketBuffers(conn *net.UDPConn, size int) error {
 	return nil
 }
 
+func setMaxPacingRate(conn *net.UDPConn, rate uint) error {
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+
+	err = rawConn.Control(func(fd uintptr) {
+		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_MAX_PACING_RATE, int(rate)); err != nil {
+			err = fmt.Errorf("Failed setting SO_MAX_PACING_RATE: %v", err.Error())
+		}
+	})
+
+	return err
+}
+
 func enableTxTimestamping(conn *net.UDPConn) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
@@ -153,9 +168,7 @@ func enableTxTimestamping(conn *net.UDPConn) error {
 			unix.SOF_TIMESTAMPING_OPT_ID
 		// unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags); err != nil {
-			err = fmt.Errorf("Failed enabling tx timestamping: %v", err.Error())
-		}
+		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
 	})
 
 	return err
@@ -175,9 +188,7 @@ func enableRxTimestamping(conn *net.UDPConn) error {
 			unix.SOF_TIMESTAMPING_OPT_ID
 		// unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags); err != nil {
-			err = fmt.Errorf("Failed enabling rx timestamping: %v", err.Error())
-		}
+		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
 	})
 
 	return err
@@ -212,7 +223,6 @@ func (t *TxTsReader) run(fd uintptr) {
 	// TODO: size from the beginning
 	sentMsgs := make([]MsgSent, 0, 1024)
 	defer func() {
-		log.Printf("Sending sentMsgs")
 		t.C <- sentMsgs
 	}()
 
@@ -562,17 +572,15 @@ func (r *RateSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, erro
 
 	var txTsReader *TxTsReader
 	if err := enableTxTimestamping(conn); err != nil {
-		log.Fatalf("Failed enabling timestamping: %v", err.Error())
+		log.Fatalf("Failed enabling tx timestamping: %v", err.Error())
 	} else {
 		r.tsEnabled = true
 		txTsReader = NewTxTsReader()
 		go txTsReader.Run(conn, r.Params.GetDuration()+time.Second)
 	}
 
-	pconn := ipv4.NewPacketConn(conn)
-
 	for i := range r.Params {
-		if err := r.runParams(pconn, raddr, r.Params[i]); err != nil {
+		if err := r.runParams(conn, raddr, r.Params[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -584,12 +592,23 @@ func (r *RateSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, erro
 	return r.msgs, nil
 }
 
-func (r *RateSender) runParams(conn *ipv4.PacketConn, raddr *net.UDPAddr, params RateParams) error {
+func (r *RateSender) runParams(conn *net.UDPConn, raddr *net.UDPAddr, params RateParams) error {
 	ticker := time.Tick(params.Interval)
 	duration := time.After(params.Duration)
 
+	// Only enable socket pacing if we can retrieve the actual tx timestamps
+	if r.tsEnabled {
+		// approximate 50 bytes overhead from L2, IP and UDP headers
+		pacingRate := uint(params.Pps*params.PayloadSize) + 50
+		if err := setMaxPacingRate(conn, pacingRate); err != nil {
+			log.Printf("%v", err.Error())
+		}
+	}
+
 	start := time.Now()
 	numPacketsSent := uint(0)
+
+	pconn := ipv4.NewPacketConn(conn)
 
 	for {
 		select {
@@ -602,7 +621,7 @@ func (r *RateSender) runParams(conn *ipv4.PacketConn, raddr *net.UDPAddr, params
 			if numPackets == 0 {
 				continue
 			}
-			n, err := r.sendRound(conn, raddr, numPackets, params.PayloadSize)
+			n, err := r.sendRound(pconn, raddr, numPackets, params.PayloadSize)
 			if err != nil {
 				return err
 			}
