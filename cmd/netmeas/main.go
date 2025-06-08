@@ -116,7 +116,7 @@ func main() {
 
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         uint(*rateRate * 1e6 / 8 / 1400),
-				Interval:    time.Duration(100) * time.Millisecond,
+				Interval:    time.Duration(1) * time.Millisecond,
 				Duration:    time.Duration(*rateDuration) * time.Second,
 				PayloadSize: 1400,
 			}}},
