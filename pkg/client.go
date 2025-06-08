@@ -58,6 +58,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
 			StartAt: c.StartAt,
 			Mode:    Receive,
+			Params:  c.Sender.GetParams(),
 		}
 		var reply RequestUdpServerReply
 		if err := client.Call("Server.RequestUdpServer", args, &reply); err != nil {
@@ -149,7 +150,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			return fmt.Errorf("Failed to SetReadDeadline: %v\n", err.Error())
 		}
 
-		c.MsgsRcvd, err = receiveFrom(conn)
+		c.MsgsRcvd, err = receiveFrom(conn, c.Sender.GetParams().NumPackets())
 		if err != nil {
 			log.Printf("Failed receiveFrom: %v", err.Error())
 		}
@@ -413,27 +414,6 @@ func (c *CommandClient) Gather(client *rpc.Client) error {
 			if err := os.WriteFile(path, bufEnc, 0644); err != nil {
 				return fmt.Errorf("Failed writing returned file to %v: %v", path, err.Error())
 			}
-
-			// Decompress file
-			// f, err := os.Create(path)
-			// if err != nil {
-			// 	return fmt.Errorf("Failed os.Create(%v): %v", path, err.Error())
-			// }
-			// defer f.Close()
-			// fW := bufio.NewWriter(f)
-			// defer fW.Flush()
-
-			// encR := bytes.NewReader(bufEnc)
-			// dec, err := zstd.NewReader(encR)
-			// if err != nil {
-			// 	return fmt.Errorf("Failed creating decoder for %v: %v", path, err.Error())
-			// }
-			// defer dec.Close()
-
-			// nWritten, err := io.Copy(fW, dec)
-			// if err != nil {
-			// 	return fmt.Errorf("Failed writing returned file to %v: %v", path, err.Error())
-			// }
 		}
 	}
 	return nil

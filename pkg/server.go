@@ -177,7 +177,7 @@ func (s *Server) handleReceive(conn *ipv4.PacketConn, id uuid.UUID, req RequestU
 	}
 
 	conn.SetReadDeadline(time.Now().Add(req.Timeout))
-	if result.Res, result.Err = receiveFrom(conn); result.Err != nil {
+	if result.Res, result.Err = receiveFrom(conn, req.Params.NumPackets()); result.Err != nil {
 		return
 	}
 	log.Printf("Received %v packets for %v\n", len(result.Res), id)

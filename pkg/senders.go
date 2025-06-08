@@ -126,7 +126,7 @@ func forceSetSocketBuffers(conn *net.UDPConn, size int) error {
 	// Necessary to continue make Deadline work on conn: https://stackoverflow.com/a/74886460
 	defer syscall.SetNonblock(int(fd.Fd()), true)
 
-	if err := syscall.SetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_SNDBUFFORCE, size);err != nil {
+	if err := syscall.SetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_SNDBUFFORCE, size); err != nil {
 		return err
 	}
 	if err := syscall.SetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_RCVBUFFORCE, size); err != nil {
@@ -167,9 +167,9 @@ func receiveFromSingle(conn *ipv4.PacketConn, num uint) []MsgRcvd {
 	return msgs
 }
 
-func receiveFrom(conn *ipv4.PacketConn) ([]MsgRcvd, error) {
+func receiveFrom(conn *ipv4.PacketConn, expectedNumPackets uint) ([]MsgRcvd, error) {
 	// conn ReadDeadline must be set, otherwise this function never returns
-	msgs := make([]MsgRcvd, 0, 1024)
+	msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
 
 	// batch size
 	rx := make([]ipv4.Message, 1024)
@@ -190,12 +190,12 @@ func receiveFrom(conn *ipv4.PacketConn) ([]MsgRcvd, error) {
 		tsRcvd := time.Now()
 
 		for i := 0; i < n; i++ {
-			var msg Msg
 			packet := rx[i]
 			if packet.N == 0 {
 				// Ignore probe packets
 				continue
 			}
+			var msg Msg
 			msg.Decode(packet.Buffers[0][:packet.N])
 			rcvd := MsgRcvd{
 				Seq:    msg.Seq,
@@ -401,6 +401,7 @@ type RateSender struct {
 	Params RateParamsW
 	seq    uint64
 	msgs   []MsgSent
+	tx     []ipv4.Message
 }
 
 var _ Sender = (*RateSender)(nil)
@@ -414,7 +415,11 @@ func (s *RateSender) Mode() UdpServerMode {
 }
 
 func (r *RateSender) Run(conn *ipv4.PacketConn, raddr *net.UDPAddr) ([]MsgSent, error) {
-	r.msgs = make([]MsgSent, 0, r.Params.NumPackets())
+	r.msgs = make([]MsgSent, 0, int(float64(r.Params.NumPackets())*1.1))
+	r.tx = make([]ipv4.Message, 1024)
+	for i := range r.tx {
+		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
+	}
 
 	for i := range r.Params {
 		if err := r.runParams(conn, raddr, r.Params[i]); err != nil {
@@ -426,7 +431,7 @@ func (r *RateSender) Run(conn *ipv4.PacketConn, raddr *net.UDPAddr) ([]MsgSent, 
 }
 
 func (r *RateSender) runParams(conn *ipv4.PacketConn, raddr *net.UDPAddr, params RateParams) error {
-	ticker := time.NewTicker(params.Interval)
+	ticker := time.Tick(params.Interval)
 	duration := time.After(params.Duration)
 
 	start := time.Now()
@@ -434,8 +439,8 @@ func (r *RateSender) runParams(conn *ipv4.PacketConn, raddr *net.UDPAddr, params
 
 	for {
 		select {
-		case <-ticker.C:
-			numPacketsGoal := uint(time.Since(start).Seconds() * float64(params.Pps))
+		case now := <-ticker:
+			numPacketsGoal := uint(now.Sub(start).Seconds() * float64(params.Pps))
 			if numPacketsSent > numPacketsGoal {
 				panic("numPacketsSent > numPacketsGoal")
 			}
@@ -457,38 +462,36 @@ func (r *RateSender) runParams(conn *ipv4.PacketConn, raddr *net.UDPAddr, params
 func (r *RateSender) sendRound(conn *ipv4.PacketConn, raddr *net.UDPAddr, packets uint, payloadSize uint) (uint, error) {
 	packetsLeft := packets
 	sent := uint(0)
+	payloadBuf := make([]byte, payloadSize)
 	for packetsLeft > 0 {
 		tsSent := time.Now()
 		packetsRound := packetsLeft
 		if packetsRound > 1024 {
 			packetsRound = 1024
 		}
-		tx := make([]ipv4.Message, packetsRound)
-		for i := uint64(0); i < uint64(packetsRound); i++ {
-			msg := ipv4.Message{}
-			b := Msg{Seq: r.seq + i, Pad: make([]byte, payloadSize)}
-			buf := make([]byte, 1500)
-			n, err := b.Encode(buf)
+		for i := 0; uint(i) < packetsRound; i++ {
+			msg := &r.tx[i]
+			b := Msg{Seq: r.seq + uint64(i), Pad: payloadBuf}
+			n, err := b.Encode(msg.Buffers[0])
 			if err != nil {
+				// r.msgs contains unsent messages
 				return sent, err
 			}
-
-			msg.Buffers = append(msg.Buffers, buf[:n])
+			msg.Buffers[0] = msg.Buffers[0][:n]
 			msg.Addr = raddr
-			tx[i] = msg
 
 			r.msgs = append(r.msgs, MsgSent{Seq: b.Seq, TsSent: tsSent, Len: 8 + payloadSize})
 		}
 
-		n, err := conn.WriteBatch(tx, 0)
-		sent += uint(n)
+		n, err := conn.WriteBatch(r.tx[:packetsRound], 0)
 		if err != nil {
 			return sent, err
 		}
+		sent += uint(n)
 		r.seq += uint64(n)
 		packetsLeft -= uint(n)
 		if n != int(packetsRound) {
-			log.Printf("Only sent %v packets instead of %v (len tx=%v)\n", n, packetsRound, len(tx))
+			log.Printf("Only sent %v packets instead of %v\n", n, packetsRound)
 			r.msgs = r.msgs[:len(r.msgs)-(int(packetsRound)-n)]
 			r.seq -= uint64(packetsRound) - uint64(n)
 			break
