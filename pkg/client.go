@@ -66,9 +66,9 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		}
 		c.id = reply.Id
 
-		conn, _, raddr, err := OpenUdpPacketConn(c.Ip, reply.Port)
+		conn, _, raddr, err := OpenUdpSocket(c.Ip, reply.Port)
 		if err != nil {
-			return fmt.Errorf("OpenUdpPacketConn: %v\n", err)
+			return fmt.Errorf("OpenUdpSocket: %v\n", err)
 		}
 		defer conn.Close()
 
@@ -95,9 +95,9 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		}
 		c.id = reply.Id
 
-		conn, laddr, raddr, err := OpenUdpPacketConn(c.Ip, reply.Port)
+		conn, laddr, raddr, err := OpenUdpSocket(c.Ip, reply.Port)
 		if err != nil {
-			return fmt.Errorf("OpenUdpPacketConn failed: %v", err.Error())
+			return fmt.Errorf("OpenUdpSocket failed: %v", err.Error())
 		}
 		defer conn.Close()
 
@@ -107,7 +107,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			// Send an UDP packet to the newly opened server UDP socket to poke
 			// a hole into a potentially existing NAT and wait for the reply.
 			log.Printf("Sending NAT probe %v/5 from %v to %v...", try+1, laddr, raddr)
-			if _, err := conn.WriteTo([]byte{}, nil, raddr); err != nil {
+			if _, err := conn.Write([]byte{}); err != nil {
 				return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
 			}
 
@@ -124,7 +124,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			}
 
 			var buf [1500]byte
-			_, _, _, err = conn.ReadFrom(buf[:])
+			_, _, err = conn.ReadFrom(buf[:])
 			if err != nil {
 				if e, ok := err.(net.Error); !ok || !e.Timeout() {
 					return fmt.Errorf("Failed ReadFrom: %v", err.Error())

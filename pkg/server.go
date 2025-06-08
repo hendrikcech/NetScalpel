@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/net/ipv4"
 )
 
 func logErr(fmtStr string, args ...interface{}) error {
@@ -121,15 +120,13 @@ func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpSe
 		return logErr("RequestUdpServer: net.ResolveUDPAddr failed: %v", err.Error())
 	}
 
-	udpConn, err := net.ListenUDP("udp", udpAddr)
+	conn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
 		return logErr("RequestUdpServer: net.ListenUDP failed: %v\n", err.Error())
 	}
-	laddr := udpConn.LocalAddr().(*net.UDPAddr)
+	laddr := conn.LocalAddr().(*net.UDPAddr)
 
-	setSocketBuffers(udpConn)
-
-	conn := ipv4.NewPacketConn(udpConn)
+	setSocketBuffers(conn)
 
 	reply.Id = uuid.New()
 	reply.Port = uint(laddr.Port)
@@ -156,7 +153,7 @@ func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpSe
 	return nil
 }
 
-func (s *Server) handleReceive(conn *ipv4.PacketConn, id uuid.UUID, req RequestUdpServerArgs) {
+func (s *Server) handleReceive(conn *net.UDPConn, id uuid.UUID, req RequestUdpServerArgs) {
 	defer conn.Close()
 
 	s.resultsLock.Lock()
@@ -183,7 +180,7 @@ func (s *Server) handleReceive(conn *ipv4.PacketConn, id uuid.UUID, req RequestU
 	log.Printf("Received %v packets for %v\n", len(result.Res), id)
 }
 
-func (s *Server) handleSender(conn *ipv4.PacketConn, id uuid.UUID, sender Sender, req RequestUdpServerArgs) {
+func (s *Server) handleSender(conn *net.UDPConn, id uuid.UUID, sender Sender, req RequestUdpServerArgs) {
 	defer conn.Close()
 
 	s.resultsLock.Lock()
@@ -202,7 +199,7 @@ func (s *Server) handleSender(conn *ipv4.PacketConn, id uuid.UUID, sender Sender
 	// Wait for single UDP packet from receiving client UDP socket that opens
 	// the client NAT.
 	var buf [1500]byte
-	_, laddr, raddr, err := conn.ReadFrom(buf[0:])
+	_, raddr, err := conn.ReadFrom(buf[0:])
 	if err != nil {
 		if e, ok := err.(net.Error); !ok || !e.Timeout() {
 			// not a timeout
@@ -213,12 +210,12 @@ func (s *Server) handleSender(conn *ipv4.PacketConn, id uuid.UUID, sender Sender
 	}
 
 	// Reply to NAT UDP packet
-	if _, err := conn.WriteTo([]byte{}, nil, raddr); err != nil {
+	if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
 		result.Err = fmt.Errorf("handleSender: WriteTo: %v", err.Error())
 		return
 	}
 
-	log.Printf("Received kick-off msg from %v and replied to from %v\n", raddr, laddr)
+	log.Printf("Received kick-off msg from %v", raddr)
 
 	if err := waitUntil(req.StartAt); err != nil {
 		result.Err = err
