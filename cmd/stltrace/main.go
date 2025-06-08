@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,10 +28,12 @@ func main() {
 	clientRounds := clientCmd.Uint("rounds", 0, "number of measurement rounds to run; 0 = infinite")
 	clientProcedure := clientCmd.String("procedure", "trace", "test procedure")
 	clientParams := clientCmd.String("params", "", "semicolon-separated key=value pairs passed to procedure")
+	clientProfile := clientCmd.String("profile", "", "write pprof to file")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	serverIp := serverCmd.String("ip", "0.0.0.0", "ip")
 	serverPort := serverCmd.Uint("port", 8500, "port")
+	serverProfile := serverCmd.String("profile", "", "write pprof to file")
 
 	if len(os.Args) < 2 {
 		fmt.Println("expected 'client' or 'server' subcommands")
@@ -58,6 +61,9 @@ func main() {
 			*clientRounds = math.MaxUint
 		}
 
+		createProfile(*clientProfile)
+		defer pprof.StopCPUProfile()
+
 		params, err := parseParams(*clientParams)
 		if err != nil {
 			log.Fatalf("Failed parsing params: %v", err.Error())
@@ -76,6 +82,9 @@ func main() {
 	case "server":
 		serverCmd.Parse(os.Args[2:])
 
+		createProfile(*serverProfile)
+		defer pprof.StopCPUProfile()
+
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
@@ -89,6 +98,20 @@ func main() {
 		fmt.Println("expected 'client' or 'server' subcommands")
 		os.Exit(1)
 	}
+}
+
+func createProfile(profile string) {
+	if profile == "" {
+		return
+	}
+	f, err := os.Create(profile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("Writing pprof profile to %v", profile)
 }
 
 type ProcedureFunc func(time.Time, string, ParamMap)

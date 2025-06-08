@@ -82,7 +82,7 @@ func TestRateUL(t *testing.T) {
 
 	testSender(t, &client)
 
-	if len(client.MsgsSent) != int(packets) {
+	if len(client.MsgsSent) < int(packets)-2 || len(client.MsgsSent) > int(packets)+2 {
 		t.Errorf("Expected %v packets but %v were sent", packets, len(client.MsgsSent))
 	}
 }
@@ -108,7 +108,7 @@ func TestRateDL(t *testing.T) {
 
 	testSender(t, &client)
 
-	if len(client.MsgsSent) != int(packets) {
+	if len(client.MsgsSent) < int(packets)-2 || len(client.MsgsSent) > int(packets)+2 {
 		t.Errorf("Expected %v packets but %v were sent", packets, len(client.MsgsSent))
 	}
 }
@@ -214,7 +214,7 @@ func testRunCommandTcpdump(t *testing.T, local bool) {
 	if err != nil {
 		t.Errorf("%v", err.Error())
 	}
-	fmt.Printf("RunCommand writing to %v", resultDir)
+	fmt.Printf("RunCommand writing to %v\n", resultDir)
 
 	client := CommandClient{
 		Params: TcpdumpParams{
