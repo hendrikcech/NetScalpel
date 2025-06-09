@@ -106,7 +106,9 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		for try := range 5 {
 			// Send an UDP packet to the newly opened server UDP socket to poke
 			// a hole into a potentially existing NAT and wait for the reply.
-			log.Printf("Sending NAT probe %v/5 from %v to %v...", try+1, laddr, raddr)
+			if try > 0 {
+				log.Printf("Sending NAT probe %v/5 from %v to %v...", try+1, laddr, raddr)
+			}
 			if _, err := conn.Write([]byte{}); err != nil {
 				return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
 			}
@@ -132,7 +134,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 				// Timeout occured
 				continue
 			}
-			// log.Printf("Received NAT probe reply")
+			log.Printf("Received NAT probe %v/5 from %v", try+1, laddr)
 			probeReplyReceived = true
 			break
 		}

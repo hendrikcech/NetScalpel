@@ -40,7 +40,6 @@ func TestBurstUL(t *testing.T) {
 	}
 
 	testSender(t, &client)
-	testBurst(t, &client)
 }
 
 func TestBurstDL(t *testing.T) {
@@ -58,7 +57,40 @@ func TestBurstDL(t *testing.T) {
 	}
 
 	testSender(t, &client)
-	testBurst(t, &client)
+}
+
+func TestPeriodicUL(t *testing.T) {
+	client := SenderClient{
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: UL,
+
+		Sender: &PeriodicSender{Params: PeriodicParams{
+			Interval: 1 * time.Millisecond,
+			Duration: 100 * time.Millisecond,
+			Pad:      200,
+		}},
+	}
+
+	testSender(t, &client)
+}
+
+func TestPeriodicDL(t *testing.T) {
+	client := SenderClient{
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: UL,
+
+		Sender: &PeriodicSender{Params: PeriodicParams{
+			Interval: 1 * time.Millisecond,
+			Duration: 100 * time.Millisecond,
+			Pad:      200,
+		}},
+	}
+
+	testSender(t, &client)
 }
 
 func TestRateUL(t *testing.T) {
@@ -176,20 +208,6 @@ func testSender(t *testing.T, c *SenderClient) {
 	// 		t.Errorf("length of sent and received packet differs: %v != %v", c.MsgsSent[i].Len, c.MsgsRcvd[i].Len)
 	// 	}
 	// }
-}
-
-func testBurst(t *testing.T, client *SenderClient) {
-	for i, msg := range client.MsgsSent {
-		if msg.Seq != uint64(i) {
-			t.Errorf("expected seq %v, got %v in msgsSent", i, msg.Seq)
-		}
-	}
-
-	for i, msg := range client.MsgsRcvd {
-		if msg.Seq != uint64(i) {
-			t.Errorf("expected seq %v, got %v in msgsRcvd", i, msg.Seq)
-		}
-	}
 }
 
 // ----

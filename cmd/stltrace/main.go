@@ -234,6 +234,7 @@ func (c *Client) Run() {
 		duration := time.Now().Sub(start)
 		log.Printf("Gathered results in %.2f seconds", duration.Seconds())
 
+		// TODO: add information about pacing and timestamping support
 		if err := e.WriteInfo(resultPath); err != nil {
 			log.Printf("Failed writing info: %v", err.Error())
 		}

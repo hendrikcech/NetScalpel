@@ -385,6 +385,27 @@ func (s *BurstSender) Mode() UdpServerMode {
 }
 
 func (s *BurstSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+	var txTsReader *TxTsReader
+	if err := enableTxTimestamping(conn); err != nil {
+		log.Fatalf("Failed enabling tx timestamping: %v", err.Error())
+	} else {
+		txTsReader = NewTxTsReader()
+		go txTsReader.Run(conn, s.Params.GetDuration()+500*time.Millisecond)
+	}
+
+	msgsSent, err := s.run(conn, raddr)
+	if err != nil {
+		return nil, err
+	}
+
+	if txTsReader != nil {
+		msgsSent = <-txTsReader.C
+	}
+
+	return msgsSent, nil
+}
+
+func (s *BurstSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	msgsSent := make([]MsgSent, s.Params.Num)
 	msgs := make([]ipv4.Message, s.Params.Num)
 
@@ -467,6 +488,26 @@ func (s *PeriodicSender) Mode() UdpServerMode {
 }
 
 func (r *PeriodicSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+	var txTsReader *TxTsReader
+	if err := enableTxTimestamping(conn); err != nil {
+		log.Fatalf("Failed enabling tx timestamping: %v", err.Error())
+	} else {
+		txTsReader = NewTxTsReader()
+		go txTsReader.Run(conn, r.Params.GetDuration()+500*time.Millisecond)
+	}
+
+	msgsSent, err := r.run(conn, raddr)
+	if err != nil {
+		return nil, err
+	}
+
+	if txTsReader != nil {
+		msgsSent = <-txTsReader.C
+	}
+
+	return msgsSent, nil
+}
+func (r *PeriodicSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	msgsSent := make([]MsgSent, 0, r.Params.NumPackets())
 
 	ticker := time.NewTicker(r.Params.Interval)
@@ -491,7 +532,7 @@ func (r *PeriodicSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, 
 
 			msgsSent = append(msgsSent, MsgSent{Seq: b.Seq, TsSent: time.Now(), Len: 8 + r.Params.Pad})
 
-			nConn, err := conn.WriteTo(buf, raddr)
+			nConn, err := conn.Write(buf)
 			if err != nil {
 				return nil, err
 			}
@@ -576,7 +617,7 @@ func (r *RateSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, erro
 	} else {
 		r.tsEnabled = true
 		txTsReader = NewTxTsReader()
-		go txTsReader.Run(conn, r.Params.GetDuration()+time.Second)
+		go txTsReader.Run(conn, r.Params.GetDuration()+500*time.Millisecond)
 	}
 
 	for i := range r.Params {
