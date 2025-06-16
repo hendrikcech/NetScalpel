@@ -442,19 +442,20 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 		pps = 700 * 1e6 / 8 / 1400
 	}
 
-	// coolDowns := []int{0, 10, 50, 100, 500, 1000, 4000}
+	// coolDowns := []int{0, 5, 10, 25, 50, 100, 500, 1000}
 	// for _, idx := range rand.Perm(len(coolDowns)) {
 	var coolDowns []int64
 	for {
 		// coolDownMs := coolDowns[idx]
-		// coolDownMs := 130 + rand.Intn(3000)
+		coolDownMs := int64(rand.Intn(60))
 
 		// Exponential distribution: test small values more
-		x := rand.ExpFloat64() / 2      // increase rate / lambda
-		y := 2 / math.Pi * math.Atan(x) // map to interval [0, 1]
-		minCoolDownMs := int64(50)
-		maxCoolDownMs := min(deadline.Sub(start.Add(2*duration)).Milliseconds()+minCoolDownMs, 5000-int64(minCoolDownMs))
-		coolDownMs := minCoolDownMs + int64(y*float64(maxCoolDownMs))
+		// x := rand.ExpFloat64() / 2      // increase rate / lambda
+		// y := 2 / math.Pi * math.Atan(x) // map to interval [0, 1]
+		// minCoolDownMs := int64(50)
+		// maxCoolDownMs := min(deadline.Sub(start.Add(2*duration)).Milliseconds()+minCoolDownMs, 5000-int64(minCoolDownMs))
+		// coolDownMs := minCoolDownMs + int64(y*float64(maxCoolDownMs))
+
 		coolDownDuration := time.Duration(coolDownMs) * time.Millisecond
 
 		// Check if test still fits into the current RI
@@ -520,5 +521,56 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 
 	if start.After(nextRi(ts).Add(time.Second)) {
 		panic("Test takes longer than one RI")
+	}
+}
+
+func (e *Executor) MeasOWD(ts time.Time, resultPath string, params ParamMap) {
+	start := ts.Add(1 * time.Second)
+
+	duration := 300 * time.Second
+	if _, ok := params["duration_ms"]; ok {
+		value, err := params.Uint("duration_ms")
+		if err != nil {
+			panic(err.Error())
+		}
+		duration = time.Duration(value) * time.Millisecond
+	}
+
+	for _, direction := range []pkg.Direction{pkg.DL, pkg.UL} {
+		e.RunClient(&pkg.SenderClient{
+			Ip:        e.Ip,
+			Port:      e.Port,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("owd_%v.csv", direction.StringLower())),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+				Interval: 1 * time.Millisecond,
+				Duration: duration,
+				Pad:      0,
+			}},
+		})
+	}
+
+	e.tcpdump(resultPath, ts, duration+time.Second)
+}
+
+func (e *Executor) tcpdump(resultPath string, start time.Time, duration time.Duration) {
+	for _, local := range []bool{true, false} {
+		var name string
+		if local {
+			name = "local"
+		} else {
+			name = "remote"
+		}
+		e.RunClient(&pkg.CommandClient{
+			Params: pkg.TcpdumpParams{
+				Name_:    fmt.Sprintf("tcpdump_%v", name),
+				Timeout_: duration,
+				Filter:   "udp",
+			},
+			Local:    local,
+			StartAt:  start,
+			LocalDir: resultPath,
+		})
 	}
 }

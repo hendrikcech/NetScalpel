@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func RunCommand(cmd *exec.Cmd, timeout time.Duration) error {
+func MonitorCommand(cmd *exec.Cmd, timeout time.Duration) error {
 	// cmd.Stdin = os.DevNull
 	// cmd.Stdout = os.DevNull // os.Stdout
 	// cmd.Stderr = os.DevNull // os.Stderr
@@ -53,7 +53,7 @@ const (
 
 type Command interface {
 	Params() CommandParams
-	Cmd(resultDir string) (*exec.Cmd, error)
+	Exec(resultDir string) (*exec.Cmd, error)
 }
 
 type CommandParams interface {
@@ -89,7 +89,7 @@ func (c *TcpdumpCommand) Params() CommandParams {
 
 // TODO: only listen on specific interface
 // TODO: use sudo?
-func (c *TcpdumpCommand) Cmd(resultDir string) (*exec.Cmd, error) {
+func (c *TcpdumpCommand) Exec(resultDir string) (*exec.Cmd, error) {
 	resultPath := filepath.Join(resultDir, c.Params().Name()+".pcap")
 	cmd := exec.Command("sudo", "tcpdump", "-i", "any", "-s", "150", "-w", resultPath, c.Params_.Filter)
 	return cmd, nil
@@ -121,7 +121,7 @@ func (c *TccCommand) Params() CommandParams {
 	return c.Params_
 }
 
-func (c *TccCommand) Cmd(resultDir string) (*exec.Cmd, error) {
+func (c *TccCommand) Exec(resultDir string) (*exec.Cmd, error) {
 	args := []string{"sudo", "tcc-trace", "--logpath", resultDir}
 	for _, ip := range c.Params_.Ips {
 		args = append(args, "--ip", ip)

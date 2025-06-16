@@ -137,11 +137,11 @@ func (p ParamMap) Direction() (pkg.Direction, error) {
 func (p ParamMap) Uints(key string) ([]uint, error) {
 	value, ok := p[key]
 	if !ok {
-		return nil, fmt.Errorf("Parameter %v not present", key)
+		return nil, fmt.Errorf("Parameter '%v' not present", key)
 	}
 	listStr, ok := value.([]string)
 	if !ok {
-		return nil, fmt.Errorf("Parameter %v must be a list of uints", key)
+		return nil, fmt.Errorf("Parameter '%v' must be a list of uints", key)
 	}
 	list := make([]uint, len(listStr))
 	for i := range listStr {
@@ -153,6 +153,18 @@ func (p ParamMap) Uints(key string) ([]uint, error) {
 		list[i] = uint(parsed)
 	}
 	return list, nil
+}
+
+func (p ParamMap) Uint(key string) (uint, error) {
+	value, ok := p[key]
+	if !ok {
+		return 0, fmt.Errorf("Parameter '%v' not present", key)
+	}
+	parsed, err := strconv.ParseUint(value.(string), 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("Parameter '%v': failed parsing '%s' as uint", key, value)
+	}
+	return uint(parsed), nil
 }
 
 // Parses semicolon-separated key=value pairs
@@ -195,8 +207,6 @@ type Client struct {
 func (c *Client) Run() {
 	for i := range c.Rounds {
 		e := NewExecutor(c.Ip, c.Port)
-		now := time.Now()
-		resultPath := ""
 		c.round = i
 
 		proceduresUlDl := map[string]ProcedureFunc{
@@ -206,24 +216,32 @@ func (c *Client) Run() {
 			"cdsf":     e.CoolDownSameFlow,
 		}
 
+		proceduresBidir := map[string]ProcedureFunc{
+			"trace": e.TraceRi,
+			"owd":   e.MeasOWD,
+		}
+
+		now := time.Now()
+		resultPath := ""
 		if fn, ok := proceduresUlDl[c.Procedure]; ok {
 			if _, ok := c.Params["direction"]; ok {
 				resultPath = c.executeProcedure(now, fn, c.Params)
 			} else {
 				params := maps.Clone(c.Params)
-				params["direction"] = pkg.UL.String()
-				resultPath = c.executeProcedure(now, fn, params)
 				params["direction"] = pkg.DL.String()
+				resultPath = c.executeProcedure(now, fn, params)
+				params["direction"] = pkg.UL.String()
 				resultPath = c.executeProcedure(now.Add(15*time.Second), fn, params)
 			}
-		} else if c.Procedure == "trace" {
+		} else if fn, ok := proceduresBidir[c.Procedure]; ok {
 			resultPath = c.executeProcedure(now, fn, c.Params)
 		} else {
 			log.Fatalf("Unknown -procedure '%v'", c.Procedure)
 		}
 
 		if err := e.G.Wait(); err != nil {
-			log.Fatalf("%v", err.Error())
+			log.Printf("[Round %v/%v] Aborting due to failed client.Run: %v", c.round+1, c.Rounds, err.Error())
+			continue
 		}
 
 		log.Printf("Gathering results...")
@@ -243,11 +261,12 @@ func (c *Client) Run() {
 
 func (c *Client) executeProcedure(ts time.Time, fn ProcedureFunc, params ParamMap) string {
 	ri := nextRi(ts)
-	log.Printf("[Round %v] Schedule %s %s in %.2fs at %v", c.round, params["direction"], c.Procedure, ri.Sub(time.Now()).Seconds(), ri)
 	name := "_" + c.Procedure
 	if direction, ok := params["direction"]; ok {
 		name += "_" + strings.ToLower(direction.(string))
 	}
+	log.Printf("[Round %v/%v] Schedule %s in %.2fs at %v", c.round+1, c.Rounds,
+		name, ri.Sub(time.Now()).Seconds(), ri)
 	resultPath := mkResultPath(c.Results, ri, name)
 	fn(ri, resultPath, params)
 	return resultPath
