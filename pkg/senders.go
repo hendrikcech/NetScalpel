@@ -64,20 +64,20 @@ func (m *Msg) Decode(buf []byte) {
 	m.Seq = binary.BigEndian.Uint64(buf[0:])
 }
 
-func OpenUdpSocket(ip string, port uint) (*net.UDPConn, *net.UDPAddr, *net.UDPAddr, error) {
-	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", ip, port))
+func ListenUDP() (*net.UDPConn, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", ":0")
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, fmt.Errorf("net.ResolveUDPAddr failed: %v", err.Error())
 	}
 
-	udpConn, err := net.DialUDP("udp", nil, raddr)
+	conn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, fmt.Errorf("net.ListenUDP failed: %v\n", err.Error())
 	}
 
-	setSocketBuffers(udpConn)
+	setSocketBuffers(conn)
 
-	return udpConn, udpConn.LocalAddr().(*net.UDPAddr), raddr, nil
+	return conn, nil
 }
 
 func setSocketBuffers(conn *net.UDPConn) {
@@ -532,7 +532,7 @@ func (r *PeriodicSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, 
 
 			msgsSent = append(msgsSent, MsgSent{Seq: b.Seq, TsSent: time.Now(), Len: 8 + r.Params.Pad})
 
-			nConn, err := conn.Write(buf)
+			nConn, err := conn.WriteTo(buf, raddr)
 			if err != nil {
 				return nil, err
 			}

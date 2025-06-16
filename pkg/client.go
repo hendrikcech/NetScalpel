@@ -66,9 +66,14 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		}
 		c.id = reply.Id
 
-		conn, _, raddr, err := OpenUdpSocket(c.Ip, reply.Port)
+		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.Ip, reply.Port))
 		if err != nil {
-			return fmt.Errorf("OpenUdpSocket: %v\n", err)
+			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+		}
+
+		conn, err := ListenUDP()
+		if err != nil {
+			return fmt.Errorf("ListenUDP failed: %v", err.Error())
 		}
 		defer conn.Close()
 
@@ -95,13 +100,18 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 		}
 		c.id = reply.Id
 
-		conn, laddr, raddr, err := OpenUdpSocket(c.Ip, reply.Port)
+		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.Ip, reply.Port))
 		if err != nil {
-			return fmt.Errorf("OpenUdpSocket failed: %v", err.Error())
+			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+		}
+
+		conn, err := ListenUDP()
+		if err != nil {
+			return fmt.Errorf("ListenUDP failed: %v", err.Error())
 		}
 		defer conn.Close()
+		laddr := conn.LocalAddr().(*net.UDPAddr)
 
-		// TODO: implement retry loop
 		probeReplyReceived := false
 		for try := range 5 {
 			// Send an UDP packet to the newly opened server UDP socket to poke
@@ -109,7 +119,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			if try > 0 {
 				log.Printf("Sending NAT probe %v/5 from %v to %v...", try+1, laddr, raddr)
 			}
-			if _, err := conn.Write([]byte{}); err != nil {
+			if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
 				return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
 			}
 
@@ -333,18 +343,18 @@ func (c *CommandClient) Run(client *rpc.Client) error {
 			return logErr("RunCommand: failed RandDir: %v", err.Error())
 		}
 
-		cmd, err := command.Cmd(c.tempDir)
-		if err != nil {
-			return logErr("RunCommand: failed command.Cmd: %v", err.Error())
-		}
-
 		log.Printf("Writing %v result to %v", c.Params.Name(), c.tempDir)
 
 		if err := waitUntil(c.StartAt); err != nil {
 			return err
 		}
 
-		if err := RunCommand(cmd, c.Params.Timeout()); err != nil {
+		cmd, err := command.Exec(c.tempDir)
+		if err != nil {
+			return logErr("RunCommand: failed command.Cmd: %v", err.Error())
+		}
+
+		if err := MonitorCommand(cmd, c.Params.Timeout()); err != nil {
 			return fmt.Errorf("RunCommand: %v", err.Error())
 		}
 	} else {

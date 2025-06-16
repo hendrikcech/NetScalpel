@@ -115,23 +115,16 @@ type RequestUdpServerReply struct {
 }
 
 func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpServerReply) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", ":0")
+	conn, err := ListenUDP()
 	if err != nil {
-		return logErr("RequestUdpServer: net.ResolveUDPAddr failed: %v", err.Error())
-	}
-
-	conn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		return logErr("RequestUdpServer: net.ListenUDP failed: %v\n", err.Error())
+		return logErr("ListenUDP failed: %v", err.Error())
 	}
 	laddr := conn.LocalAddr().(*net.UDPAddr)
-
-	setSocketBuffers(conn)
 
 	reply.Id = uuid.New()
 	reply.Port = uint(laddr.Port)
 
-	log.Printf("RequestUdpServer %+v -> %+v: new UDP server listening at %v\n", args, reply, laddr)
+	log.Printf("RequestUdpServer %+v -> %+v: UDP socket at %v\n", args, reply, laddr)
 
 	if args.Mode == Receive {
 		go s.handleReceive(conn, reply.Id, args)
@@ -322,11 +315,6 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 		return logErr("RunCommand: failed RandDir: %v", err.Error())
 	}
 
-	cmd, err := command.Cmd(resultDir)
-	if err != nil {
-		return logErr("RunCommand: failed command.Cmd: %v", err.Error())
-	}
-
 	reply.Id = uuid.New()
 	log.Printf("Writing %v %v result to %v", args.Params.Name(), reply.Id, resultDir)
 
@@ -341,7 +329,13 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 			return
 		}
 
-		if err := RunCommand(cmd, args.Params.Timeout()); err != nil {
+		cmd, err := command.Exec(resultDir)
+		if err != nil {
+			c <- ResultPath{Err: fmt.Errorf("RunCommand: command.Exec: %v", err.Error())}
+			return
+		}
+
+		if err := MonitorCommand(cmd, args.Params.Timeout()); err != nil {
 			c <- ResultPath{Err: fmt.Errorf("RunCommand: %v", err.Error())}
 			return
 		}
