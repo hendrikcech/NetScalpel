@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"syscall"
 	"time"
@@ -35,8 +36,8 @@ type SenderParams interface {
 
 // UDP packet
 type Msg struct {
-	Seq uint64
-	Pad []byte
+	Seq  uint64
+	PadN uint
 }
 
 // Stores sent and received messages
@@ -53,11 +54,11 @@ type MsgRcvd struct {
 
 func (m *Msg) Encode(buf []byte) (int, error) {
 	binary.BigEndian.PutUint64(buf[0:], m.Seq)
-	n := copy(buf[8:], m.Pad)
-	if n < len(m.Pad) {
-		return 8, fmt.Errorf("Provided buffer was too small")
+	if len(buf) < int(8+m.PadN) {
+		return 8, fmt.Errorf("Provided buffer too small to add %v padding bytes", m.PadN)
 	}
-	return 8 + n, nil
+	rand.Read(buf[8 : 8+m.PadN]) // always succeeds
+	return int(8 + m.PadN), nil
 }
 
 func (m *Msg) Decode(buf []byte) {
@@ -410,10 +411,7 @@ func (s *BurstSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, err
 	msgs := make([]ipv4.Message, s.Params.Num)
 
 	for i := 0; i < int(s.Params.Num); i++ {
-		b := Msg{Seq: uint64(i)}
-		if s.Params.Pad > 0 {
-			b.Pad = make([]byte, s.Params.Pad)
-		}
+		b := Msg{Seq: uint64(i), PadN: s.Params.Pad}
 		buf := make([]byte, 1500)
 		n, err := b.Encode(buf)
 		if err != nil {
@@ -512,31 +510,27 @@ func (r *PeriodicSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, 
 
 	ticker := time.NewTicker(r.Params.Interval)
 	duration := time.After(r.Params.Duration)
+	buf := make([]byte, 1500)
 
 	seq := 0
 	for {
 		select {
 		case <-ticker.C:
 			// TODO: add pad
-			b := Msg{Seq: uint64(seq)}
-			if r.Params.Pad > 0 {
-				b.Pad = make([]byte, r.Params.Pad)
-			}
-
-			buf := make([]byte, 1500)
+			b := Msg{Seq: uint64(seq), PadN: r.Params.Pad}
 			n, err := b.Encode(buf)
 			if err != nil {
 				return nil, err
 			}
-			buf = buf[:n]
+			read := buf[:n]
 
 			msgsSent = append(msgsSent, MsgSent{Seq: b.Seq, TsSent: time.Now(), Len: 8 + r.Params.Pad})
 
-			nConn, err := conn.WriteTo(buf, raddr)
+			nConn, err := conn.WriteTo(read, raddr)
 			if err != nil {
 				return nil, err
 			}
-			if nConn != len(buf) {
+			if nConn != len(read) {
 				log.Printf("Not written the entire buffer: %v != %v", n, nConn)
 			}
 
@@ -676,7 +670,6 @@ func (r *RateSender) runParams(conn *net.UDPConn, raddr *net.UDPAddr, params Rat
 func (r *RateSender) sendRound(conn *ipv4.PacketConn, raddr *net.UDPAddr, packets uint, payloadSize uint) (uint, error) {
 	packetsLeft := packets
 	sent := uint(0)
-	payloadBuf := make([]byte, payloadSize)
 	for packetsLeft > 0 {
 		tsSent := time.Now()
 		packetsRound := packetsLeft
@@ -685,7 +678,7 @@ func (r *RateSender) sendRound(conn *ipv4.PacketConn, raddr *net.UDPAddr, packet
 		}
 		for i := 0; uint(i) < packetsRound; i++ {
 			msg := &r.tx[i]
-			b := Msg{Seq: r.seq + uint64(i), Pad: payloadBuf}
+			b := Msg{Seq: r.seq + uint64(i), PadN: payloadSize}
 			n, err := b.Encode(msg.Buffers[0])
 			if err != nil {
 				// r.msgs contains unsent messages
