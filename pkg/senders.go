@@ -215,10 +215,12 @@ func enableRxTimestamping(conn *net.UDPConn) error {
 	return err
 }
 
+// Reads transmission timestamps fromm conn until the context is cancelled.
+// At that point, it waits for 100 ms and checks if any more packets have been sent.
+// If not, the results are written to C. If so, it reads the timestamps, waits
+// another 100 ms and checks again.
 type TxTsReader struct {
-	C        chan []MsgSent
-	conn     *net.UDPConn
-	deadline <-chan time.Time
+	C chan []MsgSent
 }
 
 func NewTxTsReader() *TxTsReader {
@@ -227,10 +229,7 @@ func NewTxTsReader() *TxTsReader {
 	}
 }
 
-func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn, duration time.Duration) error {
-	t.conn = conn
-	// TODO: use ctx deadline instead of the explicit duration?
-	t.deadline = time.After(duration)
+func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err
@@ -249,22 +248,27 @@ func (t *TxTsReader) run(ctx context.Context) func(uintptr) {
 			t.C <- sentMsgs
 		}()
 
+		finalIteration := false
 		for {
 			n, oobn, _, _, err := syscall.Recvmsg(int(fd), buf, oob, unix.MSG_ERRQUEUE)
 			if err != nil {
 				if err == syscall.EAGAIN {
+					if finalIteration {
+						return
+					}
 					select {
 					case <-time.After(100 * time.Millisecond):
 						continue
-					case <-t.deadline:
-						break
 					case <-ctx.Done():
-						break
+						finalIteration = true
+						time.Sleep(100 * time.Millisecond)
+						continue
 					}
 				} else {
 					slog.ErrorContext(ctx, "TxTsReader recvmsg error", "error", err)
 				}
 			}
+			finalIteration = false
 
 			cms, err := unix.ParseSocketControlMessage(oob[:oobn])
 			if err != nil {
@@ -302,12 +306,41 @@ func (t *TxTsReader) run(ctx context.Context) func(uintptr) {
 				slog.WarnContext(ctx, "TxTsReader: Missing data in cm",
 					"ts", tsSet,
 					"seq", seqSet,
-					"cms", cms)
+					"cms", cms,
+					"oob", fmt.Sprintf("%x", oob[:oobn]),
+				)
 			}
 
 			sentMsgs = append(sentMsgs, msg)
 		}
 	}
+}
+
+func setupTxTsReader(ctx context.Context, conn *net.UDPConn) (*TxTsReader, context.CancelFunc) {
+	var reader *TxTsReader
+	ctxReader, cancelReader := context.WithCancel(ctx)
+	if err := enableTxTimestamping(conn); err != nil {
+		slog.WarnContext(ctx, "Failed enabling tx timestamping", "error", err.Error())
+
+	} else {
+		reader = NewTxTsReader()
+		go reader.Run(ctxReader, conn)
+	}
+	return reader, cancelReader
+}
+
+func terminateTxTsReader(ctx context.Context, reader *TxTsReader, cancelReader context.CancelFunc, sentMsgs []MsgSent) []MsgSent {
+	if reader == nil {
+		return sentMsgs
+	}
+	slog.DebugContext(ctx, "Canceling tx ts reader ctx and waiting for msgs")
+	cancelReader()
+	tsMsgs := <-reader.C
+	if len(sentMsgs) != len(tsMsgs) {
+		slog.ErrorContext(ctx, fmt.Sprintf("run function returned %v, txTsReader %v msgs",
+			len(sentMsgs), len(tsMsgs)))
+	}
+	return tsMsgs
 }
 
 func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
@@ -412,22 +445,15 @@ func (s *BurstSender) Mode() UDPServerMode {
 }
 
 func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
-	var txTsReader *TxTsReader
-	if err := enableTxTimestamping(conn); err != nil {
-		slog.WarnContext(ctx, "Failed enabling tx timestamping", "error", err)
-	} else {
-		txTsReader = NewTxTsReader()
-		go txTsReader.Run(ctx, conn, s.Params.GetDuration()+500*time.Millisecond)
-	}
+	tsReader, tsReaderCancel := setupTxTsReader(ctx, conn)
+	defer tsReaderCancel()
 
 	msgsSent, err := s.run(ctx, conn, raddr)
 	if err != nil {
 		return nil, err
 	}
 
-	if txTsReader != nil {
-		msgsSent = <-txTsReader.C
-	}
+	terminateTxTsReader(ctx, tsReader, tsReaderCancel, msgsSent)
 
 	return msgsSent, nil
 }
@@ -514,22 +540,15 @@ func (s *PeriodicSender) Mode() UDPServerMode {
 }
 
 func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
-	var txTsReader *TxTsReader
-	if err := enableTxTimestamping(conn); err != nil {
-		slog.WarnContext(ctx, "Failed enabling tx timestamping", "error", err.Error())
-	} else {
-		txTsReader = NewTxTsReader()
-		go txTsReader.Run(ctx, conn, r.Params.GetDuration()+500*time.Millisecond)
-	}
+	tsReader, tsReaderCancel := setupTxTsReader(ctx, conn)
+	defer tsReaderCancel()
 
 	msgsSent, err := r.run(ctx, conn, raddr)
 	if err != nil {
 		return nil, err
 	}
 
-	if txTsReader != nil {
-		msgsSent = <-txTsReader.C
-	}
+	terminateTxTsReader(ctx, tsReader, tsReaderCancel, msgsSent)
 
 	return msgsSent, nil
 }
@@ -635,34 +654,26 @@ func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPA
 		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
 	}
 
-	var txTsReader *TxTsReader
-	if err := enableTxTimestamping(conn); err != nil {
-		slog.WarnContext(ctx, "Failed enabling tx timestamping", "error", err.Error())
-	} else {
-		r.tsEnabled = true
-		txTsReader = NewTxTsReader()
-		go txTsReader.Run(ctx, conn, r.Params.GetDuration()+500*time.Millisecond)
-	}
+	tsReader, tsReaderCancel := setupTxTsReader(ctx, conn)
+	defer tsReaderCancel()
 
 	for i := range r.Params {
-		if err := r.runParams(ctx, conn, raddr, r.Params[i]); err != nil {
+		if err := r.runParams(ctx, conn, raddr, r.Params[i], tsReader != nil); err != nil {
 			return nil, err
 		}
 	}
 
-	if r.tsEnabled {
-		r.msgs = <-txTsReader.C
-	}
+	terminateTxTsReader(ctx, tsReader, tsReaderCancel, r.msgs)
 
 	return r.msgs, nil
 }
 
-func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr, params RateParams) error {
+func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr, params RateParams, tsEnabled bool) error {
 	ticker := time.Tick(params.Interval)
 	duration := time.After(params.Duration)
 
 	// Only enable socket pacing if we can retrieve the actual tx timestamps
-	if r.tsEnabled {
+	if tsEnabled {
 		// approximate 50 bytes overhead from L2, IP and UDP headers
 		pacingRate := uint(params.Pps*params.PayloadSize) + 50
 		if err := setMaxPacingRate(conn, pacingRate); err != nil {
