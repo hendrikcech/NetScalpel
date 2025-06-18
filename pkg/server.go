@@ -13,17 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
-func logErr(fmtStr string, args ...interface{}) error {
-	e := fmt.Errorf(fmtStr, args...)
-	slog.Error(e.Error())
-	return e
-}
-
-func logErrCtx(ctx context.Context, fmtStr string, args ...interface{}) error {
+func logErrContext(ctx context.Context, fmtStr string, args ...interface{}) error {
 	e := fmt.Errorf(fmtStr, args...)
 	slog.ErrorContext(ctx, "", "error", e)
 	return e
@@ -88,18 +80,20 @@ type Server struct {
 	quit     chan any
 	ctx      context.Context
 
-	resultsRcvdC map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd]
-	resultsSentC map[uuid.UUID]chan *Result[[]MsgSent, MsgSent]
-	resultsPathC map[uuid.UUID]chan ResultPath
+	ids          map[string]bool
+	resultsRcvdC map[string]chan *Result[[]MsgRcvd, MsgRcvd]
+	resultsSentC map[string]chan *Result[[]MsgSent, MsgSent]
+	resultsPathC map[string]chan ResultPath
 	resultsLock  sync.RWMutex
 }
 
 func NewServer(ctx context.Context) *Server {
 	return &Server{quit: make(chan any),
 		ctx:          ctx,
-		resultsRcvdC: make(map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd]),
-		resultsSentC: make(map[uuid.UUID]chan *Result[[]MsgSent, MsgSent]),
-		resultsPathC: make(map[uuid.UUID]chan ResultPath),
+		ids:          make(map[string]bool),
+		resultsRcvdC: make(map[string]chan *Result[[]MsgRcvd, MsgRcvd]),
+		resultsSentC: make(map[string]chan *Result[[]MsgSent, MsgSent]),
+		resultsPathC: make(map[string]chan ResultPath),
 	}
 }
 
@@ -110,38 +104,48 @@ func (s *Server) Stop() {
 	s.wg.Wait()
 }
 
-type RequestUdpServerArgs struct {
+type RequestUDPServerArgs struct {
+	ID string
+
 	// Server stops reading from socket after Timeout
 	Timeout time.Duration
 
 	StartAt time.Time
 
-	Mode UdpServerMode
+	Mode UDPServerMode
 
 	Params SenderParams
 }
-type RequestUdpServerReply struct {
-	Id   uuid.UUID
+type RequestUDPServerReply struct {
 	Port uint
 }
 
-func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpServerReply) error {
-	reply.Id = uuid.New()
+func (s *Server) RequestUDPServer(args RequestUDPServerArgs, reply *RequestUDPServerReply) error {
+	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
+	if args.ID == "" {
+		return logErrContext(ctx, "RequestUDPServer: ID is empty")
+	}
 
-	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", reply.Id))
+	// Check that the ID is unused
+	s.resultsLock.Lock()
+	if _, ok := s.ids[args.ID]; ok {
+		return logErrContext(ctx, "ID already used")
+	}
+	s.ids[args.ID] = true
+	s.resultsLock.Unlock()
 
 	conn, err := ListenUDP(ctx)
 	if err != nil {
-		return logErr("ListenUDP failed: %v", err.Error())
+		return logErrContext(ctx, "ListenUDP failed: %v", err.Error())
 	}
 	laddr := conn.LocalAddr().(*net.UDPAddr)
 
 	reply.Port = uint(laddr.Port)
 
-	slog.InfoContext(ctx, "RequestUdpServer", "args", args, "reply", reply, "localAddr", laddr)
+	slog.InfoContext(ctx, "RequestUDPServer", "args", args, "reply", reply, "localAddr", laddr)
 
 	if args.Mode == Receive {
-		go s.handleReceive(ctx, conn, reply.Id, args)
+		go s.handleReceive(ctx, conn, args)
 	} else {
 		var sender Sender
 		switch args.Mode {
@@ -152,54 +156,54 @@ func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpSe
 		case SendPeriodic:
 			sender = &PeriodicSender{Params: args.Params.(PeriodicParams)}
 		default:
-			return logErr("RequestUdpServer: unknown mode %v", args.Mode)
+			return logErrContext(ctx, "RequestUDPServer: unknown mode %v", args.Mode)
 		}
-		go s.handleSender(ctx, conn, reply.Id, sender, args)
+		go s.handleSender(ctx, conn, args, sender)
 	}
 
 	return nil
 }
 
-func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, id uuid.UUID, req RequestUdpServerArgs) {
+func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args RequestUDPServerArgs) {
 	defer conn.Close()
 
 	s.resultsLock.Lock()
-	s.resultsRcvdC[id] = make(chan *Result[[]MsgRcvd, MsgRcvd], 1)
+	s.resultsRcvdC[args.ID] = make(chan *Result[[]MsgRcvd, MsgRcvd], 1)
 	s.resultsLock.Unlock()
 
 	var result Result[[]MsgRcvd, MsgRcvd]
 
 	defer func() {
 		s.resultsLock.Lock()
-		s.resultsRcvdC[id] <- &result
-		close(s.resultsRcvdC[id])
+		s.resultsRcvdC[args.ID] <- &result
+		close(s.resultsRcvdC[args.ID])
 		s.resultsLock.Unlock()
 	}()
 
-	if result.Err = waitUntil(ctx, req.StartAt); result.Err != nil {
+	if result.Err = waitUntil(ctx, args.StartAt); result.Err != nil {
 		return
 	}
 
-	conn.SetReadDeadline(time.Now().Add(req.Timeout))
-	if result.Res, result.Err = ReceiveFrom(ctx, conn, req.Params.NumPackets()); result.Err != nil {
+	conn.SetReadDeadline(time.Now().Add(args.Timeout))
+	if result.Res, result.Err = ReceiveFrom(ctx, conn, args.Params.NumPackets()); result.Err != nil {
 		return
 	}
 	slog.DebugContext(ctx, "Finished handleReceive", "packets", len(result.Res))
 }
 
-func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, id uuid.UUID, sender Sender, req RequestUdpServerArgs) {
+func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, args RequestUDPServerArgs, sender Sender) {
 	defer conn.Close()
 
 	s.resultsLock.Lock()
-	s.resultsSentC[id] = make(chan *Result[[]MsgSent, MsgSent], 1)
+	s.resultsSentC[args.ID] = make(chan *Result[[]MsgSent, MsgSent], 1)
 	s.resultsLock.Unlock()
 
 	var result Result[[]MsgSent, MsgSent]
 
 	defer func() {
 		s.resultsLock.Lock()
-		s.resultsSentC[id] <- &result
-		close(s.resultsSentC[id])
+		s.resultsSentC[args.ID] <- &result
+		close(s.resultsSentC[args.ID])
 		s.resultsLock.Unlock()
 	}()
 
@@ -224,12 +228,12 @@ func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, id uuid.UU
 
 	slog.DebugContext(ctx, "Received kick-off msg", "remoteAddr", raddr)
 
-	if err := waitUntil(ctx, req.StartAt); err != nil {
+	if err := waitUntil(ctx, args.StartAt); err != nil {
 		result.Err = err
 		return
 	}
 
-	conn.SetReadDeadline(time.Now().Add(req.Timeout))
+	conn.SetReadDeadline(time.Now().Add(args.Timeout))
 	result.Res, result.Err = sender.Run(ctx, conn, raddr.(*net.UDPAddr))
 	if result.Err != nil {
 		return
@@ -237,21 +241,21 @@ func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, id uuid.UU
 	slog.DebugContext(ctx, "Finished handleSender", "packets", len(result.Res), "remoteAddr", raddr)
 }
 
-type RequestUdpServerResultArgs struct {
-	Id uuid.UUID
+type RequestUDPServerResultArgs struct {
+	ID string
 }
-type RequestUdpServerResultReply struct {
+type RequestUDPServerResultReply struct {
 	Msgs []interface{}
 }
 
-func (r *RequestUdpServerResultReply) MsgRcvd() []MsgRcvd {
+func (r *RequestUDPServerResultReply) MsgRcvd() []MsgRcvd {
 	msgs := make([]MsgRcvd, len(r.Msgs))
 	for i, d := range r.Msgs {
 		msgs[i] = d.(MsgRcvd)
 	}
 	return msgs
 }
-func (r *RequestUdpServerResultReply) MsgSent() []MsgSent {
+func (r *RequestUDPServerResultReply) MsgSent() []MsgSent {
 	msgs := make([]MsgSent, len(r.Msgs))
 	for i, d := range r.Msgs {
 		msgs[i] = d.(MsgSent)
@@ -259,33 +263,33 @@ func (r *RequestUdpServerResultReply) MsgSent() []MsgSent {
 	return msgs
 }
 
-func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *RequestUdpServerResultReply) error {
-	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", args.Id))
-	slog.DebugContext(ctx, "RequestUdpServerResult: request")
+func (s *Server) RequestUDPServerResult(args RequestUDPServerResultArgs, reply *RequestUDPServerResultReply) error {
+	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
+	slog.DebugContext(ctx, "RequestUDPServerResult: request")
 
 	s.resultsLock.Lock()
-	cRcvd, okRcvd := s.resultsRcvdC[args.Id]
-	cSent, okSent := s.resultsSentC[args.Id]
+	cRcvd, okRcvd := s.resultsRcvdC[args.ID]
+	cSent, okSent := s.resultsSentC[args.ID]
 	s.resultsLock.Unlock()
 
 	if okRcvd {
-		if err := handleChanResult(ctx, cRcvd, args.Id, reply); err != nil {
-			return logErr("Receive from RcvdC: %v", err)
+		if err := handleChanResult(ctx, cRcvd, args.ID, reply); err != nil {
+			return logErrContext(ctx, "Receive from RcvdC: %v", err)
 		}
 	} else if okSent {
-		if err := handleChanResult(ctx, cSent, args.Id, reply); err != nil {
-			return logErr("Receive from SentC: %v", err)
+		if err := handleChanResult(ctx, cSent, args.ID, reply); err != nil {
+			return logErrContext(ctx, "Receive from SentC: %v", err)
 		}
 	} else {
-		return logErr("No test with id %v started\n", args.Id)
+		return logErrContext(ctx, "No test with id %v started\n", args.ID)
 	}
 
-	slog.DebugContext(ctx, "RequestUdpServerResult: responded")
+	slog.DebugContext(ctx, "RequestUDPServerResult: responded")
 
 	return nil
 }
 
-func handleChanResult[S []T, T any](ctx context.Context, c chan *Result[S, T], id uuid.UUID, reply *RequestUdpServerResultReply) error {
+func handleChanResult[S []T, T any](ctx context.Context, c chan *Result[S, T], id string, reply *RequestUDPServerResultReply) error {
 	var (
 		result *Result[S, T]
 		closed bool
@@ -315,6 +319,7 @@ func handleChanResult[S []T, T any](ctx context.Context, c chan *Result[S, T], i
 
 type RunCommandArgs struct {
 	// Mode RunCommandMode
+	ID string
 
 	StartAt time.Time
 
@@ -322,14 +327,25 @@ type RunCommandArgs struct {
 }
 
 type RunCommandReply struct {
-	Id uuid.UUID
+	// Id uuid.UUID
 	// Port uint
 }
 
 func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
-	reply.Id = uuid.New()
+	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
 
-	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", reply.Id))
+	if args.ID == "" {
+		return logErrContext(ctx, "RunCommand: ID is empty")
+	}
+
+	c := make(chan ResultPath, 1)
+	s.resultsLock.Lock()
+	if _, ok := s.ids[args.ID]; ok {
+		return logErrContext(ctx, "ID already used")
+	}
+	s.ids[args.ID] = true
+	s.resultsPathC[args.ID] = c
+	s.resultsLock.Unlock()
 
 	var command Command
 	switch args.Params.(type) {
@@ -341,15 +357,10 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 
 	resultDir, err := RandDir(args.Params.Name())
 	if err != nil {
-		return logErr("RunCommand: failed RandDir: %v", err.Error())
+		return logErrContext(ctx, "RunCommand: failed RandDir: %v", err.Error())
 	}
 
 	slog.DebugContext(ctx, "RunCommand", "name", args.Params.Name(), "resultDir", resultDir)
-
-	c := make(chan ResultPath, 1)
-	s.resultsLock.Lock()
-	s.resultsPathC[reply.Id] = c
-	s.resultsLock.Unlock()
 
 	go func() {
 		if err := waitUntil(ctx, args.StartAt); err != nil {
@@ -375,31 +386,31 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 }
 
 type RequestRunCommandResultArgs struct {
-	Id uuid.UUID
+	ID string
 }
 type RequestRunCommandResultReply struct {
 	Files map[string][]byte
 }
 
 func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply *RequestRunCommandResultReply) error {
-	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", args.Id))
+	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
 
 	s.resultsLock.Lock()
-	c, ok := s.resultsPathC[args.Id]
+	c, ok := s.resultsPathC[args.ID]
 	s.resultsLock.Unlock()
 
 	if !ok {
-		return logErr("No command with id %v started\n", args.Id)
+		return logErrContext(ctx, "No command with that ID started")
 	}
 
 	result := <-c
 	if result.Err != nil {
-		return logErr("%v", result.Err.Error())
+		return logErrContext(ctx, "%v", result.Err.Error())
 	}
 
 	entries, err := os.ReadDir(result.Path)
 	if err != nil {
-		return logErr("Failed os.ReadDir(%v): %v", result.Path, err)
+		return logErrContext(ctx, "Failed os.ReadDir(%v): %v", result.Path, err)
 	}
 
 	reply.Files = make(map[string][]byte, len(entries))
@@ -408,13 +419,13 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 		path := filepath.Join(result.Path, entry.Name())
 
 		if entry.IsDir() {
-			return logErr("Skipping directory %v", path)
+			return logErrContext(ctx, "Skipping directory %v", path)
 		}
 
 		var buf bytes.Buffer
 		w := bufio.NewWriter(&buf)
 		if err := CompressFile(path, w); err != nil {
-			return logErr("Failed compression: %v", err.Error())
+			return logErrContext(ctx, "Failed compression: %v", err.Error())
 		}
 		w.Flush()
 

@@ -10,12 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
 )
 
 func main() {
 	burstCmd := flag.NewFlagSet("burst", flag.ExitOnError)
-	burstIp := burstCmd.String("ip", "", "ip")
+	burstIP := burstCmd.String("ip", "", "ip")
 	burstPort := burstCmd.Uint("port", 8500, "port")
 	burstNum := burstCmd.Uint("num", 10, "num")
 	burstPad := burstCmd.Uint("pad", 0, "pad")
@@ -24,7 +25,7 @@ func main() {
 	burstDirection := burstCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
 
 	rateCmd := flag.NewFlagSet("rate", flag.ExitOnError)
-	rateIp := rateCmd.String("ip", "", "ip")
+	rateIP := rateCmd.String("ip", "", "ip")
 	ratePort := rateCmd.Uint("port", 8500, "port")
 	rateRate := rateCmd.Float64("rate", 0, "rate in Mbps")
 	rateDuration := rateCmd.Float64("duration", 5, "duration in seconds")
@@ -32,7 +33,7 @@ func main() {
 	rateDirection := rateCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
 
 	periodicCmd := flag.NewFlagSet("periodic", flag.ExitOnError)
-	periodicIp := periodicCmd.String("ip", "", "ip")
+	periodicIP := periodicCmd.String("ip", "", "ip")
 	periodicPort := periodicCmd.Uint("port", 8500, "port")
 	periodicPad := periodicCmd.Uint("pad", 0, "pad")
 	periodicInterval := periodicCmd.Uint("interval", 1000, "interval in milliseconds")
@@ -41,7 +42,7 @@ func main() {
 	periodicDirection := periodicCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
-	serverIp := serverCmd.String("ip", "0.0.0.0", "ip")
+	serverIP := serverCmd.String("ip", "0.0.0.0", "ip")
 	serverPort := serverCmd.Uint("port", 8500, "port")
 
 	failMessage := "expected 'burst', 'rate', 'periodic', or 'server' subcommand"
@@ -60,7 +61,7 @@ func main() {
 	switch os.Args[1] {
 	case "burst":
 		burstCmd.Parse(os.Args[2:])
-		if *burstIp == "" {
+		if *burstIP == "" {
 			fmt.Println("expected -ip")
 			os.Exit(1)
 		}
@@ -74,13 +75,13 @@ func main() {
 			os.Exit(1)
 		}
 
-		rpcClient = dialRpcClient(*burstIp, *burstPort)
+		rpcClient = dialRpcClient(*burstIP, *burstPort)
 
 		client = &pkg.SenderClient{
-			Ip:        *burstIp,
-			Port:      *burstPort,
+			IP:        *burstIP,
 			Out:       *burstOut,
 			Direction: direction,
+			ID:        uuid.New().String(),
 
 			Sender: &pkg.BurstSender{Params: pkg.BurstParams{
 				Timeout: time.Duration(*burstTimeout) * time.Millisecond,
@@ -90,7 +91,7 @@ func main() {
 		}
 	case "rate":
 		rateCmd.Parse(os.Args[2:])
-		if *rateIp == "" {
+		if *rateIP == "" {
 			fmt.Println("expected -ip")
 			os.Exit(1)
 		}
@@ -108,13 +109,13 @@ func main() {
 			os.Exit(1)
 		}
 
-		rpcClient = dialRpcClient(*rateIp, *ratePort)
+		rpcClient = dialRpcClient(*rateIP, *ratePort)
 
 		client = &pkg.SenderClient{
-			Ip:        *rateIp,
-			Port:      *ratePort,
+			IP:        *rateIP,
 			Out:       *rateOut,
 			Direction: direction,
+			ID:        uuid.New().String(),
 
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         uint(*rateRate * 1e6 / 8 / 1400),
@@ -126,7 +127,7 @@ func main() {
 
 	case "periodic":
 		periodicCmd.Parse(os.Args[2:])
-		if *periodicIp == "" {
+		if *periodicIP == "" {
 			fmt.Println("expected -ip")
 			os.Exit(1)
 		}
@@ -140,13 +141,13 @@ func main() {
 			os.Exit(1)
 		}
 
-		rpcClient = dialRpcClient(*periodicIp, *periodicPort)
+		rpcClient = dialRpcClient(*periodicIP, *periodicPort)
 
 		client = &pkg.SenderClient{
-			Ip:        *periodicIp,
-			Port:      *periodicPort,
+			IP:        *periodicIP,
 			Out:       *periodicOut,
 			Direction: direction,
+			ID:        uuid.New().String(),
 
 			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
 				Interval: time.Duration(*periodicInterval) * time.Millisecond,
@@ -160,7 +161,7 @@ func main() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-		s := pkg.RunServer(ctx, *serverIp, *serverPort)
+		s := pkg.RunServer(ctx, *serverIP, *serverPort)
 
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)

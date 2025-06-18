@@ -15,18 +15,33 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type UdpServerMode int
+type UDPServerMode int
 
 const (
-	Receive UdpServerMode = iota
+	Receive UDPServerMode = iota
 	SendBurst
 	SendRate
 	SendPeriodic
 )
 
+func (m UDPServerMode) String() string {
+	switch m {
+	case Receive:
+		return "receive"
+	case SendBurst:
+		return "burst"
+	case SendRate:
+		return "rate"
+	case SendPeriodic:
+		return "periodic"
+	default:
+		panic(fmt.Sprintf("Unknown UDPServerMode '%d'", m))
+	}
+}
+
 type Sender interface {
 	GetParams() SenderParams
-	Mode() UdpServerMode
+	Mode() UDPServerMode
 	Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error)
 }
 
@@ -392,7 +407,7 @@ func (r *BurstSender) GetParams() SenderParams {
 	return r.Params
 }
 
-func (s *BurstSender) Mode() UdpServerMode {
+func (s *BurstSender) Mode() UDPServerMode {
 	return SendBurst
 }
 
@@ -494,7 +509,7 @@ func (r *PeriodicSender) GetParams() SenderParams {
 	return r.Params
 }
 
-func (s *PeriodicSender) Mode() UdpServerMode {
+func (s *PeriodicSender) Mode() UDPServerMode {
 	return SendPeriodic
 }
 
@@ -609,7 +624,7 @@ func (r *RateSender) GetParams() SenderParams {
 	return r.Params
 }
 
-func (s *RateSender) Mode() UdpServerMode {
+func (s *RateSender) Mode() UDPServerMode {
 	return SendRate
 }
 

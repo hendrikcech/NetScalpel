@@ -18,8 +18,7 @@ import (
 )
 
 type Executor struct {
-	Ip        string
-	Port      uint
+	IP        string
 	RpcClient *rpc.Client
 	G         *errgroup.Group
 	Clients   []pkg.Client
@@ -28,8 +27,7 @@ type Executor struct {
 
 func NewExecutor(ctx context.Context, ip string, port uint) *Executor {
 	return &Executor{
-		Ip:        ip,
-		Port:      port,
+		IP:        ip,
 		RpcClient: dialRpcClient(ip, port),
 		G:         new(errgroup.Group),
 		Clients:   make([]pkg.Client, 0),
@@ -95,8 +93,7 @@ func (e *Executor) tcpdump(resultPath string, start time.Time, duration time.Dur
 func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	owdStart := ts.Add(7 * time.Second)
 	e.RunClient(&pkg.SenderClient{
-		Ip:        e.Ip,
-		Port:      e.Port,
+		IP:        e.IP,
 		Out:       filepath.Join(resultPath, "owd_ul.csv"),
 		Direction: pkg.UL,
 		StartAt:   owdStart,
@@ -108,8 +105,7 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	})
 
 	e.RunClient(&pkg.SenderClient{
-		Ip:        e.Ip,
-		Port:      e.Port,
+		IP:        e.IP,
 		Out:       filepath.Join(resultPath, "owd_dl.csv"),
 		Direction: pkg.DL,
 		StartAt:   owdStart,
@@ -122,8 +118,7 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 
 	rateStart := ts.Add(11 * time.Second)
 	e.RunClient(&pkg.SenderClient{
-		Ip:        e.Ip,
-		Port:      e.Port,
+		IP:        e.IP,
 		Out:       filepath.Join(resultPath, "rate_ul.csv"),
 		Direction: pkg.UL,
 		StartAt:   rateStart,
@@ -136,8 +131,7 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	})
 
 	e.RunClient(&pkg.SenderClient{
-		Ip:        e.Ip,
-		Port:      e.Port,
+		IP:        e.IP,
 		Out:       filepath.Join(resultPath, "rate_dl.csv"),
 		Direction: pkg.DL,
 		StartAt:   rateStart,
@@ -206,8 +200,7 @@ func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params Param
 			pps = 700 * 1e6 / 8 / 1400
 		}
 		e.RunClient(&pkg.SenderClient{
-			Ip:        e.Ip,
-			Port:      e.Port,
+			IP:        e.IP,
 			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), durationMs)),
 			Direction: direction,
 			StartAt:   start,
@@ -287,8 +280,7 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
 				pps = 700 * 1e6 / 8 / 1400
 			}
 			e.RunClient(&pkg.SenderClient{
-				Ip:        e.Ip,
-				Port:      e.Port,
+				IP:        e.IP,
 				Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v.csv", direction.StringLower())),
 				Direction: direction,
 				StartAt:   start,
@@ -312,8 +304,7 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
 				break
 			}
 			e.RunClient(&pkg.SenderClient{
-				Ip:        e.Ip,
-				Port:      e.Port,
+				IP:        e.IP,
 				Out:       filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d.csv", direction.StringLower(), num)),
 				Direction: direction,
 				StartAt:   start,
@@ -370,8 +361,7 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, params ParamMap) {
 	}
 
 	e.RunClient(&pkg.SenderClient{
-		Ip:        e.Ip,
-		Port:      e.Port,
+		IP:        e.IP,
 		Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_init.csv", direction.StringLower())),
 		Direction: direction,
 		StartAt:   start,
@@ -407,8 +397,7 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, params ParamMap) {
 		coolDowns = append(coolDowns, coolDownMs)
 
 		e.RunClient(&pkg.SenderClient{
-			Ip:        e.Ip,
-			Port:      e.Port,
+			IP:        e.IP,
 			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
 			Direction: direction,
 			StartAt:   start,
@@ -493,8 +482,7 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 		coolDowns = append(coolDowns, coolDownMs)
 
 		e.RunClient(&pkg.SenderClient{
-			Ip:        e.Ip,
-			Port:      e.Port,
+			IP:        e.IP,
 			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
 			Direction: direction,
 			StartAt:   start,
@@ -547,8 +535,7 @@ func (e *Executor) MeasOWD(ts time.Time, resultPath string, params ParamMap) {
 
 	for _, direction := range []pkg.Direction{pkg.DL, pkg.UL} {
 		e.RunClient(&pkg.SenderClient{
-			Ip:        e.Ip,
-			Port:      e.Port,
+			IP:        e.IP,
 			Out:       filepath.Join(resultPath, fmt.Sprintf("owd_%v.csv", direction.StringLower())),
 			Direction: direction,
 			StartAt:   start,
@@ -606,8 +593,7 @@ func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) {
 		coolDowns = append(coolDowns, coolDownMs)
 
 		e.RunClient(&pkg.SenderClient{
-			Ip:        e.Ip,
-			Port:      e.Port,
+			IP:        e.IP,
 			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
 			Direction: direction,
 			StartAt:   start,

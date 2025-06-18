@@ -23,16 +23,16 @@ import (
 
 func main() {
 	clientCmd := flag.NewFlagSet("client", flag.ExitOnError)
-	clientIp := clientCmd.String("ip", "", "server ip")
+	clientIP := clientCmd.String("ip", "", "server ip")
 	clientPort := clientCmd.Uint("port", 8500, "server port")
 	clientResults := clientCmd.String("results", "results", "path to results folder")
-	clientRounds := clientCmd.Uint("rounds", 0, "number of measurement rounds to run; 0 = infinite")
+	clientRounds := clientCmd.Uint("rounds", 1, "number of measurement rounds to run; 0 = infinite")
 	clientProcedure := clientCmd.String("procedure", "", "test procedure")
 	clientParams := clientCmd.String("params", "", "semicolon-separated key=value pairs passed to procedure")
 	clientProfile := clientCmd.String("profile", "", "write pprof to file")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
-	serverIp := serverCmd.String("ip", "0.0.0.0", "ip")
+	serverIP := serverCmd.String("ip", "0.0.0.0", "ip")
 	serverPort := serverCmd.Uint("port", 8500, "port")
 	serverProfile := serverCmd.String("profile", "", "write pprof to file")
 
@@ -52,7 +52,7 @@ func main() {
 	switch os.Args[1] {
 	case "client":
 		clientCmd.Parse(os.Args[2:])
-		if *clientIp == "" {
+		if *clientIP == "" {
 			fmt.Println("expected -ip")
 			os.Exit(1)
 		}
@@ -76,7 +76,7 @@ func main() {
 		}
 
 		client := Client{
-			Ip:        *clientIp,
+			IP:        *clientIP,
 			Port:      *clientPort,
 			Results:   *clientResults,
 			Rounds:    *clientRounds,
@@ -94,7 +94,7 @@ func main() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-		s := pkg.RunServer(ctx, *serverIp, *serverPort)
+		s := pkg.RunServer(ctx, *serverIP, *serverPort)
 
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)
@@ -110,7 +110,7 @@ func setupSlog() {
 	// enc := slog.NewJSONHandler(os.Stdout, nil)
 	enc := slog.NewTextHandler(os.Stdout, nil)
 	log := slog.New(pkg.SlogContextHandler{enc, []any{
-		pkg.SlogIdKey{},
+		pkg.SlogIDKey{},
 	}})
 	slog.SetDefault(log)
 }
@@ -211,7 +211,7 @@ func parseParams(paramStr string) (ParamMap, error) {
 }
 
 type Client struct {
-	Ip        string
+	IP        string
 	Port      uint
 	Results   string
 	Rounds    uint
@@ -223,7 +223,7 @@ type Client struct {
 
 func (c *Client) Run(ctx context.Context) {
 	for i := range c.Rounds {
-		e := NewExecutor(ctx, c.Ip, c.Port)
+		e := NewExecutor(ctx, c.IP, c.Port)
 		c.round = i
 
 		proceduresUlDl := map[string]ProcedureFunc{
@@ -258,7 +258,7 @@ func (c *Client) Run(ctx context.Context) {
 		}
 
 		if err := e.G.Wait(); err != nil {
-			slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Aborting due to failed client.Run: %v", c.round+1, c.Rounds), "error", err)
+			slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Aborting due to failed client.Run", c.round+1, c.Rounds), "error", err)
 			continue
 		}
 

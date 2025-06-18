@@ -138,7 +138,7 @@ func ParseDirection(direction string) (Direction, error) {
 }
 
 // slog attr key for request id
-type SlogIdKey struct{}
+type SlogIDKey struct{}
 
 type SlogContextHandler struct {
 	slog.Handler
@@ -160,4 +160,15 @@ func (h SlogContextHandler) observe(ctx context.Context) (as []slog.Attr) {
 		as = append(as, a)
 	}
 	return
+}
+
+var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func GenID(content string) string {
+	b := make([]rune, 12)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+
+	return fmt.Sprintf("%s_%s_%s", time.Now().Format("20060102T150405"), content, string(b))
 }

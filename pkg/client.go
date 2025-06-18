@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
-	"github.com/google/uuid"
 	"log/slog"
 	"net"
 	"net/rpc"
@@ -37,8 +36,7 @@ type MsgResult struct {
 }
 
 type SenderClient struct {
-	Ip        string
-	Port      uint
+	IP        string
 	Out       string
 	Direction Direction
 	StartAt   time.Time
@@ -49,25 +47,30 @@ type SenderClient struct {
 	MsgsRcvd []MsgRcvd
 	Results  []MsgResult
 
-	id uuid.UUID
+	ID string
 }
 
 func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
+	if c.ID == "" {
+		c.ID = GenID(c.Sender.Mode().String())
+		ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
+	}
+
 	switch c.Direction {
 	case UL:
-		args := RequestUdpServerArgs{
+		args := RequestUDPServerArgs{
+			ID:      c.ID,
 			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
 			StartAt: c.StartAt,
 			Mode:    Receive,
 			Params:  c.Sender.GetParams(),
 		}
-		var reply RequestUdpServerReply
-		if err := client.Call("Server.RequestUdpServer", args, &reply); err != nil {
-			return fmt.Errorf("Call Server.RequestUdpServerReply failed: %v", err.Error())
+		var reply RequestUDPServerReply
+		if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
+			return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
 		}
-		c.id = reply.Id
 
-		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.Ip, reply.Port))
+		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
 		if err != nil {
 			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 		}
@@ -90,19 +93,19 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 			return fmt.Errorf("send failed: %v\n", err)
 		}
 	case DL:
-		args := RequestUdpServerArgs{
+		args := RequestUDPServerArgs{
+			ID:      c.ID,
 			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
 			StartAt: c.StartAt,
 			Mode:    c.Sender.Mode(),
 			Params:  c.Sender.GetParams(),
 		}
-		var reply RequestUdpServerReply
-		if err := client.Call("Server.RequestUdpServer", args, &reply); err != nil {
-			return fmt.Errorf("Call Server.RequestUdpServerReply failed: %v", err.Error())
+		var reply RequestUDPServerReply
+		if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
+			return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
 		}
-		c.id = reply.Id
 
-		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.Ip, reply.Port))
+		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
 		if err != nil {
 			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 		}
@@ -184,17 +187,17 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	switch c.Direction {
 	case UL:
 		// Gather results
-		var result RequestUdpServerResultReply
-		if err := client.Call("Server.RequestUdpServerResult",
-			RequestUdpServerResultArgs{Id: c.id}, &result); err != nil {
-			return fmt.Errorf("Call Server.RequestUdpServerResult failed: %v", err.Error())
+		var result RequestUDPServerResultReply
+		if err := client.Call("Server.RequestUDPServerResult",
+			RequestUDPServerResultArgs{ID: c.ID}, &result); err != nil {
+			return fmt.Errorf("Call Server.RequestUDPServerResult failed: %v", err.Error())
 		}
 		c.MsgsRcvd = result.MsgRcvd()
 	case DL:
-		var result RequestUdpServerResultReply
-		if err := client.Call("Server.RequestUdpServerResult",
-			RequestUdpServerResultArgs{Id: c.id}, &result); err != nil {
-			return fmt.Errorf("Call Server.RequestUdpServerResult failed: %v", err.Error())
+		var result RequestUDPServerResultReply
+		if err := client.Call("Server.RequestUDPServerResult",
+			RequestUDPServerResultArgs{ID: c.ID}, &result); err != nil {
+			return fmt.Errorf("Call Server.RequestUDPServerResult failed: %v", err.Error())
 		}
 		c.MsgsSent = result.MsgSent()
 	}
@@ -329,11 +332,16 @@ type CommandClient struct {
 	StartAt  time.Time
 	LocalDir string
 
-	id      uuid.UUID
+	ID      string
 	tempDir string
 }
 
 func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
+	if c.ID == "" {
+		c.ID = GenID(c.Params.Name())
+		ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
+	}
+
 	if c.Local {
 		var command Command
 		switch c.Params.(type) {
@@ -364,17 +372,18 @@ func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 			return fmt.Errorf("RunCommand: %v", err.Error())
 		}
 	} else {
-		args := RunCommandArgs{Params: c.Params, StartAt: c.StartAt}
+		args := RunCommandArgs{ID: c.ID, Params: c.Params, StartAt: c.StartAt}
 		var reply RunCommandReply
 		if err := client.Call("Server.RunCommand", args, &reply); err != nil {
 			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
 		}
-		c.id = reply.Id
 	}
 	return nil
 }
 
 func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
+	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
+
 	if c.Local {
 		entries, err := os.ReadDir(c.tempDir)
 		if err != nil {
@@ -414,14 +423,10 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 			slog.WarnContext(ctx, "Failed to remove result directory", "path", c.tempDir)
 		}
 	} else {
-		if c.id == uuid.Nil {
-			return fmt.Errorf("No command ID set")
-		}
-
 		slog.DebugContext(ctx, "Requesting results", "name", fmt.Sprintf("%T", c.Params))
 
 		var result RequestRunCommandResultReply
-		if err := client.Call("Server.RequestRunCommandResult", RequestRunCommandResultArgs{Id: c.id}, &result); err != nil {
+		if err := client.Call("Server.RequestRunCommandResult", RequestRunCommandResultArgs{ID: c.ID}, &result); err != nil {
 			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
 		}
 

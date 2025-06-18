@@ -35,8 +35,7 @@ func dialRpcClient(ip string, port uint) (*rpc.Client, error) {
 
 func TestBurstUL(t *testing.T) {
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: UL,
 
@@ -52,8 +51,7 @@ func TestBurstUL(t *testing.T) {
 
 func TestBurstDL(t *testing.T) {
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: DL,
 
@@ -69,8 +67,7 @@ func TestBurstDL(t *testing.T) {
 
 func TestPeriodicUL(t *testing.T) {
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: UL,
 
@@ -86,8 +83,7 @@ func TestPeriodicUL(t *testing.T) {
 
 func TestPeriodicDL(t *testing.T) {
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: UL,
 
@@ -107,8 +103,7 @@ func TestRateUL(t *testing.T) {
 	packets := pps * durationS
 
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: UL,
 
@@ -133,8 +128,7 @@ func TestRateDL(t *testing.T) {
 	packets := pps * durationS
 
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: DL,
 
@@ -155,8 +149,7 @@ func TestRateDL(t *testing.T) {
 
 func TestRateZeroPps(t *testing.T) {
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: UL,
 
@@ -184,8 +177,7 @@ func TestRateMultiple(t *testing.T) {
 	}
 
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: UL,
 
@@ -214,8 +206,7 @@ func TestRateMultipleWithZero(t *testing.T) {
 	}
 
 	client := SenderClient{
-		Ip:        ip,
-		Port:      serverPort(),
+		IP:        ip,
 		Out:       "",
 		Direction: UL,
 
@@ -232,11 +223,13 @@ func TestRateMultipleWithZero(t *testing.T) {
 func testSender(t *testing.T, c *SenderClient) {
 	RegisterGob()
 
+	port := serverPort()
+
 	ctxS := context.Background()
-	server := RunServer(ctxS, c.Ip, c.Port)
+	server := RunServer(ctxS, c.IP, port)
 
 	ctxC := context.Background()
-	rpcClient, err := dialRpcClient(c.Ip, c.Port)
+	rpcClient, err := dialRpcClient(c.IP, port)
 	if err != nil {
 		t.Fatalf("%v", err.Error())
 	}
