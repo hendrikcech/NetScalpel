@@ -29,7 +29,7 @@ func MonitorCommand(cmd *exec.Cmd, timeout time.Duration) error {
 	time.Sleep(timeout)
 
 	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL} {
-		log.Printf("Sending signal %+v", signal)
+		// log.Printf("Sending signal %+v", signal)
 		if err := cmd.Process.Signal(signal); err != nil {
 			return fmt.Errorf("Failed to signal %v: %v", signal, err.Error())
 		}
@@ -41,7 +41,7 @@ func MonitorCommand(cmd *exec.Cmd, timeout time.Duration) error {
 	// 	return fmt.Errorf("Failed to wait for termination: %v", err.Error())
 	// }
 
-	// log.Printf("Returning from RunCommand")
+	log.Printf("Returning from RunCommand")
 	return nil
 }
 

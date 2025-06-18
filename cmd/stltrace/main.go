@@ -247,10 +247,10 @@ func (c *Client) Run() {
 		log.Printf("Gathering results...")
 		start := time.Now()
 		if err := e.GatherResults(); err != nil {
-			log.Fatalf("Failed gathering results: %v", err.Error())
+			log.Printf("Failed gathering results after %.2f s: %v", time.Now().Sub(start).Seconds(), err.Error())
+		} else {
+			log.Printf("Gathered results in %.2f s", time.Now().Sub(start).Seconds())
 		}
-		duration := time.Now().Sub(start)
-		log.Printf("Gathered results in %.2f seconds", duration.Seconds())
 
 		// TODO: add information about pacing and timestamping support
 		if err := e.WriteInfo(resultPath); err != nil {

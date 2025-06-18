@@ -66,6 +66,29 @@ func (e *Executor) WriteInfo(path string) error {
 	return nil
 }
 
+func (e *Executor) tcpdump(resultPath string, start time.Time, duration time.Duration) {
+	for _, local := range []bool{true, false} {
+		var name string
+		if local {
+			name = "local"
+		} else {
+			name = "remote"
+		}
+		e.RunClient(&pkg.CommandClient{
+			Params: pkg.TcpdumpParams{
+				Name_:    fmt.Sprintf("tcpdump_%v", name),
+				Timeout_: duration,
+				Filter:   "udp",
+			},
+			Local:    local,
+			StartAt:  start,
+			LocalDir: resultPath,
+		})
+	}
+}
+
+// --- Procedures ---
+
 func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 	owdStart := ts.Add(7 * time.Second)
 	e.RunClient(&pkg.SenderClient{
@@ -447,7 +470,7 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 	var coolDowns []int64
 	for {
 		// coolDownMs := coolDowns[idx]
-		coolDownMs := int64(rand.Intn(60))
+		coolDownMs := int64(rand.Intn(1000))
 
 		// Exponential distribution: test small values more
 		// x := rand.ExpFloat64() / 2      // increase rate / lambda
@@ -500,24 +523,7 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 
 	log.Printf("Scheduled with cooldowns: %v", coolDowns)
 
-	for _, local := range []bool{true, false} {
-		var name string
-		if local {
-			name = "local"
-		} else {
-			name = "remote"
-		}
-		e.RunClient(&pkg.CommandClient{
-			Params: pkg.TcpdumpParams{
-				Name_:    fmt.Sprintf("tcpdump_%v", name),
-				Timeout_: start.Sub(ts) + time.Second,
-				Filter:   "udp",
-			},
-			Local:    local,
-			StartAt:  ts,
-			LocalDir: resultPath,
-		})
-	}
+	e.tcpdump(resultPath, ts, start.Sub(ts) + time.Second)
 
 	if start.After(nextRi(ts).Add(time.Second)) {
 		panic("Test takes longer than one RI")
@@ -554,23 +560,85 @@ func (e *Executor) MeasOWD(ts time.Time, resultPath string, params ParamMap) {
 	e.tcpdump(resultPath, ts, duration+time.Second)
 }
 
-func (e *Executor) tcpdump(resultPath string, start time.Time, duration time.Duration) {
-	for _, local := range []bool{true, false} {
-		var name string
-		if local {
-			name = "local"
-		} else {
-			name = "remote"
+func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) {
+	direction, err := params.Direction()
+	if err != nil {
+		log.Fatalf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	start := ts.Add(1 * time.Second)
+	duration := time.Duration(800) * time.Millisecond
+	spacing := time.Duration(2000) * time.Millisecond
+	deadline := nextRi(ts).Add(-time.Second)
+
+	var pps uint
+	if direction == pkg.UL {
+		pps = 70 * 1e6 / 8 / 1400
+	} else {
+		pps = 700 * 1e6 / 8 / 1400
+	}
+
+	// coolDowns := []int{0, 5, 10, 25, 50, 100, 500, 1000}
+	// for _, idx := range rand.Perm(len(coolDowns)) {
+	var coolDowns []int64
+	for {
+		// coolDownMs := coolDowns[idx]
+		coolDownMs := int64(rand.Intn(1000))
+
+		// Exponential distribution: test small values more
+		// x := rand.ExpFloat64() / 2      // increase rate / lambda
+		// y := 2 / math.Pi * math.Atan(x) // map to interval [0, 1]
+		// minCoolDownMs := int64(50)
+		// maxCoolDownMs := min(deadline.Sub(start.Add(2*duration)).Milliseconds()+minCoolDownMs, 5000-int64(minCoolDownMs))
+		// coolDownMs := minCoolDownMs + int64(y*float64(maxCoolDownMs))
+
+		coolDownDuration := time.Duration(coolDownMs) * time.Millisecond
+
+		// Check if test still fits into the current RI
+		nextStart := start.Add(2 * duration).Add(coolDownDuration)
+		if nextStart.After(deadline) {
+			break
 		}
-		e.RunClient(&pkg.CommandClient{
-			Params: pkg.TcpdumpParams{
-				Name_:    fmt.Sprintf("tcpdump_%v", name),
-				Timeout_: duration,
-				Filter:   "udp",
-			},
-			Local:    local,
-			StartAt:  start,
-			LocalDir: resultPath,
+		start = nextStart
+		coolDowns = append(coolDowns, coolDownMs)
+
+		e.RunClient(&pkg.SenderClient{
+			Ip:        e.Ip,
+			Port:      e.Port,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{
+				pkg.RateParams{
+					Pps:         pps,
+					Interval:    time.Millisecond,
+					Duration:    duration,
+					PayloadSize: 1400,
+				},
+				pkg.RateParams{
+					Pps:         0,
+					Interval:    time.Millisecond,
+					Duration:    coolDownDuration,
+					PayloadSize: 1400,
+				},
+				pkg.RateParams{
+					Pps:         pps,
+					Interval:    time.Millisecond,
+					Duration:    duration,
+					PayloadSize: 1400,
+				},
+			}},
 		})
+
+		// Start next test after this one was run
+		start = start.Add(spacing)
+	}
+
+	log.Printf("Scheduled with cooldowns: %v", coolDowns)
+
+	e.tcpdump(resultPath, ts, start.Sub(ts) + time.Second)
+
+	if start.After(nextRi(ts).Add(time.Second)) {
+		panic("Test takes longer than one RI")
 	}
 }

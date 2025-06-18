@@ -12,6 +12,13 @@ var ip string = "127.0.0.1"
 
 var port atomic.Uint32
 
+func approxEqual[T int | uint](exp T, act T, margin T) error {
+	if act < exp - margin || act > exp + margin {
+		return fmt.Errorf("Value %v != expected %v (+/- %v)", act, exp, margin)
+	}
+	return nil
+}
+
 func serverPort() uint {
 	port.CompareAndSwap(0, 15000)
 	return uint(port.Add(1))
@@ -167,6 +174,60 @@ func TestRateZeroPps(t *testing.T) {
 	}
 }
 
+func TestRateMultiple(t *testing.T) {
+	params := RateParams{
+		Pps:         100,
+		Interval:    time.Duration(100) * time.Millisecond,
+		Duration:    time.Duration(1) * time.Second,
+		PayloadSize: 1200,
+	}
+
+	client := SenderClient{
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: UL,
+
+		Sender: &RateSender{Params: []RateParams{params, params}},
+	}
+
+	testSender(t, &client)
+
+	if err := approxEqual(200, uint(len(client.MsgsSent)), 4); err != nil {
+		t.Errorf("msgs sent: %v", err.Error())
+	}
+}
+
+func TestRateMultipleWithZero(t *testing.T) {
+	params := RateParams{
+		Pps:         100,
+		Interval:    time.Duration(100) * time.Millisecond,
+		Duration:    time.Duration(1) * time.Second,
+		PayloadSize: 1200,
+	}
+	paramsZero := RateParams{
+		Pps:         0,
+		Interval:    time.Duration(100) * time.Millisecond,
+		Duration:    time.Duration(1) * time.Second,
+		PayloadSize: 1200,
+	}
+
+	client := SenderClient{
+		Ip:        ip,
+		Port:      serverPort(),
+		Out:       "",
+		Direction: UL,
+
+		Sender: &RateSender{Params: []RateParams{params, paramsZero, params}},
+	}
+
+	testSender(t, &client)
+
+	if err := approxEqual(200, uint(len(client.MsgsSent)), 4); err != nil {
+		t.Errorf("msgs sent: %v", err.Error())
+	}
+}
+
 func testSender(t *testing.T, c *SenderClient) {
 	RegisterGob()
 
@@ -176,12 +237,15 @@ func testSender(t *testing.T, c *SenderClient) {
 	if err != nil {
 		t.Fatalf("%v", err.Error())
 	}
+	start := time.Now()
 	if err := c.Run(rpcClient); err != nil {
 		t.Fatalf("client.Run failed: %v", err.Error())
 	}
 	if err := c.Gather(rpcClient); err != nil {
 		t.Fatalf("client.Gather failed: %v", err.Error())
 	}
+	_ = time.Since(start)
+
 	rpcClient.Close()
 
 	server.Stop()
