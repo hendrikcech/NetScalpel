@@ -32,8 +32,7 @@ func RunServer(ctx context.Context, ip string, port uint) *Server {
 	}
 	slog.InfoContext(ctx, "Listening on TCP for RPC calls", "addr", s.listener.Addr())
 	s.wg.Add(1)
-	// TODO: readd somewhere else
-	// defer listener.Close()
+	// listener.Close() called in Stop()
 
 	handler := rpc.NewServer()
 	if err := handler.Register(s); err != nil {
@@ -56,6 +55,7 @@ func RunServer(ctx context.Context, ip string, port uint) *Server {
 			slog.InfoContext(ctx, "New RPC client", "remoteAddr", conn.RemoteAddr())
 			go func() {
 				handler.ServeConn(conn)
+				slog.InfoContext(ctx, "RPC client disconnected", "remoteAddr", conn.RemoteAddr())
 				s.wg.Done()
 			}()
 		}
@@ -77,7 +77,6 @@ type ResultPath struct {
 type Server struct {
 	listener net.Listener
 	wg       sync.WaitGroup
-	quit     chan any
 	ctx      context.Context
 
 	ids          map[string]bool
@@ -88,7 +87,7 @@ type Server struct {
 }
 
 func NewServer(ctx context.Context) *Server {
-	return &Server{quit: make(chan any),
+	return &Server{
 		ctx:          ctx,
 		ids:          make(map[string]bool),
 		resultsRcvdC: make(map[string]chan *Result[[]MsgRcvd, MsgRcvd]),
@@ -99,7 +98,6 @@ func NewServer(ctx context.Context) *Server {
 
 // TODO: replace with context.Cancel?
 func (s *Server) Stop() {
-	close(s.quit)
 	s.listener.Close()
 	s.wg.Wait()
 }

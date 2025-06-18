@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	slogmulti "github.com/samber/slog-multi"
+
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
 )
 
@@ -35,6 +37,7 @@ func main() {
 	serverIP := serverCmd.String("ip", "0.0.0.0", "ip")
 	serverPort := serverCmd.Uint("port", 8500, "port")
 	serverProfile := serverCmd.String("profile", "", "write pprof to file")
+	serverLog := serverCmd.String("log", "", "write all log output to this file")
 
 	if len(os.Args) < 2 {
 		fmt.Println("expected 'client' or 'server' subcommands")
@@ -43,9 +46,12 @@ func main() {
 
 	pkg.RegisterGob()
 
-	setupSlog()
+	setupSlogBasic()
 
-	ctx := context.Background()
+	ctx, ctxCancel := context.WithCancel(context.Background())
+
+	signalC := make(chan os.Signal, 1)
+	signal.Notify(signalC, syscall.SIGINT, syscall.SIGTERM)
 
 	go dumpOnSig()
 
@@ -75,6 +81,11 @@ func main() {
 			os.Exit(1)
 		}
 
+		go func() {
+			<-signalC
+			ctxCancel()
+		}()
+
 		client := Client{
 			IP:        *clientIP,
 			Port:      *clientPort,
@@ -88,16 +99,23 @@ func main() {
 	case "server":
 		serverCmd.Parse(os.Args[2:])
 
+		if *serverLog != "" {
+			slogFile, err := setupSlogMulti(*serverLog)
+			if err != nil {
+				slog.Error("Failed opening -log file", "error", err)
+				os.Exit(1)
+			}
+			defer slogFile.Close()
+		}
+
 		createProfile(*serverProfile)
 		defer pprof.StopCPUProfile()
 
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
 		s := pkg.RunServer(ctx, *serverIP, *serverPort)
 
-		sig := <-sigs
-		fmt.Printf("Stopping server on %v\n", sig)
+		sig := <-signalC
+		slog.InfoContext(ctx, "Stopping server", "signal", sig)
+		ctxCancel()
 		s.Stop()
 
 	default:
@@ -106,13 +124,57 @@ func main() {
 	}
 }
 
-func setupSlog() {
+func setupSlogBasic() {
 	// enc := slog.NewJSONHandler(os.Stdout, nil)
 	enc := slog.NewTextHandler(os.Stdout, nil)
 	log := slog.New(pkg.SlogContextHandler{enc, []any{
 		pkg.SlogIDKey{},
 	}})
 	slog.SetDefault(log)
+}
+
+func setupSlogMulti(path string) (*os.File, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, fmt.Errorf("Failed opening slogfile: %v", err.Error())
+	}
+
+	fileHandler := pkg.SlogContextHandler{slog.NewTextHandler(f, &slog.HandlerOptions{
+		AddSource:   true,
+		Level:       slog.LevelDebug,
+		ReplaceAttr: slogShortenSource,
+	}), []any{
+		pkg.SlogIDKey{},
+	}}
+
+	stdHandler := pkg.SlogContextHandler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		AddSource: false,
+		Level:     slog.LevelInfo,
+	}), []any{
+		pkg.SlogIDKey{},
+	}}
+
+	logger := slog.New(
+		slogmulti.Fanout(
+			fileHandler,
+			stdHandler,
+		),
+	)
+
+	slog.SetDefault(logger)
+
+	return f, nil
+}
+
+// Only keep the filename and not the full path
+func slogShortenSource(groups []string, a slog.Attr) slog.Attr {
+	if a.Key == slog.SourceKey {
+		source, _ := a.Value.Any().(*slog.Source)
+		if source != nil {
+			source.File = filepath.Base(source.File)
+		}
+	}
+	return a
 }
 
 func createProfile(profile string) {
@@ -218,7 +280,8 @@ type Client struct {
 	Procedure string
 	Params    map[string]any
 
-	round uint
+	round    uint
+	slogFile *os.File
 }
 
 func (c *Client) Run(ctx context.Context) {
@@ -257,6 +320,8 @@ func (c *Client) Run(ctx context.Context) {
 			os.Exit(1)
 		}
 
+		c.setupSlog(ctx, resultPath)
+
 		if err := e.G.Wait(); err != nil {
 			slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Aborting due to failed client.Run", c.round+1, c.Rounds), "error", err)
 			continue
@@ -275,6 +340,10 @@ func (c *Client) Run(ctx context.Context) {
 			slog.ErrorContext(ctx, "Failed writing info", "error", err.Error())
 		}
 	}
+
+	if c.slogFile != nil {
+		c.slogFile.Close()
+	}
 }
 
 func (c *Client) executeProcedure(ctx context.Context, ts time.Time, fn ProcedureFunc, params ParamMap) string {
@@ -292,6 +361,17 @@ func (c *Client) executeProcedure(ctx context.Context, ts time.Time, fn Procedur
 	}
 	fn(ri, resultPath, params)
 	return resultPath
+}
+
+func (c *Client) setupSlog(ctx context.Context, resultPath string) {
+	if c.slogFile != nil {
+		c.slogFile.Close()
+	}
+	slogFilePath := filepath.Join(resultPath, "stltrace.log")
+	var err error
+	if c.slogFile, err = setupSlogMulti(slogFilePath); err != nil {
+		slog.WarnContext(ctx, "Failed setupSlogMulti", "error", err, "path", slogFilePath)
+	}
 }
 
 func nextRi(ts time.Time) time.Time {

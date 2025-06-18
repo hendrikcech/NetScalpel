@@ -265,7 +265,8 @@ func (t *TxTsReader) run(ctx context.Context) func(uintptr) {
 						continue
 					}
 				} else {
-					slog.ErrorContext(ctx, "TxTsReader recvmsg error", "error", err)
+					slog.ErrorContext(ctx, "TxTsReader recvmsg error -> exiting", "error", err)
+					return
 				}
 			}
 			finalIteration = false
@@ -663,7 +664,7 @@ func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPA
 		}
 	}
 
-	terminateTxTsReader(ctx, tsReader, tsReaderCancel, r.msgs)
+	r.msgs = terminateTxTsReader(ctx, tsReader, tsReaderCancel, r.msgs)
 
 	return r.msgs, nil
 }

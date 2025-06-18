@@ -182,6 +182,8 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 }
 
 func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
+	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
+
 	slog.DebugContext(ctx, "Requesting results", "sender", fmt.Sprintf("%T", c.Sender))
 
 	switch c.Direction {

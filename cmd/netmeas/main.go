@@ -56,7 +56,7 @@ func main() {
 
 	var client pkg.Client
 	var rpcClient *rpc.Client
-	ctx := context.Background()
+	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	switch os.Args[1] {
 	case "burst":
@@ -165,6 +165,7 @@ func main() {
 
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)
+		ctxCancel()
 		s.Stop()
 		os.Exit(0)
 	default:
