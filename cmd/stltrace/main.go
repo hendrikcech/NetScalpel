@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"maps"
 	"math"
 	"net/rpc"
@@ -27,7 +27,7 @@ func main() {
 	clientPort := clientCmd.Uint("port", 8500, "server port")
 	clientResults := clientCmd.String("results", "results", "path to results folder")
 	clientRounds := clientCmd.Uint("rounds", 0, "number of measurement rounds to run; 0 = infinite")
-	clientProcedure := clientCmd.String("procedure", "trace", "test procedure")
+	clientProcedure := clientCmd.String("procedure", "", "test procedure")
 	clientParams := clientCmd.String("params", "", "semicolon-separated key=value pairs passed to procedure")
 	clientProfile := clientCmd.String("profile", "", "write pprof to file")
 
@@ -42,6 +42,8 @@ func main() {
 	}
 
 	pkg.RegisterGob()
+
+	setupSlog()
 
 	ctx := context.Background()
 
@@ -69,7 +71,8 @@ func main() {
 
 		params, err := parseParams(*clientParams)
 		if err != nil {
-			log.Fatalf("Failed parsing params: %v", err.Error())
+			slog.ErrorContext(ctx, "Failed parsing params", "error", err)
+			os.Exit(1)
 		}
 
 		client := Client{
@@ -103,18 +106,29 @@ func main() {
 	}
 }
 
+func setupSlog() {
+	// enc := slog.NewJSONHandler(os.Stdout, nil)
+	enc := slog.NewTextHandler(os.Stdout, nil)
+	log := slog.New(pkg.SlogContextHandler{enc, []any{
+		pkg.SlogIdKey{},
+	}})
+	slog.SetDefault(log)
+}
+
 func createProfile(profile string) {
 	if profile == "" {
 		return
 	}
 	f, err := os.Create(profile)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Create profile", "error", err)
+		os.Exit(1)
 	}
 	if err := pprof.StartCPUProfile(f); err != nil {
-		log.Fatal(err)
+		slog.Error("StartCPUProfile", "error", err.Error())
+		os.Exit(1)
 	}
-	log.Printf("Writing pprof profile to %v", profile)
+	slog.Info("Writing pprof profile", "path", profile)
 }
 
 type ProcedureFunc func(time.Time, string, ParamMap)
@@ -228,49 +242,54 @@ func (c *Client) Run(ctx context.Context) {
 		resultPath := ""
 		if fn, ok := proceduresUlDl[c.Procedure]; ok {
 			if _, ok := c.Params["direction"]; ok {
-				resultPath = c.executeProcedure(now, fn, c.Params)
+				resultPath = c.executeProcedure(ctx, now, fn, c.Params)
 			} else {
 				params := maps.Clone(c.Params)
 				params["direction"] = pkg.DL.String()
-				resultPath = c.executeProcedure(now, fn, params)
+				resultPath = c.executeProcedure(ctx, now, fn, params)
 				params["direction"] = pkg.UL.String()
-				resultPath = c.executeProcedure(now.Add(15*time.Second), fn, params)
+				resultPath = c.executeProcedure(ctx, now.Add(15*time.Second), fn, params)
 			}
 		} else if fn, ok := proceduresBidir[c.Procedure]; ok {
-			resultPath = c.executeProcedure(now, fn, c.Params)
+			resultPath = c.executeProcedure(ctx, now, fn, c.Params)
 		} else {
-			log.Fatalf("Unknown -procedure '%v'", c.Procedure)
+			slog.ErrorContext(ctx, "Unknown -procedure", "procedure", c.Procedure)
+			os.Exit(1)
 		}
 
 		if err := e.G.Wait(); err != nil {
-			log.Printf("[Round %v/%v] Aborting due to failed client.Run: %v", c.round+1, c.Rounds, err.Error())
+			slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Aborting due to failed client.Run: %v", c.round+1, c.Rounds), "error", err)
 			continue
 		}
 
-		log.Printf("Gathering results...")
+		slog.InfoContext(ctx, "Gathering results...")
 		start := time.Now()
 		if err := e.GatherResults(); err != nil {
-			log.Printf("Failed gathering results after %.2f s: %v", time.Now().Sub(start).Seconds(), err.Error())
+			slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Now().Sub(start).Seconds(), "error", err.Error())
 		} else {
-			log.Printf("Gathered results in %.2f s", time.Now().Sub(start).Seconds())
+			slog.InfoContext(ctx, "Gathered results", "duration", time.Now().Sub(start).Seconds())
 		}
 
 		// TODO: add information about pacing and timestamping support
 		if err := e.WriteInfo(resultPath); err != nil {
-			log.Printf("Failed writing info: %v", err.Error())
+			slog.ErrorContext(ctx, "Failed writing info", "error", err.Error())
 		}
 	}
 }
 
-func (c *Client) executeProcedure(ts time.Time, fn ProcedureFunc, params ParamMap) string {
+func (c *Client) executeProcedure(ctx context.Context, ts time.Time, fn ProcedureFunc, params ParamMap) string {
 	ri := nextRi(ts)
 	name := "_" + c.Procedure
 	if direction, ok := params["direction"]; ok {
 		name += "_" + strings.ToLower(direction.(string))
 	}
-	log.Printf("[Round %v/%v] Schedule %s in %.2fs at %v", c.round+1, c.Rounds,
-		name, ri.Sub(time.Now()).Seconds(), ri)
-	resultPath := mkResultPath(c.Results, ri, name)
+	slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Schedule %s in %.2fs at %v", c.round+1, c.Rounds,
+		name, ri.Sub(time.Now()).Seconds(), ri))
+	resultPath, err := mkResultPath(c.Results, ri, name)
+	if err != nil {
+		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())
+		os.Exit(1)
+	}
 	fn(ri, resultPath, params)
 	return resultPath
 }
@@ -290,12 +309,12 @@ func nextRi(ts time.Time) time.Time {
 	return nextRi
 }
 
-func mkResultPath(base string, ts time.Time, suffix string) string {
+func mkResultPath(base string, ts time.Time, suffix string) (string, error) {
 	resultPath := filepath.Join(base, ts.Format("20060102T150405")+suffix)
 	if err := os.MkdirAll(resultPath, os.ModePerm); err != nil {
-		log.Fatalf("Failed to create the result directory %v: %v", resultPath, err)
+		return "", fmt.Errorf("Failed to create the result directory %v: %v", resultPath, err)
 	}
-	return resultPath
+	return resultPath, nil
 }
 
 func dialRpcClient(ip string, port uint) *rpc.Client {
@@ -314,6 +333,6 @@ func dumpOnSig() {
 	for {
 		<-sigs
 		stacklen := runtime.Stack(buf, true)
-		log.Printf("=== received SIGQUIT ===\n*** goroutine dump...\n%s\n*** end\n", buf[:stacklen])
+		slog.Info(fmt.Sprintf("=== received SIGQUIT ===\n*** goroutine dump...\n%s\n*** end\n", buf[:stacklen]))
 	}
 }

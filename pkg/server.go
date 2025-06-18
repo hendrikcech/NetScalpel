@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/rpc"
 	"os"
@@ -19,7 +19,13 @@ import (
 
 func logErr(fmtStr string, args ...interface{}) error {
 	e := fmt.Errorf(fmtStr, args...)
-	log.Print(e.Error())
+	slog.Error(e.Error())
+	return e
+}
+
+func logErrCtx(ctx context.Context, fmtStr string, args ...interface{}) error {
+	e := fmt.Errorf(fmtStr, args...)
+	slog.ErrorContext(ctx, "", "error", e)
 	return e
 }
 
@@ -29,16 +35,18 @@ func RunServer(ctx context.Context, ip string, port uint) *Server {
 	var err error
 	s.listener, err = net.Listen("tcp", fmt.Sprintf("%s:%v", ip, port))
 	if err != nil {
-		log.Fatal(err)
+		slog.ErrorContext(ctx, "Failed TCP listen", "error", err)
+		os.Exit(1)
 	}
-	fmt.Printf("Listening on TCP %v for RPC calls\n", s.listener.Addr())
+	slog.InfoContext(ctx, "Listening on TCP for RPC calls", "addr", s.listener.Addr())
 	s.wg.Add(1)
 	// TODO: readd somewhere else
 	// defer listener.Close()
 
 	handler := rpc.NewServer()
 	if err := handler.Register(s); err != nil {
-		log.Fatalf("Failed rpc.Register: %v", err.Error())
+		slog.ErrorContext(ctx, "Failed rpc.Register", "error", err.Error())
+		os.Exit(1)
 	}
 
 	// Accept connections and serve them in separate goroutines.
@@ -48,12 +56,12 @@ func RunServer(ctx context.Context, ip string, port uint) *Server {
 			conn, err := s.listener.Accept()
 			if err != nil {
 				if !strings.HasSuffix(err.Error(), "use of closed network connection") {
-					log.Printf("Failed listener.Accept(): %v\n", err.Error())
+					slog.ErrorContext(ctx, "Failed listener.Accept()", "error", err)
 				}
 				return
 			}
 			s.wg.Add(1)
-			log.Printf("New RPC client at %v\n", conn.RemoteAddr())
+			slog.InfoContext(ctx, "New RPC client", "remoteAddr", conn.RemoteAddr())
 			go func() {
 				handler.ServeConn(conn)
 				s.wg.Done()
@@ -86,9 +94,9 @@ type Server struct {
 	resultsLock  sync.RWMutex
 }
 
-func NewServer(ctx context.Context, ) *Server {
-	return &Server {quit: make(chan any),
-		ctx: ctx,
+func NewServer(ctx context.Context) *Server {
+	return &Server{quit: make(chan any),
+		ctx:          ctx,
 		resultsRcvdC: make(map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd]),
 		resultsSentC: make(map[uuid.UUID]chan *Result[[]MsgSent, MsgSent]),
 		resultsPathC: make(map[uuid.UUID]chan ResultPath),
@@ -118,17 +126,19 @@ type RequestUdpServerReply struct {
 }
 
 func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpServerReply) error {
-	ctx := s.ctx
-	conn, err := ListenUDP()
+	reply.Id = uuid.New()
+
+	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", reply.Id))
+
+	conn, err := ListenUDP(ctx)
 	if err != nil {
 		return logErr("ListenUDP failed: %v", err.Error())
 	}
 	laddr := conn.LocalAddr().(*net.UDPAddr)
 
-	reply.Id = uuid.New()
 	reply.Port = uint(laddr.Port)
 
-	log.Printf("RequestUdpServer %+v -> %+v: UDP socket at %v\n", args, reply, laddr)
+	slog.InfoContext(ctx, "RequestUdpServer", "args", args, "reply", reply, "localAddr", laddr)
 
 	if args.Mode == Receive {
 		go s.handleReceive(ctx, conn, reply.Id, args)
@@ -174,7 +184,7 @@ func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, id uuid.U
 	if result.Res, result.Err = ReceiveFrom(ctx, conn, req.Params.NumPackets()); result.Err != nil {
 		return
 	}
-	log.Printf("Received %v packets for %v\n", len(result.Res), id)
+	slog.DebugContext(ctx, "Finished handleReceive", "packets", len(result.Res))
 }
 
 func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, id uuid.UUID, sender Sender, req RequestUdpServerArgs) {
@@ -212,7 +222,7 @@ func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, id uuid.UU
 		return
 	}
 
-	log.Printf("Received kick-off msg from %v", raddr)
+	slog.DebugContext(ctx, "Received kick-off msg", "remoteAddr", raddr)
 
 	if err := waitUntil(ctx, req.StartAt); err != nil {
 		result.Err = err
@@ -224,7 +234,7 @@ func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, id uuid.UU
 	if result.Err != nil {
 		return
 	}
-	log.Printf("Sent %v messages to %v\n", len(result.Res), raddr)
+	slog.DebugContext(ctx, "Finished handleSender", "packets", len(result.Res), "remoteAddr", raddr)
 }
 
 type RequestUdpServerResultArgs struct {
@@ -250,8 +260,8 @@ func (r *RequestUdpServerResultReply) MsgSent() []MsgSent {
 }
 
 func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *RequestUdpServerResultReply) error {
-	log.Printf("RequestUdpServerResult: request for %v ...", args.Id)
-	ctx := s.ctx
+	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", args.Id))
+	slog.DebugContext(ctx, "RequestUdpServerResult: request")
 
 	s.resultsLock.Lock()
 	cRcvd, okRcvd := s.resultsRcvdC[args.Id]
@@ -270,7 +280,7 @@ func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *
 		return logErr("No test with id %v started\n", args.Id)
 	}
 
-	log.Printf("RequestUdpServerResult: ... responded for %v", args.Id)
+	slog.DebugContext(ctx, "RequestUdpServerResult: responded")
 
 	return nil
 }
@@ -280,10 +290,10 @@ func handleChanResult[S []T, T any](ctx context.Context, c chan *Result[S, T], i
 		result *Result[S, T]
 		closed bool
 	)
-	log.Printf("Waiting on chan result")
+	slog.DebugContext(ctx, "Waiting on chan result")
 	select {
 	case result, closed = <-c:
-		log.Printf("Received on chan result")
+		slog.DebugContext(ctx, "Received on chan result")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -317,7 +327,9 @@ type RunCommandReply struct {
 }
 
 func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
-	ctx := s.ctx
+	reply.Id = uuid.New()
+
+	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", reply.Id))
 
 	var command Command
 	switch args.Params.(type) {
@@ -332,8 +344,7 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 		return logErr("RunCommand: failed RandDir: %v", err.Error())
 	}
 
-	reply.Id = uuid.New()
-	log.Printf("Writing %v %v result to %v", args.Params.Name(), reply.Id, resultDir)
+	slog.DebugContext(ctx, "RunCommand", "name", args.Params.Name(), "resultDir", resultDir)
 
 	c := make(chan ResultPath, 1)
 	s.resultsLock.Lock()
@@ -342,7 +353,7 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 
 	go func() {
 		if err := waitUntil(ctx, args.StartAt); err != nil {
-			log.Printf("%v", err.Error())
+			slog.WarnContext(ctx, "WaitUntil failed", "error", err)
 			return
 		}
 
@@ -371,7 +382,7 @@ type RequestRunCommandResultReply struct {
 }
 
 func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply *RequestRunCommandResultReply) error {
-	// ctx := s.ctx
+	ctx := context.WithValue(s.ctx, SlogIdKey{}, slog.Any("id", args.Id))
 
 	s.resultsLock.Lock()
 	c, ok := s.resultsPathC[args.Id]
@@ -409,12 +420,12 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 
 		reply.Files[entry.Name()] = buf.Bytes()
 		if err := os.Remove(path); err != nil {
-			log.Printf("Failed to remove %v after reading", path)
+			slog.WarnContext(ctx, "Failed to remove path after reading", "path", path)
 		}
 	}
 
 	if err := os.Remove(result.Path); err != nil {
-		log.Printf("Failed to remove result directory %v", result.Path)
+		slog.WarnContext(ctx, "Failed to remove result directory", "path", result.Path)
 	}
 
 	return nil

@@ -14,7 +14,7 @@ var ip string = "127.0.0.1"
 var port atomic.Uint32
 
 func approxEqual[T int | uint](exp T, act T, margin T) error {
-	if act < exp - margin || act > exp + margin {
+	if act < exp-margin || act > exp+margin {
 		return fmt.Errorf("Value %v != expected %v (+/- %v)", act, exp, margin)
 	}
 	return nil

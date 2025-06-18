@@ -1,13 +1,13 @@
 package pkg
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"time"
-	"context"
 )
 
 func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
@@ -32,7 +32,6 @@ func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) e
 	}
 
 	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL} {
-		// log.Printf("Sending signal %+v", signal)
 		if err := cmd.Process.Signal(signal); err != nil {
 			return fmt.Errorf("Failed to signal %v: %v", signal, err.Error())
 		}
@@ -44,7 +43,7 @@ func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) e
 	// 	return fmt.Errorf("Failed to wait for termination: %v", err.Error())
 	// }
 
-	log.Printf("Returning from RunCommand")
+	slog.DebugContext(ctx, "Returning from RunCommand")
 	return nil
 }
 

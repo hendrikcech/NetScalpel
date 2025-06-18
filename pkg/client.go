@@ -2,10 +2,11 @@ package pkg
 
 import (
 	"bufio"
+	"context"
 	"encoding/csv"
 	"fmt"
 	"github.com/google/uuid"
-	"log"
+	"log/slog"
 	"net"
 	"net/rpc"
 	"os"
@@ -14,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"context"
 )
 
 type Client interface {
@@ -72,17 +72,18 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 		}
 
-		conn, err := ListenUDP()
+		conn, err := ListenUDP(ctx)
 		if err != nil {
 			return fmt.Errorf("ListenUDP failed: %v", err.Error())
 		}
 		defer conn.Close()
 
-		log.Printf("Client %T %+v to %v", c.Sender, c.Sender.GetParams(), raddr)
-
 		if err := waitUntil(ctx, c.StartAt); err != nil {
 			return err
 		}
+
+		slog.InfoContext(ctx, "Call Client.Run", "type", fmt.Sprintf("%T", c.Sender),
+			"params", c.Sender.GetParams(), "remoteAddr", raddr)
 
 		c.MsgsSent, err = c.Sender.Run(ctx, conn, raddr)
 		if err != nil {
@@ -106,7 +107,7 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 		}
 
-		conn, err := ListenUDP()
+		conn, err := ListenUDP(ctx)
 		if err != nil {
 			return fmt.Errorf("ListenUDP failed: %v", err.Error())
 		}
@@ -114,11 +115,13 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 		laddr := conn.LocalAddr().(*net.UDPAddr)
 
 		probeReplyReceived := false
-		for try := range 5 {
+		maxTry := 5
+		for try := range maxTry {
 			// Send an UDP packet to the newly opened server UDP socket to poke
 			// a hole into a potentially existing NAT and wait for the reply.
 			if try > 0 {
-				log.Printf("Sending NAT probe %v/5 from %v to %v...", try+1, laddr, raddr)
+				slog.DebugContext(ctx, "Sending NAT probe", "try", try+1, "maxTry", maxTry,
+					"localAddr", laddr, "remoteAddr", raddr)
 			}
 			if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
 				return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
@@ -146,7 +149,7 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 				// Timeout occured
 				continue
 			}
-			log.Printf("Received NAT probe %v/5 from %v", try+1, laddr)
+			slog.DebugContext(ctx, "Received NAT probe", "try", try+1, "localAddr", laddr)
 			probeReplyReceived = true
 			break
 		}
@@ -154,9 +157,9 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 			return fmt.Errorf("No probe reply received")
 		}
 
-		// log.Printf("Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
+		// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
 
-		if err := waitUntil(ctx,c.StartAt); err != nil {
+		if err := waitUntil(ctx, c.StartAt); err != nil {
 			return err
 		}
 
@@ -167,16 +170,16 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 
 		c.MsgsRcvd, err = ReceiveFrom(ctx, conn, c.Sender.GetParams().NumPackets())
 		if err != nil {
-			log.Printf("Failed ReceiveFrom: %v", err.Error())
+			slog.ErrorContext(ctx, "Failed ReceiveFrom", "error", err)
+		} else {
+			slog.InfoContext(ctx, "Finished Run", "packets", len(c.MsgsRcvd))
 		}
-
-		log.Printf("Received %v packets", len(c.MsgsRcvd))
 	}
 	return nil
 }
 
 func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
-	log.Printf("Requesting results for %T %v", c.Sender, c.id)
+	slog.DebugContext(ctx, "Requesting results", "sender", fmt.Sprintf("%T", c.Sender))
 
 	switch c.Direction {
 	case UL:
@@ -195,7 +198,7 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		}
 		c.MsgsSent = result.MsgSent()
 	}
-	log.Printf("Received results for %T %v", c.Sender, c.id)
+	slog.DebugContext(ctx, "Received results", "type", fmt.Sprintf("%T", c.Sender))
 
 	c.Results = processMessages(c.MsgsSent, c.MsgsRcvd)
 
@@ -343,18 +346,18 @@ func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 		var err error
 		c.tempDir, err = RandDir(c.Params.Name())
 		if err != nil {
-			return logErr("RunCommand: failed RandDir: %v", err.Error())
+			return fmt.Errorf("RunCommand: failed RandDir: %v", err.Error())
 		}
-
-		log.Printf("Writing %v result to %v", c.Params.Name(), c.tempDir)
 
 		if err := waitUntil(ctx, c.StartAt); err != nil {
 			return err
 		}
 
+		slog.DebugContext(ctx, "Writing results", "name", c.Params.Name(), "tempDir", c.tempDir)
+
 		cmd, err := command.Exec(c.tempDir)
 		if err != nil {
-			return logErr("RunCommand: failed command.Cmd: %v", err.Error())
+			return fmt.Errorf("RunCommand: failed command.Cmd: %v", err.Error())
 		}
 
 		if err := MonitorCommand(ctx, cmd, c.Params.Timeout()); err != nil {
@@ -375,14 +378,14 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 	if c.Local {
 		entries, err := os.ReadDir(c.tempDir)
 		if err != nil {
-			return logErr("Failed os.ReadDir(%v): %v", c.tempDir, err.Error())
+			return fmt.Errorf("Failed os.ReadDir(%v): %v", c.tempDir, err.Error())
 		}
 
 		for _, entry := range entries {
 			path := filepath.Join(c.tempDir, entry.Name())
 
 			if entry.IsDir() {
-				log.Printf("Skipping directory %v", path)
+				slog.DebugContext(ctx, "Skipping directory", "path", path)
 				continue
 			}
 
@@ -403,26 +406,26 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 			}
 
 			if err := os.Remove(path); err != nil {
-				log.Printf("Failed to remove %v after reading", path)
+				slog.WarnContext(ctx, "Failed to remove file after reading", "path", path)
 			}
 		}
 
 		if err := os.Remove(c.tempDir); err != nil {
-			log.Printf("Failed to remove result directory %v", c.tempDir)
+			slog.WarnContext(ctx, "Failed to remove result directory", "path", c.tempDir)
 		}
 	} else {
 		if c.id == uuid.Nil {
 			return fmt.Errorf("No command ID set")
 		}
 
-		log.Printf("Requesting results for %T %v", c.Params, c.id)
+		slog.DebugContext(ctx, "Requesting results", "name", fmt.Sprintf("%T", c.Params))
 
 		var result RequestRunCommandResultReply
 		if err := client.Call("Server.RequestRunCommandResult", RequestRunCommandResultArgs{Id: c.id}, &result); err != nil {
 			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
 		}
 
-		log.Printf("Received results for %T %v", c.Params, c.id)
+		slog.DebugContext(ctx, "Received results", "name", fmt.Sprintf("%T", c.Params))
 
 		for filename, bufEnc := range result.Files {
 			path := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", filename))

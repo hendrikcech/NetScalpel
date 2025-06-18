@@ -2,17 +2,18 @@ package pkg
 
 import (
 	"bufio"
+	"context"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
 	"github.com/klauspost/compress/zstd"
 	"io"
+	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"context"
 )
 
 func RegisterGob() {
@@ -45,9 +46,9 @@ func waitUntil(ctx context.Context, startAt time.Time) error {
 		}
 		sleepFor := startAt.Sub(now)
 		// log.Printf("Sleep for %.2f s before starting sender", sleepFor.Seconds())
-		select{
-			case <-time.After(sleepFor):
-			case <-ctx.Done():
+		select {
+		case <-time.After(sleepFor):
+		case <-ctx.Done():
 		}
 	}
 	return ctx.Err()
@@ -134,4 +135,29 @@ func ParseDirection(direction string) (Direction, error) {
 	default:
 		return 999, fmt.Errorf("Unknown Direction value '%s'", direction)
 	}
+}
+
+// slog attr key for request id
+type SlogIdKey struct{}
+
+type SlogContextHandler struct {
+	slog.Handler
+	Keys []any
+}
+
+func (h SlogContextHandler) Handle(ctx context.Context, r slog.Record) error {
+	r.AddAttrs(h.observe(ctx)...)
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h SlogContextHandler) observe(ctx context.Context) (as []slog.Attr) {
+	for _, k := range h.Keys {
+		a, ok := ctx.Value(k).(slog.Attr)
+		if !ok {
+			continue
+		}
+		a.Value = a.Value.Resolve()
+		as = append(as, a)
+	}
+	return
 }
