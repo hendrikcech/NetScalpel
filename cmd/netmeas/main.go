@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/rpc"
@@ -54,6 +55,7 @@ func main() {
 
 	var client pkg.Client
 	var rpcClient *rpc.Client
+	ctx := context.Background()
 
 	switch os.Args[1] {
 	case "burst":
@@ -158,7 +160,7 @@ func main() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-		s := pkg.RunServer(*serverIp, *serverPort)
+		s := pkg.RunServer(ctx, *serverIp, *serverPort)
 
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)
@@ -170,11 +172,11 @@ func main() {
 	}
 
 	defer rpcClient.Close()
-	if err := client.Run(rpcClient); err != nil {
+	if err := client.Run(ctx, rpcClient); err != nil {
 		println(err)
 		os.Exit(1)
 	}
-	if err := client.Gather(rpcClient); err != nil {
+	if err := client.Gather(ctx, rpcClient); err != nil {
 		println(err)
 		os.Exit(1)
 	}

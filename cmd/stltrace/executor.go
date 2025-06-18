@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -22,28 +23,30 @@ type Executor struct {
 	RpcClient *rpc.Client
 	G         *errgroup.Group
 	Clients   []pkg.Client
+	ctx       context.Context
 }
 
-func NewExecutor(ip string, port uint) Executor {
-	return Executor{
+func NewExecutor(ctx context.Context, ip string, port uint) *Executor {
+	return &Executor{
 		Ip:        ip,
 		Port:      port,
 		RpcClient: dialRpcClient(ip, port),
 		G:         new(errgroup.Group),
 		Clients:   make([]pkg.Client, 0),
+		ctx:       ctx,
 	}
 }
 
 func (e *Executor) RunClient(client pkg.Client) {
 	e.Clients = append(e.Clients, client)
-	e.G.Go(func() error { return client.Run(e.RpcClient) })
+	e.G.Go(func() error { return client.Run(e.ctx, e.RpcClient) })
 }
 
 func (e *Executor) GatherResults() error {
 	g := new(errgroup.Group)
 	for _, client := range e.Clients {
 		g.Go(func() error {
-			return client.Gather(e.RpcClient)
+			return client.Gather(e.ctx, e.RpcClient)
 		})
 	}
 	return g.Wait()
@@ -523,7 +526,7 @@ func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params Para
 
 	log.Printf("Scheduled with cooldowns: %v", coolDowns)
 
-	e.tcpdump(resultPath, ts, start.Sub(ts) + time.Second)
+	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
 
 	if start.After(nextRi(ts).Add(time.Second)) {
 		panic("Test takes longer than one RI")
@@ -636,7 +639,7 @@ func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) {
 
 	log.Printf("Scheduled with cooldowns: %v", coolDowns)
 
-	e.tcpdump(resultPath, ts, start.Sub(ts) + time.Second)
+	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
 
 	if start.After(nextRi(ts).Add(time.Second)) {
 		panic("Test takes longer than one RI")

@@ -14,11 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"context"
 )
 
 type Client interface {
-	Run(client *rpc.Client) error
-	Gather(client *rpc.Client) error
+	Run(ctx context.Context, client *rpc.Client) error
+	Gather(ctx context.Context, client *rpc.Client) error
 	Summary() string
 }
 
@@ -51,7 +52,7 @@ type SenderClient struct {
 	id uuid.UUID
 }
 
-func (c *SenderClient) Run(client *rpc.Client) error {
+func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 	switch c.Direction {
 	case UL:
 		args := RequestUdpServerArgs{
@@ -79,11 +80,11 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 
 		log.Printf("Client %T %+v to %v", c.Sender, c.Sender.GetParams(), raddr)
 
-		if err := waitUntil(c.StartAt); err != nil {
+		if err := waitUntil(ctx, c.StartAt); err != nil {
 			return err
 		}
 
-		c.MsgsSent, err = c.Sender.Run(conn, raddr)
+		c.MsgsSent, err = c.Sender.Run(ctx, conn, raddr)
 		if err != nil {
 			return fmt.Errorf("send failed: %v\n", err)
 		}
@@ -127,6 +128,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 			if !c.StartAt.IsZero() && probeDeadline.After(c.StartAt) {
 				probeDeadline = c.StartAt
 			}
+			// TODO: replace this with context deadline?
 			if err := conn.SetReadDeadline(probeDeadline); err != nil {
 				return fmt.Errorf("Failed to probe deadline: %v\n", err.Error())
 			}
@@ -154,15 +156,16 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 
 		// log.Printf("Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
 
-		if err := waitUntil(c.StartAt); err != nil {
+		if err := waitUntil(ctx,c.StartAt); err != nil {
 			return err
 		}
 
+		// TODO: replace this with context deadline?
 		if err := conn.SetReadDeadline(time.Now().Add(args.Timeout + time.Second)); err != nil {
 			return fmt.Errorf("Failed to SetReadDeadline: %v\n", err.Error())
 		}
 
-		c.MsgsRcvd, err = ReceiveFrom(conn, c.Sender.GetParams().NumPackets())
+		c.MsgsRcvd, err = ReceiveFrom(ctx, conn, c.Sender.GetParams().NumPackets())
 		if err != nil {
 			log.Printf("Failed ReceiveFrom: %v", err.Error())
 		}
@@ -172,7 +175,7 @@ func (c *SenderClient) Run(client *rpc.Client) error {
 	return nil
 }
 
-func (c *SenderClient) Gather(client *rpc.Client) error {
+func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	log.Printf("Requesting results for %T %v", c.Sender, c.id)
 
 	switch c.Direction {
@@ -327,7 +330,7 @@ type CommandClient struct {
 	tempDir string
 }
 
-func (c *CommandClient) Run(client *rpc.Client) error {
+func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 	if c.Local {
 		var command Command
 		switch c.Params.(type) {
@@ -345,7 +348,7 @@ func (c *CommandClient) Run(client *rpc.Client) error {
 
 		log.Printf("Writing %v result to %v", c.Params.Name(), c.tempDir)
 
-		if err := waitUntil(c.StartAt); err != nil {
+		if err := waitUntil(ctx, c.StartAt); err != nil {
 			return err
 		}
 
@@ -354,7 +357,7 @@ func (c *CommandClient) Run(client *rpc.Client) error {
 			return logErr("RunCommand: failed command.Cmd: %v", err.Error())
 		}
 
-		if err := MonitorCommand(cmd, c.Params.Timeout()); err != nil {
+		if err := MonitorCommand(ctx, cmd, c.Params.Timeout()); err != nil {
 			return fmt.Errorf("RunCommand: %v", err.Error())
 		}
 	} else {
@@ -368,7 +371,7 @@ func (c *CommandClient) Run(client *rpc.Client) error {
 	return nil
 }
 
-func (c *CommandClient) Gather(client *rpc.Client) error {
+func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 	if c.Local {
 		entries, err := os.ReadDir(c.tempDir)
 		if err != nil {

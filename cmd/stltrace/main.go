@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -42,6 +43,8 @@ func main() {
 
 	pkg.RegisterGob()
 
+	ctx := context.Background()
+
 	go dumpOnSig()
 
 	switch os.Args[1] {
@@ -77,7 +80,7 @@ func main() {
 			Procedure: *clientProcedure,
 			Params:    params,
 		}
-		client.Run()
+		client.Run(ctx)
 
 	case "server":
 		serverCmd.Parse(os.Args[2:])
@@ -88,7 +91,7 @@ func main() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-		s := pkg.RunServer(*serverIp, *serverPort)
+		s := pkg.RunServer(ctx, *serverIp, *serverPort)
 
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)
@@ -204,9 +207,9 @@ type Client struct {
 	round uint
 }
 
-func (c *Client) Run() {
+func (c *Client) Run(ctx context.Context) {
 	for i := range c.Rounds {
-		e := NewExecutor(c.Ip, c.Port)
+		e := NewExecutor(ctx, c.Ip, c.Port)
 		c.round = i
 
 		proceduresUlDl := map[string]ProcedureFunc{

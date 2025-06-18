@@ -3,6 +3,7 @@ package pkg
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -22,8 +23,8 @@ func logErr(fmtStr string, args ...interface{}) error {
 	return e
 }
 
-func RunServer(ip string, port uint) *Server {
-	s := NewServer()
+func RunServer(ctx context.Context, ip string, port uint) *Server {
+	s := NewServer(ctx)
 
 	var err error
 	s.listener, err = net.Listen("tcp", fmt.Sprintf("%s:%v", ip, port))
@@ -77,6 +78,7 @@ type Server struct {
 	listener net.Listener
 	wg       sync.WaitGroup
 	quit     chan any
+	ctx      context.Context
 
 	resultsRcvdC map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd]
 	resultsSentC map[uuid.UUID]chan *Result[[]MsgSent, MsgSent]
@@ -84,15 +86,16 @@ type Server struct {
 	resultsLock  sync.RWMutex
 }
 
-func NewServer() *Server {
-	s := new(Server)
-	s.quit = make(chan any)
-	s.resultsRcvdC = make(map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd])
-	s.resultsSentC = make(map[uuid.UUID]chan *Result[[]MsgSent, MsgSent])
-	s.resultsPathC = make(map[uuid.UUID]chan ResultPath)
-	return s
+func NewServer(ctx context.Context, ) *Server {
+	return &Server {quit: make(chan any),
+		ctx: ctx,
+		resultsRcvdC: make(map[uuid.UUID]chan *Result[[]MsgRcvd, MsgRcvd]),
+		resultsSentC: make(map[uuid.UUID]chan *Result[[]MsgSent, MsgSent]),
+		resultsPathC: make(map[uuid.UUID]chan ResultPath),
+	}
 }
 
+// TODO: replace with context.Cancel?
 func (s *Server) Stop() {
 	close(s.quit)
 	s.listener.Close()
@@ -115,6 +118,7 @@ type RequestUdpServerReply struct {
 }
 
 func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpServerReply) error {
+	ctx := s.ctx
 	conn, err := ListenUDP()
 	if err != nil {
 		return logErr("ListenUDP failed: %v", err.Error())
@@ -127,7 +131,7 @@ func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpSe
 	log.Printf("RequestUdpServer %+v -> %+v: UDP socket at %v\n", args, reply, laddr)
 
 	if args.Mode == Receive {
-		go s.handleReceive(conn, reply.Id, args)
+		go s.handleReceive(ctx, conn, reply.Id, args)
 	} else {
 		var sender Sender
 		switch args.Mode {
@@ -140,13 +144,13 @@ func (s *Server) RequestUdpServer(args RequestUdpServerArgs, reply *RequestUdpSe
 		default:
 			return logErr("RequestUdpServer: unknown mode %v", args.Mode)
 		}
-		go s.handleSender(conn, reply.Id, sender, args)
+		go s.handleSender(ctx, conn, reply.Id, sender, args)
 	}
 
 	return nil
 }
 
-func (s *Server) handleReceive(conn *net.UDPConn, id uuid.UUID, req RequestUdpServerArgs) {
+func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, id uuid.UUID, req RequestUdpServerArgs) {
 	defer conn.Close()
 
 	s.resultsLock.Lock()
@@ -162,18 +166,18 @@ func (s *Server) handleReceive(conn *net.UDPConn, id uuid.UUID, req RequestUdpSe
 		s.resultsLock.Unlock()
 	}()
 
-	if result.Err = waitUntil(req.StartAt); result.Err != nil {
+	if result.Err = waitUntil(ctx, req.StartAt); result.Err != nil {
 		return
 	}
 
 	conn.SetReadDeadline(time.Now().Add(req.Timeout))
-	if result.Res, result.Err = ReceiveFrom(conn, req.Params.NumPackets()); result.Err != nil {
+	if result.Res, result.Err = ReceiveFrom(ctx, conn, req.Params.NumPackets()); result.Err != nil {
 		return
 	}
 	log.Printf("Received %v packets for %v\n", len(result.Res), id)
 }
 
-func (s *Server) handleSender(conn *net.UDPConn, id uuid.UUID, sender Sender, req RequestUdpServerArgs) {
+func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, id uuid.UUID, sender Sender, req RequestUdpServerArgs) {
 	defer conn.Close()
 
 	s.resultsLock.Lock()
@@ -210,13 +214,13 @@ func (s *Server) handleSender(conn *net.UDPConn, id uuid.UUID, sender Sender, re
 
 	log.Printf("Received kick-off msg from %v", raddr)
 
-	if err := waitUntil(req.StartAt); err != nil {
+	if err := waitUntil(ctx, req.StartAt); err != nil {
 		result.Err = err
 		return
 	}
 
 	conn.SetReadDeadline(time.Now().Add(req.Timeout))
-	result.Res, result.Err = sender.Run(conn, raddr.(*net.UDPAddr))
+	result.Res, result.Err = sender.Run(ctx, conn, raddr.(*net.UDPAddr))
 	if result.Err != nil {
 		return
 	}
@@ -247,6 +251,7 @@ func (r *RequestUdpServerResultReply) MsgSent() []MsgSent {
 
 func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *RequestUdpServerResultReply) error {
 	log.Printf("RequestUdpServerResult: request for %v ...", args.Id)
+	ctx := s.ctx
 
 	s.resultsLock.Lock()
 	cRcvd, okRcvd := s.resultsRcvdC[args.Id]
@@ -254,11 +259,11 @@ func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *
 	s.resultsLock.Unlock()
 
 	if okRcvd {
-		if err := handleChanResult(cRcvd, args.Id, reply); err != nil {
+		if err := handleChanResult(ctx, cRcvd, args.Id, reply); err != nil {
 			return logErr("Receive from RcvdC: %v", err)
 		}
 	} else if okSent {
-		if err := handleChanResult(cSent, args.Id, reply); err != nil {
+		if err := handleChanResult(ctx, cSent, args.Id, reply); err != nil {
 			return logErr("Receive from SentC: %v", err)
 		}
 	} else {
@@ -270,8 +275,18 @@ func (s *Server) RequestUdpServerResult(args RequestUdpServerResultArgs, reply *
 	return nil
 }
 
-func handleChanResult[S []T, T any](c chan *Result[S, T], id uuid.UUID, reply *RequestUdpServerResultReply) error {
-	result, closed := <-c
+func handleChanResult[S []T, T any](ctx context.Context, c chan *Result[S, T], id uuid.UUID, reply *RequestUdpServerResultReply) error {
+	var (
+		result *Result[S, T]
+		closed bool
+	)
+	log.Printf("Waiting on chan result")
+	select {
+	case result, closed = <-c:
+		log.Printf("Received on chan result")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	if closed && result == nil {
 		return fmt.Errorf("Result %v was already retrieved", id)
 	}
@@ -302,6 +317,8 @@ type RunCommandReply struct {
 }
 
 func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
+	ctx := s.ctx
+
 	var command Command
 	switch args.Params.(type) {
 	case TcpdumpParams:
@@ -324,7 +341,7 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 	s.resultsLock.Unlock()
 
 	go func() {
-		if err := waitUntil(args.StartAt); err != nil {
+		if err := waitUntil(ctx, args.StartAt); err != nil {
 			log.Printf("%v", err.Error())
 			return
 		}
@@ -335,7 +352,7 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 			return
 		}
 
-		if err := MonitorCommand(cmd, args.Params.Timeout()); err != nil {
+		if err := MonitorCommand(ctx, cmd, args.Params.Timeout()); err != nil {
 			c <- ResultPath{Err: fmt.Errorf("RunCommand: %v", err.Error())}
 			return
 		}
@@ -354,6 +371,8 @@ type RequestRunCommandResultReply struct {
 }
 
 func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply *RequestRunCommandResultReply) error {
+	// ctx := s.ctx
+
 	s.resultsLock.Lock()
 	c, ok := s.resultsPathC[args.Id]
 	s.resultsLock.Unlock()

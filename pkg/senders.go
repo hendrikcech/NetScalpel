@@ -9,6 +9,7 @@ import (
 	"net"
 	"syscall"
 	"time"
+	"context"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
@@ -26,7 +27,7 @@ const (
 type Sender interface {
 	GetParams() SenderParams
 	Mode() UdpServerMode
-	Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error)
+	Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error)
 }
 
 type SenderParams interface {
@@ -198,7 +199,7 @@ func enableRxTimestamping(conn *net.UDPConn) error {
 type TxTsReader struct {
 	C        chan []MsgSent
 	conn     *net.UDPConn
-	deadline time.Time
+	deadline <-chan time.Time
 }
 
 func NewTxTsReader() *TxTsReader {
@@ -207,86 +208,87 @@ func NewTxTsReader() *TxTsReader {
 	}
 }
 
-func (t *TxTsReader) Run(conn *net.UDPConn, duration time.Duration) error {
+func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn, duration time.Duration) error {
 	t.conn = conn
-	t.deadline = time.Now().Add(duration)
+	// TODO: use ctx deadline instead of the explicit duration?
+	t.deadline = time.After(duration)
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err
 	}
-	return rawConn.Control(t.run)
+	return rawConn.Control(t.run(ctx))
 }
 
-func (t *TxTsReader) run(fd uintptr) {
-	buf := make([]byte, 1500)
-	oob := make([]byte, 1500)
+func (t *TxTsReader) run(ctx context.Context) func (uintptr){
+	return func(fd uintptr) {
+		buf := make([]byte, 1500)
+		oob := make([]byte, 1500)
 
-	// TODO: size from the beginning
-	sentMsgs := make([]MsgSent, 0, 1024)
-	defer func() {
-		t.C <- sentMsgs
-	}()
+		// TODO: size from the beginning
+		sentMsgs := make([]MsgSent, 0, 1024)
+		defer func() {
+			t.C <- sentMsgs
+		}()
 
-	for {
-		if t.deadline.Before(time.Now()) {
-			break
-		}
-
-		n, oobn, _, _, err := syscall.Recvmsg(int(fd), buf, oob, unix.MSG_ERRQUEUE)
-		if err != nil {
-			if err == syscall.EAGAIN {
-				time.Sleep(100 * time.Millisecond)
-				continue
-			} else {
-				log.Printf("TxTsReader: Recvmsg error: %v", err.Error())
-			}
-		}
-
-		cms, err := unix.ParseSocketControlMessage(oob[:oobn])
-		if err != nil {
-			log.Printf("TxTsReader: Failed parsing cmsg: %v", err.Error())
-			continue
-		}
-
-		msg := MsgSent{Len: uint(n)}
-
-		tsSet := false
-		seqSet := false
-		for _, cm := range cms {
-			if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
-				var times unix.ScmTimestamping
-				tsBuf := bytes.NewReader(cm.Data)
-				binary.Read(tsBuf, binary.LittleEndian, &times)
-				ts := times.Ts[0]
-				msg.TsSent = time.Unix(ts.Sec, ts.Nsec)
-				tsSet = true
-			} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) &&
-				(cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
-				var sockErr unix.SockExtendedErr
-				sockErrBuf := bytes.NewReader(cm.Data)
-				binary.Read(sockErrBuf, binary.LittleEndian, &sockErr)
-				if sockErr.Errno == uint32(syscall.ENOMSG) { // expected for timestamps
-					msg.Seq = uint64(sockErr.Data)
-					seqSet = true
+		for {
+			n, oobn, _, _, err := syscall.Recvmsg(int(fd), buf, oob, unix.MSG_ERRQUEUE)
+			if err != nil {
+				if err == syscall.EAGAIN {
+					select {
+					case <-time.After(100 * time.Millisecond):
+						continue
+					case <-t.deadline:
+						break
+					case <-ctx.Done():
+						break
+					}
+				} else {
+					log.Printf("TxTsReader: Recvmsg error: %v", err.Error())
 				}
-			} else {
-				log.Printf("TxTsReader: Unknown cm: %+v", cm)
 			}
-		}
 
-		if !tsSet || !seqSet {
-			log.Printf("TxTsReader: Missing data in cm (ts=%v, seq=%v): %#v", tsSet, seqSet, cms)
-		}
+			cms, err := unix.ParseSocketControlMessage(oob[:oobn])
+			if err != nil {
+				log.Printf("TxTsReader: Failed parsing cmsg: %v", err.Error())
+				continue
+			}
 
-		sentMsgs = append(sentMsgs, msg)
+			msg := MsgSent{Len: uint(n)}
+
+			tsSet := false
+			seqSet := false
+			for _, cm := range cms {
+				if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
+					var times unix.ScmTimestamping
+					tsBuf := bytes.NewReader(cm.Data)
+					binary.Read(tsBuf, binary.LittleEndian, &times)
+					ts := times.Ts[0]
+					msg.TsSent = time.Unix(ts.Sec, ts.Nsec)
+					tsSet = true
+				} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) &&
+					(cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
+					var sockErr unix.SockExtendedErr
+					sockErrBuf := bytes.NewReader(cm.Data)
+					binary.Read(sockErrBuf, binary.LittleEndian, &sockErr)
+					if sockErr.Errno == uint32(syscall.ENOMSG) { // expected for timestamps
+						msg.Seq = uint64(sockErr.Data)
+						seqSet = true
+					}
+				} else {
+					log.Printf("TxTsReader: Unknown cm: %+v", cm)
+				}
+			}
+
+			if !tsSet || !seqSet {
+				log.Printf("TxTsReader: Missing data in cm (ts=%v, seq=%v): %#v", tsSet, seqSet, cms)
+			}
+
+			sentMsgs = append(sentMsgs, msg)
+		}
 	}
 }
 
-func ReceiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
-	return receiveFrom(conn, expectedNumPackets)
-}
-
-func receiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
+func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
 	tsEnabled := true
 	if err := enableRxTimestamping(conn); err != nil {
 		log.Fatalf("Failed enabling rx timestamping: %v", err.Error())
@@ -304,6 +306,8 @@ func receiveFrom(conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) 
 	}
 
 	pconn := ipv4.NewPacketConn(conn)
+
+	// TODO: close connection on ctx.Done?
 
 	for {
 		n, err := pconn.ReadBatch(rx, 0)
@@ -385,16 +389,16 @@ func (s *BurstSender) Mode() UdpServerMode {
 	return SendBurst
 }
 
-func (s *BurstSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	var txTsReader *TxTsReader
 	if err := enableTxTimestamping(conn); err != nil {
 		log.Fatalf("Failed enabling tx timestamping: %v", err.Error())
 	} else {
 		txTsReader = NewTxTsReader()
-		go txTsReader.Run(conn, s.Params.GetDuration()+500*time.Millisecond)
+		go txTsReader.Run(ctx, conn, s.Params.GetDuration()+500*time.Millisecond)
 	}
 
-	msgsSent, err := s.run(conn, raddr)
+	msgsSent, err := s.run(ctx, conn, raddr)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +410,7 @@ func (s *BurstSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, err
 	return msgsSent, nil
 }
 
-func (s *BurstSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (s *BurstSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	msgsSent := make([]MsgSent, s.Params.Num)
 	msgs := make([]ipv4.Message, s.Params.Num)
 
@@ -423,6 +427,8 @@ func (s *BurstSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, err
 
 		msgsSent[i] = MsgSent{Seq: b.Seq, Len: 8 + s.Params.Pad}
 	}
+
+	// TODO: close conn on ctx.Done?
 
 	pconn := ipv4.NewPacketConn(conn)
 
@@ -485,16 +491,16 @@ func (s *PeriodicSender) Mode() UdpServerMode {
 	return SendPeriodic
 }
 
-func (r *PeriodicSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	var txTsReader *TxTsReader
 	if err := enableTxTimestamping(conn); err != nil {
 		log.Fatalf("Failed enabling tx timestamping: %v", err.Error())
 	} else {
 		txTsReader = NewTxTsReader()
-		go txTsReader.Run(conn, r.Params.GetDuration()+500*time.Millisecond)
+		go txTsReader.Run(ctx, conn, r.Params.GetDuration()+500*time.Millisecond)
 	}
 
-	msgsSent, err := r.run(conn, raddr)
+	msgsSent, err := r.run(ctx, conn, raddr)
 	if err != nil {
 		return nil, err
 	}
@@ -505,12 +511,14 @@ func (r *PeriodicSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, 
 
 	return msgsSent, nil
 }
-func (r *PeriodicSender) run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (r *PeriodicSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	msgsSent := make([]MsgSent, 0, r.Params.NumPackets())
 
 	ticker := time.NewTicker(r.Params.Interval)
 	duration := time.After(r.Params.Duration)
 	buf := make([]byte, 1500)
+
+	// TODO: close socket on ctx.Done?
 
 	seq := 0
 	for {
@@ -598,7 +606,7 @@ func (s *RateSender) Mode() UdpServerMode {
 	return SendRate
 }
 
-func (r *RateSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	r.msgs = make([]MsgSent, 0, int(float64(r.Params.NumPackets())*1.1))
 	r.tx = make([]ipv4.Message, 1024)
 	for i := range r.tx {
@@ -611,23 +619,26 @@ func (r *RateSender) Run(conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, erro
 	} else {
 		r.tsEnabled = true
 		txTsReader = NewTxTsReader()
-		go txTsReader.Run(conn, r.Params.GetDuration()+500*time.Millisecond)
+		go txTsReader.Run(ctx, conn, r.Params.GetDuration()+500*time.Millisecond)
 	}
 
 	for i := range r.Params {
-		if err := r.runParams(conn, raddr, r.Params[i]); err != nil {
+		if err := r.runParams(ctx, conn, raddr, r.Params[i]); err != nil {
 			return nil, err
 		}
+		log.Printf("runParams returned")
 	}
 
-	if r.tsEnabled {
-		r.msgs = <-txTsReader.C
-	}
+	// if r.tsEnabled {
+	// 	r.msgs = <-txTsReader.C
+	// }
+
+	log.Printf("RateSender Run returns")
 
 	return r.msgs, nil
 }
 
-func (r *RateSender) runParams(conn *net.UDPConn, raddr *net.UDPAddr, params RateParams) error {
+func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr, params RateParams) error {
 	ticker := time.Tick(params.Interval)
 	duration := time.After(params.Duration)
 
@@ -656,7 +667,7 @@ func (r *RateSender) runParams(conn *net.UDPConn, raddr *net.UDPAddr, params Rat
 			if numPackets == 0 {
 				continue
 			}
-			n, err := r.sendRound(pconn, raddr, numPackets, params.PayloadSize)
+			n, err := r.sendRound(ctx, pconn, raddr, numPackets, params.PayloadSize)
 			if err != nil {
 				return err
 			}
@@ -667,7 +678,7 @@ func (r *RateSender) runParams(conn *net.UDPConn, raddr *net.UDPAddr, params Rat
 	}
 }
 
-func (r *RateSender) sendRound(conn *ipv4.PacketConn, raddr *net.UDPAddr, packets uint, payloadSize uint) (uint, error) {
+func (r *RateSender) sendRound(ctx context.Context, conn *ipv4.PacketConn, raddr *net.UDPAddr, packets uint, payloadSize uint) (uint, error) {
 	packetsLeft := packets
 	sent := uint(0)
 	for packetsLeft > 0 {

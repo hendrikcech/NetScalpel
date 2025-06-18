@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"context"
 	"fmt"
 	"net/rpc"
 	"sync/atomic"
@@ -231,17 +232,21 @@ func TestRateMultipleWithZero(t *testing.T) {
 func testSender(t *testing.T, c *SenderClient) {
 	RegisterGob()
 
-	server := RunServer(c.Ip, c.Port)
+	ctxS := context.Background()
+	server := RunServer(ctxS, c.Ip, c.Port)
 
+	ctxC := context.Background()
 	rpcClient, err := dialRpcClient(c.Ip, c.Port)
 	if err != nil {
 		t.Fatalf("%v", err.Error())
 	}
 	start := time.Now()
-	if err := c.Run(rpcClient); err != nil {
+	fmt.Printf("Calling Run\n")
+	if err := c.Run(ctxC, rpcClient); err != nil {
 		t.Fatalf("client.Run failed: %v", err.Error())
 	}
-	if err := c.Gather(rpcClient); err != nil {
+	fmt.Printf("Calling Gather\n")
+	if err := c.Gather(ctxC, rpcClient); err != nil {
 		t.Fatalf("client.Gather failed: %v", err.Error())
 	}
 	_ = time.Since(start)
@@ -287,10 +292,12 @@ func TestRunCommandTcpdumpRemote(t *testing.T) {
 func testRunCommandTcpdump(t *testing.T, local bool) {
 	RegisterGob()
 
+	ctxS := context.Background()
 	port := serverPort()
-	server := RunServer(ip, port)
+	server := RunServer(ctxS, ip, port)
 	defer server.Stop()
 
+	ctxC := context.Background()
 	rpcClient, err := dialRpcClient(ip, port)
 	if err != nil {
 		t.Fatalf("%v", err.Error())
@@ -313,7 +320,7 @@ func testRunCommandTcpdump(t *testing.T, local bool) {
 		LocalDir: resultDir,
 	}
 
-	if err := client.Run(rpcClient); err != nil {
+	if err := client.Run(ctxC, rpcClient); err != nil {
 		t.Fatalf("RunCommand(Tcpdump) failed: %v", err)
 	}
 }

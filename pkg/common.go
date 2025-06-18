@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"context"
 )
 
 func RegisterGob() {
@@ -36,7 +37,7 @@ func RandDir(suffix string) (string, error) {
 	return path, err
 }
 
-func waitUntil(startAt time.Time) error {
+func waitUntil(ctx context.Context, startAt time.Time) error {
 	if !startAt.IsZero() {
 		now := time.Now()
 		if now.After(startAt) {
@@ -44,9 +45,12 @@ func waitUntil(startAt time.Time) error {
 		}
 		sleepFor := startAt.Sub(now)
 		// log.Printf("Sleep for %.2f s before starting sender", sleepFor.Seconds())
-		time.Sleep(sleepFor)
+		select{
+			case <-time.After(sleepFor):
+			case <-ctx.Done():
+		}
 	}
-	return nil
+	return ctx.Err()
 }
 
 func CompressFile(path string, w io.Writer) error {

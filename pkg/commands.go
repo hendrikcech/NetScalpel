@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"context"
 )
 
-func MonitorCommand(cmd *exec.Cmd, timeout time.Duration) error {
+func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
 	// cmd.Stdin = os.DevNull
 	// cmd.Stdout = os.DevNull // os.Stdout
 	// cmd.Stderr = os.DevNull // os.Stderr
@@ -25,8 +26,10 @@ func MonitorCommand(cmd *exec.Cmd, timeout time.Duration) error {
 
 	stdin.Close()
 
-	// log.Printf("Sleep for command %v", timeout)
-	time.Sleep(timeout)
+	select {
+	case <-time.After(timeout):
+	case <-ctx.Done():
+	}
 
 	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL} {
 		// log.Printf("Sending signal %+v", signal)
