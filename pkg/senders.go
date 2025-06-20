@@ -98,7 +98,7 @@ func ListenUDP(ctx context.Context) (*net.UDPConn, error) {
 }
 
 func setSocketBuffers(ctx context.Context, conn *net.UDPConn) {
-	udpBufferSize := 15_000_000
+	udpBufferSize := 30_000_000
 	sndPrev, rcvPrev, _ := getSocketBuffers(conn)
 	errWrite := conn.SetWriteBuffer(udpBufferSize)
 	errRead := conn.SetReadBuffer(udpBufferSize)
@@ -186,8 +186,8 @@ func enableTxTimestamping(conn *net.UDPConn) error {
 			unix.SOF_TIMESTAMPING_TX_HARDWARE |
 			unix.SOF_TIMESTAMPING_SOFTWARE |
 			unix.SOF_TIMESTAMPING_RAW_HARDWARE |
-			unix.SOF_TIMESTAMPING_OPT_ID
-		// unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
+			unix.SOF_TIMESTAMPING_OPT_ID |
+			unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
 		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
 	})
@@ -237,6 +237,8 @@ func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
 	return rawConn.Control(t.run(ctx))
 }
 
+// Note: Can not use packetconn.ReadBatch due to a bug while reading from MSG_ERRQUEUE
+// err=read udp [::]:34944: invalid address
 func (t *TxTsReader) run(ctx context.Context) func(uintptr) {
 	return func(fd uintptr) {
 		buf := make([]byte, 1500)
@@ -271,50 +273,59 @@ func (t *TxTsReader) run(ctx context.Context) func(uintptr) {
 			}
 			finalIteration = false
 
-			cms, err := unix.ParseSocketControlMessage(oob[:oobn])
+			sentMsg, err := t.parseOOB(ctx, n, oob[:oobn])
 			if err != nil {
-				slog.ErrorContext(ctx, "TxTsReader: Failed parsing cmsg", "error", err)
+				slog.ErrorContext(ctx, "parseOOB", "error", err)
 				continue
 			}
-
-			msg := MsgSent{Len: uint(n)}
-
-			tsSet := false
-			seqSet := false
-			for _, cm := range cms {
-				if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
-					var times unix.ScmTimestamping
-					tsBuf := bytes.NewReader(cm.Data)
-					binary.Read(tsBuf, binary.LittleEndian, &times)
-					ts := times.Ts[0]
-					msg.TsSent = time.Unix(ts.Sec, ts.Nsec)
-					tsSet = true
-				} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) &&
-					(cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
-					var sockErr unix.SockExtendedErr
-					sockErrBuf := bytes.NewReader(cm.Data)
-					binary.Read(sockErrBuf, binary.LittleEndian, &sockErr)
-					if sockErr.Errno == uint32(syscall.ENOMSG) { // expected for timestamps
-						msg.Seq = uint64(sockErr.Data)
-						seqSet = true
-					}
-				} else {
-					slog.WarnContext(ctx, "TxTsReader: Unknown cm", "cm", cm)
-				}
-			}
-
-			if !tsSet || !seqSet {
-				slog.WarnContext(ctx, "TxTsReader: Missing data in cm",
-					"ts", tsSet,
-					"seq", seqSet,
-					"cms", cms,
-					"oob", fmt.Sprintf("%x", oob[:oobn]),
-				)
-			}
-
-			sentMsgs = append(sentMsgs, msg)
+			sentMsgs = append(sentMsgs, sentMsg)
 		}
 	}
+}
+
+func (t *TxTsReader) parseOOB(ctx context.Context, packetLen int, oob []byte) (MsgSent, error) {
+	sentMsg := MsgSent{Len: uint(packetLen)}
+
+	cms, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return sentMsg, fmt.Errorf("TxTsReader: Failed parsing cmsg: %v", err.Error())
+	}
+
+	tsSet := false
+	seqSet := false
+	for _, cm := range cms {
+		if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
+			var times unix.ScmTimestamping
+			tsBuf := bytes.NewReader(cm.Data)
+			binary.Read(tsBuf, binary.LittleEndian, &times)
+			ts := times.Ts[0]
+			sentMsg.TsSent = time.Unix(ts.Sec, ts.Nsec)
+			tsSet = true
+		} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) &&
+			(cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
+			var sockErr unix.SockExtendedErr
+			sockErrBuf := bytes.NewReader(cm.Data)
+			binary.Read(sockErrBuf, binary.LittleEndian, &sockErr)
+			if sockErr.Errno == uint32(syscall.ENOMSG) { // expected for timestamps
+				sentMsg.Seq = uint64(sockErr.Data)
+				seqSet = true
+			}
+		} else {
+			slog.WarnContext(ctx, "TxTsReader: Unknown cm", "cm", cm)
+		}
+	}
+
+	if !tsSet || !seqSet {
+		slog.WarnContext(ctx, "TxTsReader: Missing data in cm",
+			"ts", tsSet,
+			"seq", seqSet,
+			"cms", cms,
+			"oob", fmt.Sprintf("%x", oob),
+		)
+		return sentMsg, fmt.Errorf("TxTsReader: Missing data in cm")
+	}
+
+	return sentMsg, nil
 }
 
 func setupTxTsReader(ctx context.Context, conn *net.UDPConn) (*TxTsReader, context.CancelFunc) {
@@ -496,10 +507,12 @@ func (s *BurstSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDP
 		n, err := pconn.WriteBatch(tx, 0)
 		if n != int(numRound) {
 			slog.WarnContext(ctx, fmt.Sprintf("Only bursted %v packets instead of %v in round %v", n, numRound, round))
-			break
 		}
 		if err != nil {
 			return nil, err
+		}
+		if n != int(numRound) {
+			break
 		}
 
 		left -= uint(n)
@@ -674,13 +687,14 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 	duration := time.After(params.Duration)
 
 	// Only enable socket pacing if we can retrieve the actual tx timestamps
-	if tsEnabled {
-		// approximate 50 bytes overhead from L2, IP and UDP headers
-		pacingRate := uint(params.Pps*params.PayloadSize) + 50
-		if err := setMaxPacingRate(conn, pacingRate); err != nil {
-			slog.WarnContext(ctx, err.Error())
-		}
-	}
+	// TODO: reenable
+	// if tsEnabled {
+	// 	// approximate 50 bytes overhead from L2, IP and UDP headers
+	// 	pacingRate := uint(params.Pps*params.PayloadSize) + 50
+	// 	if err := setMaxPacingRate(conn, pacingRate); err != nil {
+	// 		slog.WarnContext(ctx, err.Error())
+	// 	}
+	// }
 
 	start := time.Now()
 	numPacketsSent := uint(0)
