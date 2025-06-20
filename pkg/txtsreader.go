@@ -149,6 +149,7 @@ func selectMsgsSent(ctx context.Context, reader *TxTsReader, cancelReader contex
 		return sentMsgs
 	}
 	cancelReader()
+	slog.DebugContext(ctx, "selectMsgsSent: waiting on TxTsReader.C")
 	tsMsgs := <-reader.C
 	if len(sentMsgs) != len(tsMsgs) {
 		slog.ErrorContext(ctx, fmt.Sprintf("run function returned %v, txTsReader %v msgs",
@@ -157,5 +158,6 @@ func selectMsgsSent(ctx context.Context, reader *TxTsReader, cancelReader contex
 	for i := range tsMsgs {
 		tsMsgs[i].Len = sentMsgs[0].Len
 	}
+	slog.DebugContext(ctx, "selectMsgsSent: returning with tsMsgs")
 	return tsMsgs
 }

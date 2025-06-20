@@ -58,126 +58,138 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 
 	switch c.Direction {
 	case UL:
-		args := RequestUDPServerArgs{
-			ID:      c.ID,
-			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
-			StartAt: c.StartAt,
-			Mode:    Receive,
-			Params:  c.Sender.GetParams(),
-		}
-		var reply RequestUDPServerReply
-		if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
-			return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
-		}
-
-		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
-		if err != nil {
-			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
-		}
-
-		conn, err := ListenUDP(ctx)
-		if err != nil {
-			return fmt.Errorf("ListenUDP failed: %v", err.Error())
-		}
-		defer conn.Close()
-
-		if err := waitUntil(ctx, c.StartAt); err != nil {
-			return err
-		}
-
-		slog.InfoContext(ctx, "Call Client.Run", "type", fmt.Sprintf("%T", c.Sender),
-			"params", c.Sender.GetParams(), "remoteAddr", raddr)
-
-		c.MsgsSent, err = c.Sender.Run(ctx, conn, raddr)
-		if err != nil {
-			return fmt.Errorf("send failed: %v\n", err)
-		}
+		return c.runUL(ctx, client)
 	case DL:
-		args := RequestUDPServerArgs{
-			ID:      c.ID,
-			Timeout: c.Sender.GetParams().GetDuration() + time.Second,
-			StartAt: c.StartAt,
-			Mode:    c.Sender.Mode(),
-			Params:  c.Sender.GetParams(),
-		}
-		var reply RequestUDPServerReply
-		if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
-			return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
-		}
-
-		raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
-		if err != nil {
-			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
-		}
-
-		conn, err := ListenUDP(ctx)
-		if err != nil {
-			return fmt.Errorf("ListenUDP failed: %v", err.Error())
-		}
-		defer conn.Close()
-		laddr := conn.LocalAddr().(*net.UDPAddr)
-
-		probeReplyReceived := false
-		maxTry := 5
-		for try := range maxTry {
-			// Send an UDP packet to the newly opened server UDP socket to poke
-			// a hole into a potentially existing NAT and wait for the reply.
-			if try > 0 {
-				slog.DebugContext(ctx, "Sending NAT probe", "try", try+1, "maxTry", maxTry,
-					"localAddr", laddr, "remoteAddr", raddr)
-			}
-			if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
-				return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
-			}
-
-			probeDeadline := time.Now().Add(time.Second)
-			if !c.StartAt.IsZero() && probeDeadline.After(c.StartAt) {
-				probeDeadline = c.StartAt
-			}
-			// TODO: replace this with context deadline?
-			if err := conn.SetReadDeadline(probeDeadline); err != nil {
-				return fmt.Errorf("Failed to probe deadline: %v\n", err.Error())
-			}
-
-			if !c.StartAt.IsZero() && time.Now().After(c.StartAt) {
-				return fmt.Errorf("StartAt %v already passed before received probe reply at %v", c.StartAt, time.Now())
-			}
-
-			var buf [1500]byte
-			_, _, err = conn.ReadFrom(buf[:])
-			if err != nil {
-				if e, ok := err.(net.Error); !ok || !e.Timeout() {
-					return fmt.Errorf("Failed ReadFrom: %v", err.Error())
-				}
-				// Timeout occured
-				continue
-			}
-			slog.DebugContext(ctx, "Received NAT probe", "try", try+1, "localAddr", laddr)
-			probeReplyReceived = true
-			break
-		}
-		if !probeReplyReceived {
-			return fmt.Errorf("No probe reply received")
-		}
-
-		// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
-
-		if err := waitUntil(ctx, c.StartAt); err != nil {
-			return err
-		}
-
-		// TODO: replace this with context deadline?
-		if err := conn.SetReadDeadline(time.Now().Add(args.Timeout + time.Second)); err != nil {
-			return fmt.Errorf("Failed to SetReadDeadline: %v\n", err.Error())
-		}
-
-		c.MsgsRcvd, err = ReceiveFrom(ctx, conn, c.Sender.GetParams().NumPackets())
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed ReceiveFrom", "error", err)
-		} else {
-			slog.InfoContext(ctx, "Finished Run", "packets", len(c.MsgsRcvd))
-		}
+		return c.runDL(ctx, client)
+	default:
+		panic("Unknowon Direction")
 	}
+}
+
+func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
+	args := RequestUDPServerArgs{
+		ID:      c.ID,
+		Timeout: c.Sender.GetParams().GetDuration() + time.Second,
+		StartAt: c.StartAt,
+		Mode:    Receive,
+		Params:  c.Sender.GetParams(),
+	}
+	var reply RequestUDPServerReply
+	if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
+		return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
+	}
+
+	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
+	if err != nil {
+		return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+	}
+
+	conn, err := ListenUDP(ctx)
+	if err != nil {
+		return fmt.Errorf("ListenUDP failed: %v", err.Error())
+	}
+	defer conn.Close()
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
+	}
+
+	slog.InfoContext(ctx, "Call Client.Run (UL)", "type", fmt.Sprintf("%T", c.Sender),
+		"params", c.Sender.GetParams(), "remoteAddr", raddr)
+
+	if c.MsgsSent, err = c.Sender.Run(ctx, conn, raddr); err != nil {
+		return fmt.Errorf("send failed: %v\n", err)
+	}
+
+	return nil
+}
+
+func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
+	args := RequestUDPServerArgs{
+		ID:      c.ID,
+		Timeout: c.Sender.GetParams().GetDuration() + time.Second,
+		StartAt: c.StartAt,
+		Mode:    c.Sender.Mode(),
+		Params:  c.Sender.GetParams(),
+	}
+	var reply RequestUDPServerReply
+	if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
+		return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
+	}
+
+	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
+	if err != nil {
+		return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+	}
+
+	conn, err := ListenUDP(ctx)
+	if err != nil {
+		return fmt.Errorf("ListenUDP failed: %v", err.Error())
+	}
+	defer conn.Close()
+	laddr := conn.LocalAddr().(*net.UDPAddr)
+
+	probeReplyReceived := false
+	maxTry := 5
+	for try := range maxTry {
+		// Send an UDP packet to the newly opened server UDP socket to poke
+		// a hole into a potentially existing NAT and wait for the reply.
+		if try > 0 {
+			slog.DebugContext(ctx, "Sending NAT probe", "try", try+1, "maxTry", maxTry,
+				"localAddr", laddr, "remoteAddr", raddr)
+		}
+		if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
+			return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
+		}
+
+		probeDeadline := time.Now().Add(time.Second)
+		if !c.StartAt.IsZero() && probeDeadline.After(c.StartAt) {
+			probeDeadline = c.StartAt
+		}
+		// TODO: replace this with context deadline?
+		if err := conn.SetReadDeadline(probeDeadline); err != nil {
+			return fmt.Errorf("Failed to probe deadline: %v\n", err.Error())
+		}
+
+		if !c.StartAt.IsZero() && time.Now().After(c.StartAt) {
+			return fmt.Errorf("StartAt %v already passed before received probe reply at %v", c.StartAt, time.Now())
+		}
+
+		var buf [1500]byte
+		_, _, err = conn.ReadFrom(buf[:])
+		if err != nil {
+			if e, ok := err.(net.Error); !ok || !e.Timeout() {
+				return fmt.Errorf("Failed ReadFrom: %v", err.Error())
+			}
+			// Timeout occured
+			continue
+		}
+		slog.DebugContext(ctx, "Received NAT probe", "try", try+1, "localAddr", laddr)
+		probeReplyReceived = true
+		break
+	}
+	if !probeReplyReceived {
+		return fmt.Errorf("No probe reply received")
+	}
+
+	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
+	}
+
+	// TODO: replace this with context deadline?
+	if err := conn.SetReadDeadline(time.Now().Add(args.Timeout + time.Second)); err != nil {
+		return fmt.Errorf("Failed to SetReadDeadline: %v\n", err.Error())
+	}
+
+	c.MsgsRcvd, err = ReceiveFrom(ctx, conn, c.Sender.GetParams().NumPackets())
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed ReceiveFrom", "error", err)
+	} else {
+		slog.InfoContext(ctx, "Finished Run", "packets", len(c.MsgsRcvd))
+	}
+
 	return nil
 }
 

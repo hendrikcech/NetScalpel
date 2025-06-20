@@ -428,9 +428,6 @@ func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPA
 }
 
 func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr, params RateParams, tsEnabled bool) error {
-	ticker := time.Tick(params.Interval)
-	duration := time.After(params.Duration)
-
 	// Only enable socket pacing if we can retrieve the actual tx timestamps
 	// TODO: reenable
 	// leads to txtsreader returning a different number of packets than Run (half of it)
@@ -445,7 +442,10 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 	// }
 	slog.DebugContext(ctx, "Disabled pacing (manually)")
 
-	start := time.Now()
+	start := time.Now() // must appear before ticker is started
+	ticker := time.Tick(params.Interval)
+	duration := time.After(params.Duration)
+
 	numPacketsSent := uint(0)
 
 	mconn, err := mmsg.NewConn(conn)
@@ -456,8 +456,25 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 	for {
 		select {
 		case now := <-ticker:
-			numPacketsGoal := uint(now.Sub(start).Seconds() * float64(params.Pps))
+			// elapsed := max(0, time.Since(start).Seconds())
+			elapsed := now.Sub(start).Seconds()
+			numPacketsGoal := uint(elapsed * float64(params.Pps))
+			if elapsed < 0 {
+				slog.ErrorContext(ctx, "elapsed < 0",
+					"sent", numPacketsSent,
+					"goal", numPacketsGoal,
+					"elapsed", elapsed,
+					"start", start,
+					"now", now)
+				panic("elapsed < 0")
+			}
 			if numPacketsSent > numPacketsGoal {
+				slog.ErrorContext(ctx, "numPacketsSent > numPacketsGoal",
+					"sent", numPacketsSent,
+					"goal", numPacketsGoal,
+					"elapsed", elapsed,
+					"start", start,
+					"now", now)
 				panic("numPacketsSent > numPacketsGoal")
 			}
 			numPackets := numPacketsGoal - numPacketsSent
@@ -470,7 +487,9 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 			}
 			numPacketsSent += n
 		case <-duration:
-			return nil
+			return ctx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
@@ -502,6 +521,9 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr *net.
 		if err != nil {
 			return sent, err
 		}
+		if n < 0 {
+			panic(fmt.Sprintf("SendMsgs returned n < 0, n=%v", n))
+		}
 		sent += uint(n)
 		r.seq += uint64(n)
 		packetsLeft -= uint(n)
@@ -512,5 +534,5 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr *net.
 			break
 		}
 	}
-	return sent, nil
+	return sent, ctx.Err()
 }
