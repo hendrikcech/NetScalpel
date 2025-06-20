@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/net/ipv4"
+	mmsg "github.com/anacrolix/mmsg/socket"
 	"golang.org/x/sys/unix"
 )
 
@@ -97,264 +97,6 @@ func ListenUDP(ctx context.Context) (*net.UDPConn, error) {
 	return conn, nil
 }
 
-func setSocketBuffers(ctx context.Context, conn *net.UDPConn) {
-	udpBufferSize := 30_000_000
-	sndPrev, rcvPrev, _ := getSocketBuffers(conn)
-	errWrite := conn.SetWriteBuffer(udpBufferSize)
-	errRead := conn.SetReadBuffer(udpBufferSize)
-	sndBuf, rcvBuf, errGet := getSocketBuffers(conn)
-	if errWrite != nil || errRead != nil || errGet != nil || sndBuf < udpBufferSize || rcvBuf < udpBufferSize {
-		errForce := forceSetSocketBuffers(conn, udpBufferSize)
-		sndBuf, rcvBuf, errGet = getSocketBuffers(conn)
-		if sndBuf < udpBufferSize || rcvBuf < udpBufferSize {
-			slog.WarnContext(ctx, "Failed setting UDP socket buffers",
-				"goal", udpBufferSize,
-				"sndPrev", sndPrev,
-				"sndNow", sndBuf,
-				"rcvPrev", rcvPrev,
-				"rcvNow", rcvBuf,
-				"errorWrite", errWrite,
-				"errorGet", errGet,
-				"errorForce", errForce)
-		}
-	}
-}
-
-func getSocketBuffers(conn *net.UDPConn) (int, int, error) {
-	fd, err := conn.File()
-	defer fd.Close()
-	if err != nil {
-		return -1, -1, err
-	}
-	// Necessary to continue make Deadline work on conn: https://stackoverflow.com/a/74886460
-	defer syscall.SetNonblock(int(fd.Fd()), true)
-
-	snd, err := syscall.GetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_SNDBUF)
-	if err != nil {
-		return -1, -1, err
-	}
-	rcv, err := syscall.GetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
-	if err != nil {
-		return -1, -1, err
-	}
-
-	return snd, rcv, nil
-}
-
-func forceSetSocketBuffers(conn *net.UDPConn, size int) error {
-	fd, err := conn.File()
-	defer fd.Close()
-	if err != nil {
-		return err
-	}
-	// Necessary to continue make Deadline work on conn: https://stackoverflow.com/a/74886460
-	defer syscall.SetNonblock(int(fd.Fd()), true)
-
-	if err := syscall.SetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_SNDBUFFORCE, size); err != nil {
-		return err
-	}
-	if err := syscall.SetsockoptInt(int(fd.Fd()), syscall.SOL_SOCKET, syscall.SO_RCVBUFFORCE, size); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func setMaxPacingRate(conn *net.UDPConn, rate uint) error {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	err = rawConn.Control(func(fd uintptr) {
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_MAX_PACING_RATE, int(rate)); err != nil {
-			err = fmt.Errorf("Failed setting SO_MAX_PACING_RATE: %v", err.Error())
-		}
-	})
-
-	return err
-}
-
-func enableTxTimestamping(conn *net.UDPConn) error {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	err = rawConn.Control(func(fd uintptr) {
-		flags := unix.SOF_TIMESTAMPING_TX_SOFTWARE |
-			unix.SOF_TIMESTAMPING_TX_HARDWARE |
-			unix.SOF_TIMESTAMPING_SOFTWARE |
-			unix.SOF_TIMESTAMPING_RAW_HARDWARE |
-			unix.SOF_TIMESTAMPING_OPT_ID |
-			unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
-
-		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
-	})
-
-	return err
-}
-
-func enableRxTimestamping(conn *net.UDPConn) error {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	err = rawConn.Control(func(fd uintptr) {
-		flags := unix.SOF_TIMESTAMPING_RX_SOFTWARE |
-			unix.SOF_TIMESTAMPING_RX_HARDWARE |
-			unix.SOF_TIMESTAMPING_SOFTWARE |
-			unix.SOF_TIMESTAMPING_RAW_HARDWARE |
-			unix.SOF_TIMESTAMPING_OPT_ID
-		// unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
-
-		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
-	})
-
-	return err
-}
-
-// Reads transmission timestamps fromm conn until the context is cancelled.
-// At that point, it waits for 100 ms and checks if any more packets have been sent.
-// If not, the results are written to C. If so, it reads the timestamps, waits
-// another 100 ms and checks again.
-type TxTsReader struct {
-	C chan []MsgSent
-}
-
-func NewTxTsReader() *TxTsReader {
-	return &TxTsReader{
-		C: make(chan []MsgSent, 1),
-	}
-}
-
-func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-	return rawConn.Control(t.run(ctx))
-}
-
-// Note: Can not use packetconn.ReadBatch due to a bug while reading from MSG_ERRQUEUE
-// err=read udp [::]:34944: invalid address
-func (t *TxTsReader) run(ctx context.Context) func(uintptr) {
-	return func(fd uintptr) {
-		buf := make([]byte, 1500)
-		oob := make([]byte, 1500)
-
-		// TODO: size from the beginning
-		sentMsgs := make([]MsgSent, 0, 1024)
-		defer func() {
-			t.C <- sentMsgs
-		}()
-
-		finalIteration := false
-		for {
-			n, oobn, _, _, err := syscall.Recvmsg(int(fd), buf, oob, unix.MSG_ERRQUEUE)
-			if err != nil {
-				if err == syscall.EAGAIN {
-					if finalIteration {
-						return
-					}
-					select {
-					case <-time.After(100 * time.Millisecond):
-						continue
-					case <-ctx.Done():
-						finalIteration = true
-						time.Sleep(100 * time.Millisecond)
-						continue
-					}
-				} else {
-					slog.ErrorContext(ctx, "TxTsReader recvmsg error -> exiting", "error", err)
-					return
-				}
-			}
-			finalIteration = false
-
-			sentMsg, err := t.parseOOB(ctx, n, oob[:oobn])
-			if err != nil {
-				slog.ErrorContext(ctx, "parseOOB", "error", err)
-				continue
-			}
-			sentMsgs = append(sentMsgs, sentMsg)
-		}
-	}
-}
-
-func (t *TxTsReader) parseOOB(ctx context.Context, packetLen int, oob []byte) (MsgSent, error) {
-	sentMsg := MsgSent{Len: uint(packetLen)}
-
-	cms, err := unix.ParseSocketControlMessage(oob)
-	if err != nil {
-		return sentMsg, fmt.Errorf("TxTsReader: Failed parsing cmsg: %v", err.Error())
-	}
-
-	tsSet := false
-	seqSet := false
-	for _, cm := range cms {
-		if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
-			var times unix.ScmTimestamping
-			tsBuf := bytes.NewReader(cm.Data)
-			binary.Read(tsBuf, binary.LittleEndian, &times)
-			ts := times.Ts[0]
-			sentMsg.TsSent = time.Unix(ts.Sec, ts.Nsec)
-			tsSet = true
-		} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) &&
-			(cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
-			var sockErr unix.SockExtendedErr
-			sockErrBuf := bytes.NewReader(cm.Data)
-			binary.Read(sockErrBuf, binary.LittleEndian, &sockErr)
-			if sockErr.Errno == uint32(syscall.ENOMSG) { // expected for timestamps
-				sentMsg.Seq = uint64(sockErr.Data)
-				seqSet = true
-			}
-		} else {
-			slog.WarnContext(ctx, "TxTsReader: Unknown cm", "cm", cm)
-		}
-	}
-
-	if !tsSet || !seqSet {
-		slog.WarnContext(ctx, "TxTsReader: Missing data in cm",
-			"ts", tsSet,
-			"seq", seqSet,
-			"cms", cms,
-			"oob", fmt.Sprintf("%x", oob),
-		)
-		return sentMsg, fmt.Errorf("TxTsReader: Missing data in cm")
-	}
-
-	return sentMsg, nil
-}
-
-func setupTxTsReader(ctx context.Context, conn *net.UDPConn) (*TxTsReader, context.CancelFunc) {
-	var reader *TxTsReader
-	ctxReader, cancelReader := context.WithCancel(ctx)
-	if err := enableTxTimestamping(conn); err != nil {
-		slog.WarnContext(ctx, "Failed enabling tx timestamping", "error", err.Error())
-
-	} else {
-		reader = NewTxTsReader()
-		go reader.Run(ctxReader, conn)
-	}
-	return reader, cancelReader
-}
-
-func terminateTxTsReader(ctx context.Context, reader *TxTsReader, cancelReader context.CancelFunc, sentMsgs []MsgSent) []MsgSent {
-	if reader == nil {
-		return sentMsgs
-	}
-	slog.DebugContext(ctx, "Canceling tx ts reader ctx and waiting for msgs")
-	cancelReader()
-	tsMsgs := <-reader.C
-	if len(sentMsgs) != len(tsMsgs) {
-		slog.ErrorContext(ctx, fmt.Sprintf("run function returned %v, txTsReader %v msgs",
-			len(sentMsgs), len(tsMsgs)))
-	}
-	return tsMsgs
-}
-
 func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
 	tsEnabled := true
 	if err := enableRxTimestamping(conn); err != nil {
@@ -366,18 +108,21 @@ func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint
 	msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
 
 	// batch size
-	rx := make([]ipv4.Message, 1024)
+	rx := make([]mmsg.Message, 1024)
 	for k := range rx {
 		rx[k].Buffers = [][]byte{make([]byte, 1500)}
 		rx[k].OOB = make([]byte, 500)
 	}
 
-	pconn := ipv4.NewPacketConn(conn)
+	mconn, err := mmsg.NewConn(conn)
+	if err != nil {
+		return nil, fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
+	}
 
 	// TODO: close connection on ctx.Done?
 
 	for {
-		n, err := pconn.ReadBatch(rx, 0)
+		n, err := mconn.RecvMsgs(rx, 0)
 		if err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Timeout() {
 				// not a timeout
@@ -457,7 +202,7 @@ func (s *BurstSender) Mode() UDPServerMode {
 }
 
 func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
-	tsReader, tsReaderCancel := setupTxTsReader(ctx, conn)
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
 	defer tsReaderCancel()
 
 	msgsSent, err := s.run(ctx, conn, raddr)
@@ -465,15 +210,14 @@ func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDP
 		return nil, err
 	}
 
-	terminateTxTsReader(ctx, tsReader, tsReaderCancel, msgsSent)
+	msgsSent = selectMsgsSent(ctx, tsReader, tsReaderCancel, msgsSent)
 
 	return msgsSent, nil
 }
 
 func (s *BurstSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	msgsSent := make([]MsgSent, s.Params.Num)
-	msgs := make([]ipv4.Message, s.Params.Num)
-
+	msgs := make([]mmsg.Message, s.Params.Num)
 	for i := 0; i < int(s.Params.Num); i++ {
 		b := Msg{Seq: uint64(i), PadN: s.Params.Pad}
 		buf := make([]byte, 1500)
@@ -488,25 +232,27 @@ func (s *BurstSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDP
 		msgsSent[i] = MsgSent{Seq: b.Seq, Len: 8 + s.Params.Pad}
 	}
 
-	// TODO: close conn on ctx.Done?
+	mconn, err := mmsg.NewConn(conn)
+	if err != nil {
+		return nil, fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
+	}
 
-	pconn := ipv4.NewPacketConn(conn)
-
-	left := s.Params.Num
-	for round := uint(0); left > 0; round++ {
+	sentN := uint(0)
+	for sentN < s.Params.Num {
+		left := s.Params.Num - sentN
 		numRound := min(1024, left)
-		tx := make([]ipv4.Message, numRound)
-		tsSent := time.Now()
 
-		for j := uint(0); j < numRound; j++ {
-			idx := round*1024 + j
-			tx[j] = msgs[idx]
+		tsSent := time.Now()
+		for i := uint(0); i < numRound; i++ {
+			idx := sentN + i
 			msgsSent[idx].TsSent = tsSent
 		}
 
-		n, err := pconn.WriteBatch(tx, 0)
+		tx := msgs[sentN : sentN+numRound]
+		n, err := mconn.SendMsgs(tx, 0)
 		if n != int(numRound) {
-			slog.WarnContext(ctx, fmt.Sprintf("Only bursted %v packets instead of %v in round %v", n, numRound, round))
+			slog.WarnContext(ctx, fmt.Sprintf("Only bursted %v packets instead of %v", n, numRound),
+				"sentN", sentN, "left", left)
 		}
 		if err != nil {
 			return nil, err
@@ -514,8 +260,7 @@ func (s *BurstSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDP
 		if n != int(numRound) {
 			break
 		}
-
-		left -= uint(n)
+		sentN += uint(n)
 	}
 
 	return msgsSent, nil
@@ -554,7 +299,7 @@ func (s *PeriodicSender) Mode() UDPServerMode {
 }
 
 func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
-	tsReader, tsReaderCancel := setupTxTsReader(ctx, conn)
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
 	defer tsReaderCancel()
 
 	msgsSent, err := r.run(ctx, conn, raddr)
@@ -562,7 +307,7 @@ func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.
 		return nil, err
 	}
 
-	terminateTxTsReader(ctx, tsReader, tsReaderCancel, msgsSent)
+	msgsSent = selectMsgsSent(ctx, tsReader, tsReaderCancel, msgsSent)
 
 	return msgsSent, nil
 }
@@ -648,7 +393,7 @@ type RateSender struct {
 	seq       uint64
 	tsEnabled bool
 	msgs      []MsgSent
-	tx        []ipv4.Message
+	tx        []mmsg.Message
 }
 
 var _ Sender = (*RateSender)(nil)
@@ -663,12 +408,12 @@ func (s *RateSender) Mode() UDPServerMode {
 
 func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
 	r.msgs = make([]MsgSent, 0, int(float64(r.Params.NumPackets())*1.1))
-	r.tx = make([]ipv4.Message, 1024)
+	r.tx = make([]mmsg.Message, 1024)
 	for i := range r.tx {
 		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
 	}
 
-	tsReader, tsReaderCancel := setupTxTsReader(ctx, conn)
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
 	defer tsReaderCancel()
 
 	for i := range r.Params {
@@ -677,7 +422,7 @@ func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPA
 		}
 	}
 
-	r.msgs = terminateTxTsReader(ctx, tsReader, tsReaderCancel, r.msgs)
+	r.msgs = selectMsgsSent(ctx, tsReader, tsReaderCancel, r.msgs)
 
 	return r.msgs, nil
 }
@@ -688,18 +433,25 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 
 	// Only enable socket pacing if we can retrieve the actual tx timestamps
 	// TODO: reenable
+	// leads to txtsreader returning a different number of packets than Run (half of it)
 	// if tsEnabled {
 	// 	// approximate 50 bytes overhead from L2, IP and UDP headers
 	// 	pacingRate := uint(params.Pps*params.PayloadSize) + 50
 	// 	if err := setMaxPacingRate(conn, pacingRate); err != nil {
-	// 		slog.WarnContext(ctx, err.Error())
+	// 		slog.WarnContext(ctx, "Failed enabling pacing", "error", err)
+	// 	} else {
+	// 		slog.DebugContext(ctx, "Enabled pacing")
 	// 	}
 	// }
+	slog.DebugContext(ctx, "Disabled pacing (manually)")
 
 	start := time.Now()
 	numPacketsSent := uint(0)
 
-	pconn := ipv4.NewPacketConn(conn)
+	mconn, err := mmsg.NewConn(conn)
+	if err != nil {
+		return fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
+	}
 
 	for {
 		select {
@@ -712,7 +464,7 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 			if numPackets == 0 {
 				continue
 			}
-			n, err := r.sendRound(ctx, pconn, raddr, numPackets, params.PayloadSize)
+			n, err := r.sendRound(ctx, mconn, raddr, numPackets, params.PayloadSize)
 			if err != nil {
 				return err
 			}
@@ -723,7 +475,7 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 	}
 }
 
-func (r *RateSender) sendRound(ctx context.Context, conn *ipv4.PacketConn, raddr *net.UDPAddr, packets uint, payloadSize uint) (uint, error) {
+func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr *net.UDPAddr, packets uint, payloadSize uint) (uint, error) {
 	packetsLeft := packets
 	sent := uint(0)
 	for packetsLeft > 0 {
@@ -746,7 +498,7 @@ func (r *RateSender) sendRound(ctx context.Context, conn *ipv4.PacketConn, raddr
 			r.msgs = append(r.msgs, MsgSent{Seq: b.Seq, TsSent: tsSent, Len: 8 + payloadSize})
 		}
 
-		n, err := conn.WriteBatch(r.tx[:packetsRound], 0)
+		n, err := conn.SendMsgs(r.tx[:packetsRound], 0)
 		if err != nil {
 			return sent, err
 		}
