@@ -3,11 +3,16 @@ package pkg
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/rpc"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func init() {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+}
 
 var ip string = "127.0.0.1"
 
@@ -221,6 +226,8 @@ func TestRateMultipleWithZero(t *testing.T) {
 }
 
 func testSender(t *testing.T, c *SenderClient) {
+	t.Parallel()
+
 	RegisterGob()
 
 	port := serverPort()
@@ -283,6 +290,8 @@ func TestRunCommandTcpdumpRemote(t *testing.T) {
 }
 
 func testRunCommandTcpdump(t *testing.T, local bool) {
+	t.Parallel()
+
 	RegisterGob()
 
 	ctxS := context.Background()
@@ -306,7 +315,7 @@ func testRunCommandTcpdump(t *testing.T, local bool) {
 	client := CommandClient{
 		Params: TcpdumpParams{
 			Name_:    "tcpdump",
-			Timeout_: 5 * time.Second,
+			Timeout_: 2 * time.Second,
 		},
 		Local:    local,
 		StartAt:  time.Time{},
