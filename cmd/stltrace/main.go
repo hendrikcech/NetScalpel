@@ -32,6 +32,7 @@ func main() {
 	clientProcedure := clientCmd.String("procedure", "", "test procedure")
 	clientParams := clientCmd.String("params", "", "semicolon-separated key=value pairs passed to procedure")
 	clientProfile := clientCmd.String("profile", "", "write pprof to file")
+	clientLog := clientCmd.String("log", "", "write all log output to this file")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	serverIP := serverCmd.String("ip", "0.0.0.0", "ip")
@@ -82,9 +83,20 @@ func main() {
 		}
 
 		go func() {
-			<-signalC
+			sig := <-signalC
+			slog.DebugContext(ctx, "Cancelling ctx on signal", "signal", sig)
 			ctxCancel()
 		}()
+
+		var logfile *os.File
+		if *clientLog != "" {
+			var err error
+			if logfile, err = os.Create(*clientLog); err != nil {
+				slog.ErrorContext(ctx, "Failed opening client logfile", "path", *clientLog, "error", err)
+				os.Exit(1)
+			}
+			defer logfile.Close()
+		}
 
 		client := Client{
 			IP:        *clientIP,
@@ -93,6 +105,7 @@ func main() {
 			Rounds:    *clientRounds,
 			Procedure: *clientProcedure,
 			Params:    params,
+			Logfile:   logfile,
 		}
 		client.Run(ctx)
 
@@ -100,12 +113,14 @@ func main() {
 		serverCmd.Parse(os.Args[2:])
 
 		if *serverLog != "" {
-			slogFile, err := setupSlogMulti(*serverLog)
-			if err != nil {
-				slog.Error("Failed opening -log file", "error", err)
+			var logfile *os.File
+			var err error
+			if logfile, err = os.Create(*serverLog); err != nil {
+				slog.ErrorContext(ctx, "Failed opening server logfile", "path", *serverLog, "error", err)
 				os.Exit(1)
 			}
-			defer slogFile.Close()
+			defer logfile.Close()
+			setupSlogMulti(logfile)
 		}
 
 		createProfile(*serverProfile)
@@ -133,19 +148,22 @@ func setupSlogBasic() {
 	slog.SetDefault(log)
 }
 
-func setupSlogMulti(path string) (*os.File, error) {
-	f, err := os.Create(path)
-	if err != nil {
-		return nil, fmt.Errorf("Failed opening slogfile: %v", err.Error())
-	}
+func setupSlogMulti(fs ...*os.File) {
+	var handlers []slog.Handler
 
-	fileHandler := pkg.SlogContextHandler{slog.NewTextHandler(f, &slog.HandlerOptions{
-		AddSource:   true,
-		Level:       slog.LevelDebug,
-		ReplaceAttr: slogShortenSource,
-	}), []any{
-		pkg.SlogIDKey{},
-	}}
+	for i := range fs {
+		if fs[i] == nil {
+			continue
+		}
+		fileHandler := pkg.SlogContextHandler{slog.NewTextHandler(fs[i], &slog.HandlerOptions{
+			AddSource:   true,
+			Level:       slog.LevelDebug,
+			ReplaceAttr: slogShortenSource,
+		}), []any{
+			pkg.SlogIDKey{},
+		}}
+		handlers = append(handlers, fileHandler)
+	}
 
 	stdHandler := pkg.SlogContextHandler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		AddSource: false,
@@ -153,17 +171,15 @@ func setupSlogMulti(path string) (*os.File, error) {
 	}), []any{
 		pkg.SlogIDKey{},
 	}}
+	handlers = append(handlers, stdHandler)
 
 	logger := slog.New(
 		slogmulti.Fanout(
-			fileHandler,
-			stdHandler,
+			handlers...,
 		),
 	)
 
 	slog.SetDefault(logger)
-
-	return f, nil
 }
 
 // Only keep the filename and not the full path
@@ -279,12 +295,15 @@ type Client struct {
 	Rounds    uint
 	Procedure string
 	Params    map[string]any
+	Logfile   *os.File
 
 	round    uint
 	slogFile *os.File
 }
 
 func (c *Client) Run(ctx context.Context) {
+	c.setupSlog(ctx, "")
+
 	for i := range c.Rounds {
 		e := NewExecutor(ctx, c.IP, c.Port)
 		c.round = i
@@ -367,11 +386,17 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) {
 	if c.slogFile != nil {
 		c.slogFile.Close()
 	}
-	slogFilePath := filepath.Join(resultPath, "stltrace.log")
-	var err error
-	if c.slogFile, err = setupSlogMulti(slogFilePath); err != nil {
-		slog.WarnContext(ctx, "Failed setupSlogMulti", "error", err, "path", slogFilePath)
+
+	if resultPath != "" {
+		path := filepath.Join(resultPath, "stltrace.log")
+		var err error
+		c.slogFile, err = os.Create(path)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed opening slogfile", "path", path, "error", err)
+		}
 	}
+
+	setupSlogMulti(c.slogFile, c.Logfile)
 }
 
 func nextRi(ts time.Time) time.Time {

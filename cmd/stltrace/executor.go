@@ -79,7 +79,7 @@ func (e *Executor) tcpdump(resultPath string, start time.Time, duration time.Dur
 			Params: pkg.TcpdumpParams{
 				Name_:    fmt.Sprintf("tcpdump_%v", name),
 				Timeout_: duration,
-				Filter:   "udp",
+				// Filter:   "udp",
 			},
 			Local:    local,
 			StartAt:  start,
@@ -143,24 +143,7 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) {
 		}}},
 	})
 
-	for _, local := range []bool{true, false} {
-		var name string
-		if local {
-			name = "local"
-		} else {
-			name = "remote"
-		}
-		e.RunClient(&pkg.CommandClient{
-			Params: pkg.TcpdumpParams{
-				Name_:    fmt.Sprintf("tcpdump_%v", name),
-				Timeout_: 16 * time.Second,
-				Filter:   "udp",
-			},
-			Local:    local,
-			StartAt:  owdStart.Add(-500 * time.Millisecond),
-			LocalDir: resultPath,
-		})
-	}
+	e.tcpdump(resultPath, owdStart.Add(-500*time.Millisecond), 16*time.Second)
 }
 
 func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params ParamMap) {
@@ -219,24 +202,7 @@ func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params Param
 		panic(fmt.Sprintf("Too many tests: %v > %v", start, deadline))
 	}
 
-	for _, local := range []bool{true, false} {
-		var name string
-		if local {
-			name = "local"
-		} else {
-			name = "remote"
-		}
-		e.RunClient(&pkg.CommandClient{
-			Params: pkg.TcpdumpParams{
-				Name_:    fmt.Sprintf("tcpdump_%v", name),
-				Timeout_: 15 * time.Second,
-				Filter:   "udp",
-			},
-			Local:    local,
-			StartAt:  ts,
-			LocalDir: resultPath,
-		})
-	}
+	e.tcpdump(resultPath, ts, 15*time.Second)
 }
 
 func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
@@ -323,24 +289,7 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) {
 		panic(fmt.Sprintf("Too many tests: %v > %v", start, deadline))
 	}
 
-	for _, local := range []bool{true, false} {
-		var name string
-		if local {
-			name = "local"
-		} else {
-			name = "remote"
-		}
-		e.RunClient(&pkg.CommandClient{
-			Params: pkg.TcpdumpParams{
-				Name_:    fmt.Sprintf("tcpdump_%v", name),
-				Timeout_: 15 * time.Second,
-				Filter:   "udp",
-			},
-			Local:    local,
-			StartAt:  ts,
-			LocalDir: resultPath,
-		})
-	}
+	e.tcpdump(resultPath, ts, 15*time.Second)
 }
 
 func (e *Executor) CoolDown(ts time.Time, resultPath string, params ParamMap) {
@@ -415,24 +364,7 @@ func (e *Executor) CoolDown(ts time.Time, resultPath string, params ParamMap) {
 
 	log.Printf("Scheduled with cooldowns: %v", coolDowns)
 
-	for _, local := range []bool{true, false} {
-		var name string
-		if local {
-			name = "local"
-		} else {
-			name = "remote"
-		}
-		e.RunClient(&pkg.CommandClient{
-			Params: pkg.TcpdumpParams{
-				Name_:    fmt.Sprintf("tcpdump_%v", name),
-				Timeout_: start.Sub(ts) + time.Second,
-				Filter:   "udp",
-			},
-			Local:    local,
-			StartAt:  ts,
-			LocalDir: resultPath,
-		})
-	}
+	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
 
 	if start.After(nextRi(ts).Add(time.Second)) {
 		panic("Test takes longer than one RI")

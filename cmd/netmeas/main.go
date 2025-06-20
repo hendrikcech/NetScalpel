@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/rpc"
 	"os"
 	"os/signal"
@@ -53,6 +54,8 @@ func main() {
 	}
 
 	pkg.RegisterGob()
+
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	var client pkg.Client
 	var rpcClient *rpc.Client
