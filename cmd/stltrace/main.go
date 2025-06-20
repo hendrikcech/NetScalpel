@@ -84,7 +84,7 @@ func main() {
 
 		go func() {
 			sig := <-signalC
-			slog.DebugContext(ctx, "Cancelling ctx on signal", "signal", sig)
+			slog.InfoContext(ctx, "Cancelling ctx on signal", "signal", sig)
 			ctxCancel()
 		}()
 
@@ -209,7 +209,7 @@ func createProfile(profile string) {
 	slog.Info("Writing pprof profile", "path", profile)
 }
 
-type ProcedureFunc func(time.Time, string, ParamMap)
+type ProcedureFunc func(time.Time, string, ParamMap) error
 
 type ParamMap map[string]any
 
@@ -304,64 +304,75 @@ type Client struct {
 func (c *Client) Run(ctx context.Context) {
 	c.setupSlog(ctx, "")
 
-	for i := range c.Rounds {
-		e := NewExecutor(ctx, c.IP, c.Port)
-		c.round = i
-
-		proceduresUlDl := map[string]ProcedureFunc{
-			"burst":    e.BurstRi,
-			"prograte": e.ProgressiveRate,
-			"cooldown": e.CoolDown,
-			"cdsf":     e.CoolDownSameFlow,
+	defer func() {
+		if c.slogFile != nil {
+			c.slogFile.Close()
 		}
+	}()
 
-		proceduresBidir := map[string]ProcedureFunc{
-			"trace": e.TraceRi,
-			"owd":   e.MeasOWD,
+	rpcClient := dialRpcClient(c.IP, c.Port)
+	defer rpcClient.Close()
+
+	for c.round = range c.Rounds {
+		if ctx.Err() != nil {
+			return
 		}
+		c.runRound(ctx, rpcClient)
+	}
+}
 
-		now := time.Now()
-		resultPath := ""
-		if fn, ok := proceduresUlDl[c.Procedure]; ok {
-			if _, ok := c.Params["direction"]; ok {
-				resultPath = c.executeProcedure(ctx, now, fn, c.Params)
-			} else {
-				params := maps.Clone(c.Params)
-				params["direction"] = pkg.DL.String()
-				resultPath = c.executeProcedure(ctx, now, fn, params)
-				params["direction"] = pkg.UL.String()
-				resultPath = c.executeProcedure(ctx, now.Add(15*time.Second), fn, params)
-			}
-		} else if fn, ok := proceduresBidir[c.Procedure]; ok {
-			resultPath = c.executeProcedure(ctx, now, fn, c.Params)
-		} else {
-			slog.ErrorContext(ctx, "Unknown -procedure", "procedure", c.Procedure)
-			os.Exit(1)
-		}
+func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
+	e := NewExecutor(ctx, c.IP, rpcClient)
 
-		c.setupSlog(ctx, resultPath)
-
-		if err := e.G.Wait(); err != nil {
-			slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Aborting due to failed client.Run", c.round+1, c.Rounds), "error", err)
-			continue
-		}
-
-		slog.InfoContext(ctx, "Gathering results...")
-		start := time.Now()
-		if err := e.GatherResults(); err != nil {
-			slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Now().Sub(start).Seconds(), "error", err.Error())
-		} else {
-			slog.InfoContext(ctx, "Gathered results", "duration", time.Now().Sub(start).Seconds())
-		}
-
-		// TODO: add information about pacing and timestamping support
-		if err := e.WriteInfo(resultPath); err != nil {
-			slog.ErrorContext(ctx, "Failed writing info", "error", err.Error())
-		}
+	proceduresUlDl := map[string]ProcedureFunc{
+		"burst":    e.BurstRi,
+		"prograte": e.ProgressiveRate,
+		"cooldown": e.CoolDown,
+		"cdsf":     e.CoolDownSameFlow,
 	}
 
-	if c.slogFile != nil {
-		c.slogFile.Close()
+	proceduresBidir := map[string]ProcedureFunc{
+		"trace": e.TraceRi,
+		"owd":   e.MeasOWD,
+	}
+
+	now := time.Now()
+	resultPath := ""
+	if fn, ok := proceduresUlDl[c.Procedure]; ok {
+		if _, ok := c.Params["direction"]; ok {
+			resultPath = c.executeProcedure(ctx, now, fn, c.Params)
+		} else {
+			params := maps.Clone(c.Params)
+			params["direction"] = pkg.DL.String()
+			resultPath = c.executeProcedure(ctx, now, fn, params)
+			params["direction"] = pkg.UL.String()
+			resultPath = c.executeProcedure(ctx, now.Add(15*time.Second), fn, params)
+		}
+	} else if fn, ok := proceduresBidir[c.Procedure]; ok {
+		resultPath = c.executeProcedure(ctx, now, fn, c.Params)
+	} else {
+		slog.ErrorContext(ctx, "Unknown -procedure", "procedure", c.Procedure)
+		os.Exit(1)
+	}
+
+	c.setupSlog(ctx, resultPath)
+
+	if err := e.G.Wait(); err != nil {
+		slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Aborting due to failed client.Run", c.round+1, c.Rounds), "error", err)
+		return
+	}
+
+	slog.InfoContext(ctx, "Gathering results...")
+	start := time.Now()
+	if err := e.GatherResults(); err != nil {
+		slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Now().Sub(start).Seconds(), "error", err.Error())
+	} else {
+		slog.InfoContext(ctx, "Gathered results", "duration", time.Now().Sub(start).Seconds())
+	}
+
+	// TODO: add information about pacing and timestamping support
+	if err := e.WriteInfo(resultPath); err != nil {
+		slog.ErrorContext(ctx, "Failed writing info", "error", err.Error())
 	}
 }
 
@@ -378,7 +389,10 @@ func (c *Client) executeProcedure(ctx context.Context, ts time.Time, fn Procedur
 		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())
 		os.Exit(1)
 	}
-	fn(ri, resultPath, params)
+	if err := fn(ri, resultPath, params); err != nil {
+		slog.Error("Procedure errored", "error", err)
+		os.Exit(1)
+	}
 	return resultPath
 }
 
@@ -438,6 +452,6 @@ func dumpOnSig() {
 	for {
 		<-sigs
 		stacklen := runtime.Stack(buf, true)
-		slog.Info(fmt.Sprintf("=== received SIGQUIT ===\n*** goroutine dump...\n%s\n*** end\n", buf[:stacklen]))
+		fmt.Printf("=== received SIGQUIT ===\n*** goroutine dump...\n%s\n*** end\n", buf[:stacklen])
 	}
 }
