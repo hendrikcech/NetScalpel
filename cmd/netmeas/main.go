@@ -164,7 +164,7 @@ func main() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-		s := pkg.RunServer(ctx, *serverIP, *serverPort)
+		s := pkg.RunServer(ctx, *serverIP, *serverPort, nil)
 
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)

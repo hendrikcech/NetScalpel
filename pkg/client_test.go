@@ -233,7 +233,7 @@ func testSender(t *testing.T, c *SenderClient) {
 	port := serverPort()
 
 	ctxS := context.Background()
-	server := RunServer(ctxS, c.IP, port)
+	server := RunServer(ctxS, c.IP, port, nil)
 
 	ctxC := context.Background()
 	rpcClient, err := dialRpcClient(c.IP, port)
@@ -296,7 +296,7 @@ func testRunCommandTcpdump(t *testing.T, local bool) {
 
 	ctxS := context.Background()
 	port := serverPort()
-	server := RunServer(ctxS, ip, port)
+	server := RunServer(ctxS, ip, port, nil)
 	defer server.Stop()
 
 	ctxC := context.Background()

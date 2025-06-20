@@ -21,8 +21,8 @@ func logErrContext(ctx context.Context, fmtStr string, args ...interface{}) erro
 	return e
 }
 
-func RunServer(ctx context.Context, ip string, port uint) *Server {
-	s := NewServer(ctx)
+func RunServer(ctx context.Context, ip string, port uint, slogCh *chan *slog.Record) *Server {
+	s := NewServer(ctx, slogCh)
 
 	var err error
 	s.listener, err = net.Listen("tcp", fmt.Sprintf("%s:%v", ip, port))
@@ -78,6 +78,7 @@ type Server struct {
 	listener net.Listener
 	wg       sync.WaitGroup
 	ctx      context.Context
+	slogCh   *chan *slog.Record
 
 	ids          map[string]bool
 	resultsRcvdC map[string]chan *Result[[]MsgRcvd, MsgRcvd]
@@ -86,9 +87,10 @@ type Server struct {
 	resultsLock  sync.RWMutex
 }
 
-func NewServer(ctx context.Context) *Server {
+func NewServer(ctx context.Context, slogCh *chan *slog.Record) *Server {
 	return &Server{
 		ctx:          ctx,
+		slogCh:       slogCh,
 		ids:          make(map[string]bool),
 		resultsRcvdC: make(map[string]chan *Result[[]MsgRcvd, MsgRcvd]),
 		resultsSentC: make(map[string]chan *Result[[]MsgSent, MsgSent]),
@@ -438,4 +440,31 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 	}
 
 	return nil
+}
+
+type RequestSlogArgs struct {
+}
+type RequestSlogReply struct {
+	Log string
+}
+
+func (s *Server) RequestSlog(args RequestSlogArgs, reply *RequestSlogReply) error {
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, nil)
+
+	if s.slogCh == nil {
+		return nil
+	}
+
+	for {
+		select {
+		case r := <-*s.slogCh:
+			if err := handler.Handle(context.Background(), *r); err != nil {
+				return err
+			}
+		default:
+			reply.Log = buf.String()
+			return nil
+		}
+	}
 }

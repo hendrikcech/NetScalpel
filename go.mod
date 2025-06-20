@@ -13,6 +13,8 @@ require (
 
 require (
 	github.com/samber/lo v1.51.0 // indirect
+	github.com/samber/slog-channel v1.4.2 // indirect
+	github.com/samber/slog-common v0.18.1 // indirect
 	golang.org/x/text v0.26.0 // indirect
 )
 

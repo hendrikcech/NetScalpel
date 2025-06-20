@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	slogchannel "github.com/samber/slog-channel"
 	slogmulti "github.com/samber/slog-multi"
 
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
@@ -112,21 +113,21 @@ func main() {
 	case "server":
 		serverCmd.Parse(os.Args[2:])
 
+		var logfile *os.File
 		if *serverLog != "" {
-			var logfile *os.File
 			var err error
 			if logfile, err = os.Create(*serverLog); err != nil {
 				slog.ErrorContext(ctx, "Failed opening server logfile", "path", *serverLog, "error", err)
 				os.Exit(1)
 			}
 			defer logfile.Close()
-			setupSlogMulti(logfile)
 		}
+		slogCh := setupSlogMulti(true, logfile)
 
 		createProfile(*serverProfile)
 		defer pprof.StopCPUProfile()
 
-		s := pkg.RunServer(ctx, *serverIP, *serverPort)
+		s := pkg.RunServer(ctx, *serverIP, *serverPort, slogCh)
 
 		sig := <-signalC
 		slog.InfoContext(ctx, "Stopping server", "signal", sig)
@@ -148,7 +149,7 @@ func setupSlogBasic() {
 	slog.SetDefault(log)
 }
 
-func setupSlogMulti(fs ...*os.File) {
+func setupSlogMulti(createChan bool, fs ...*os.File) *chan *slog.Record {
 	var handlers []slog.Handler
 
 	for i := range fs {
@@ -156,8 +157,8 @@ func setupSlogMulti(fs ...*os.File) {
 			continue
 		}
 		fileHandler := pkg.SlogContextHandler{slog.NewTextHandler(fs[i], &slog.HandlerOptions{
-			AddSource:   true,
 			Level:       slog.LevelDebug,
+			AddSource:   true,
 			ReplaceAttr: slogShortenSource,
 		}), []any{
 			pkg.SlogIDKey{},
@@ -173,6 +174,20 @@ func setupSlogMulti(fs ...*os.File) {
 	}}
 	handlers = append(handlers, stdHandler)
 
+	var ch *chan *slog.Record
+	if createChan {
+		tmp := make(chan *slog.Record, 1000)
+		ch = &tmp
+		chHandler := slogchannel.Option{
+			Channel:     *ch,
+			Blocking:    false,
+			Level:       slog.LevelDebug,
+			AddSource:   true,
+			ReplaceAttr: slogShortenSource,
+		}.NewChannelHandler()
+		handlers = append(handlers, chHandler)
+	}
+
 	logger := slog.New(
 		slogmulti.Fanout(
 			handlers...,
@@ -180,6 +195,8 @@ func setupSlogMulti(fs ...*os.File) {
 	)
 
 	slog.SetDefault(logger)
+
+	return ch
 }
 
 // Only keep the filename and not the full path
@@ -362,7 +379,7 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 		return
 	}
 
-	slog.InfoContext(ctx, "Gathering results...")
+	slog.InfoContext(ctx, "Gathering results")
 	start := time.Now()
 	if err := e.GatherResults(); err != nil {
 		slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Now().Sub(start).Seconds(), "error", err.Error())
@@ -373,6 +390,11 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 	// TODO: add information about pacing and timestamping support
 	if err := e.WriteInfo(resultPath); err != nil {
 		slog.ErrorContext(ctx, "Failed writing info", "error", err.Error())
+	}
+
+	slog.DebugContext(ctx, "Fetching and writing server log")
+	if err := c.WriteServerLog(resultPath, rpcClient); err != nil {
+		slog.ErrorContext(ctx, "Failed fetching and writing server log", "error", err.Error())
 	}
 }
 
@@ -402,7 +424,7 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) {
 	}
 
 	if resultPath != "" {
-		path := filepath.Join(resultPath, "stltrace.log")
+		path := filepath.Join(resultPath, "stltrace_client.log")
 		var err error
 		c.slogFile, err = os.Create(path)
 		if err != nil {
@@ -410,7 +432,25 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) {
 		}
 	}
 
-	setupSlogMulti(c.slogFile, c.Logfile)
+	setupSlogMulti(false, c.slogFile, c.Logfile)
+}
+
+func (c *Client) WriteServerLog(path string, rpcClient *rpc.Client) error {
+	var result pkg.RequestSlogReply
+	if err := rpcClient.Call("Server.RequestSlog", pkg.RequestSlogArgs{}, &result); err != nil {
+		return fmt.Errorf("Call Server.RequestSlog failed: %v", err.Error())
+	}
+
+	if result.Log == "" {
+		return nil
+	}
+
+	logPath := filepath.Join(path, "stltrace_server.log")
+	if err := os.WriteFile(logPath, []byte(result.Log), 0644); err != nil {
+		return fmt.Errorf("Failed writing to %v: %v", logPath, err.Error())
+	}
+
+	return nil
 }
 
 func nextRi(ts time.Time) time.Time {
