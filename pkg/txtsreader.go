@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"syscall"
 	"time"
 
@@ -49,11 +50,6 @@ func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
 		rx[i].OOB = make([]byte, 500)
 	}
 
-	if deadline, ok := ctx.Deadline(); ok {
-		slog.DebugContext(ctx, "Set read deadline", "deadline", deadline)
-		conn.SetReadDeadline(deadline)
-	}
-
 	mconn, err := mmsg.NewConn(conn)
 	if err != nil {
 		return fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
@@ -65,6 +61,20 @@ func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
 			if errors.Is(err, net.ErrClosed) {
 				slog.DebugContext(ctx, "Returning from TxTsReader due to closed conn")
 				return nil
+			}
+
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				slog.WarnContext(ctx, "Received deadline error",
+					"err", err,
+					"ctxErr", ctx.Err())
+				if ctx.Err() != nil {
+					slog.DebugContext(ctx, "Returning from TxTsReader due to deadline and ctx.Err()")
+					return nil
+				} else {
+					slog.DebugContext(ctx, "Extending TxTsReader conn deadline")
+					conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
+				}
+				continue
 			}
 
 			slog.ErrorContext(ctx, "TxTsReader: mconn.RecvMsgs errored", "error", err)

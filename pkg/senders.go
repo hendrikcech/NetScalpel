@@ -97,6 +97,7 @@ func ListenUDP(ctx context.Context) (*net.UDPConn, error) {
 	return conn, nil
 }
 
+// Receives until ctx is cancelled. ReadDeadline = time.Now() is set to wake up and return from ReceiveFrom.
 func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
 	tsEnabled := true
 	if err := enableRxTimestamping(conn); err != nil {
@@ -119,19 +120,34 @@ func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint
 		return nil, fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
 	}
 
-	// TODO: close connection on ctx.Done?
+	go func() {
+		<-ctx.Done()
+		conn.SetReadDeadline(time.Now())
+	}()
 
+	var tsRcvd time.Time
 	for {
 		n, err := mconn.RecvMsgs(rx, 0)
 		if err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Timeout() {
 				// not a timeout
-				return nil, fmt.Errorf("receiveFrom: ReadBatch: %v\n", err.Error())
+				return nil, fmt.Errorf("ReceiveFrom: ReadMsgs: %v", err.Error())
+			}
+			if ctx.Err() == nil {
+				slog.WarnContext(ctx, "RecvMsgs returned Timeout error from unknown origin -> extending",
+					"error", err,
+					"ctxErr", ctx.Err())
+				conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
+				continue
+			}
+			if time.Since(tsRcvd) < 250*time.Millisecond {
+				msg := "Stopping but previous packet was received very recently; timed out too soon?"
+				slog.WarnContext(ctx, msg, "msSinceLastPacket", time.Since(tsRcvd).Milliseconds())
 			}
 			break
 		}
 
-		tsRcvd := time.Now()
+		tsRcvd = time.Now()
 
 		for i := 0; i < n; i++ {
 			packet := rx[i]
@@ -475,7 +491,8 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 					"elapsed", elapsed,
 					"start", start,
 					"now", now)
-				panic("numPacketsSent > numPacketsGoal")
+				return fmt.Errorf("numPacketsSent > numPacketsGoal")
+				// panic("numPacketsSent > numPacketsGoal")
 			}
 			numPackets := numPacketsGoal - numPacketsSent
 			if numPackets == 0 {

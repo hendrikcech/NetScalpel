@@ -184,8 +184,9 @@ func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args Requ
 		return
 	}
 
-	conn.SetReadDeadline(time.Now().Add(args.Timeout))
-	if result.Res, result.Err = ReceiveFrom(ctx, conn, args.Params.NumPackets()); result.Err != nil {
+	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
+	defer recvCancel()
+	if result.Res, result.Err = ReceiveFrom(recvCtx, conn, args.Params.NumPackets()); result.Err != nil {
 		return
 	}
 	slog.DebugContext(ctx, "Finished handleReceive", "packets", len(result.Res))

@@ -44,7 +44,7 @@ func waitUntil(ctx context.Context, startAt time.Time) error {
 		if now.After(startAt) {
 			return fmt.Errorf("StartAt %v already passed by: %v", startAt, now)
 		}
-		sleepFor := startAt.Sub(now)
+		sleepFor := time.Until(startAt)
 		// log.Printf("Sleep for %.2f s before starting sender", sleepFor.Seconds())
 		select {
 		case <-time.After(sleepFor):

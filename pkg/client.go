@@ -166,6 +166,8 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		}
 		slog.DebugContext(ctx, "Received NAT probe", "try", try+1, "localAddr", laddr)
 		probeReplyReceived = true
+		// Effectively deactive ReadDeadline set for probing
+		conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
 		break
 	}
 	if !probeReplyReceived {
@@ -178,12 +180,9 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		return err
 	}
 
-	// TODO: replace this with context deadline?
-	if err := conn.SetReadDeadline(time.Now().Add(args.Timeout + time.Second)); err != nil {
-		return fmt.Errorf("Failed to SetReadDeadline: %v\n", err.Error())
-	}
-
-	c.MsgsRcvd, err = ReceiveFrom(ctx, conn, c.Sender.GetParams().NumPackets())
+	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
+	defer recvCancel()
+	c.MsgsRcvd, err = ReceiveFrom(recvCtx, conn, c.Sender.GetParams().NumPackets())
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed ReceiveFrom", "error", err)
 	} else {
