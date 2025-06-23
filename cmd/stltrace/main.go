@@ -185,6 +185,11 @@ func setupSlogMulti(createChan bool, fs ...*os.File) *chan *slog.Record {
 			AddSource:   true,
 			ReplaceAttr: slogShortenSource,
 		}.NewChannelHandler()
+
+		chHandler = pkg.SlogContextHandler{chHandler, []any{
+			pkg.SlogIDKey{},
+		}}
+
 		handlers = append(handlers, chHandler)
 	}
 
