@@ -3,6 +3,7 @@ package pkg
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +27,53 @@ func RegisterGob() {
 	gob.Register(PeriodicParams{})
 	gob.Register(TcpdumpParams{})
 	gob.Register(QUICParams{})
+}
+
+// UDP packet
+type Msg struct {
+	Seq  uint64
+	PadN uint
+}
+
+// Stores sent and received messages
+type MsgSent struct {
+	Seq    uint64
+	TsSent time.Time
+	Len    uint
+}
+type MsgRcvd struct {
+	Seq    uint64
+	TsRcvd time.Time
+	Len    uint
+}
+
+func (m *Msg) Encode(buf []byte) (int, error) {
+	binary.BigEndian.PutUint64(buf[0:], m.Seq)
+	if len(buf) < int(8+m.PadN) {
+		return 8, fmt.Errorf("Provided buffer too small to add %v padding bytes", m.PadN)
+	}
+	rand.Read(buf[8 : 8+m.PadN]) // always succeeds
+	return int(8 + m.PadN), nil
+}
+
+func (m *Msg) Decode(buf []byte) {
+	m.Seq = binary.BigEndian.Uint64(buf[0:])
+}
+
+func ListenUDP(ctx context.Context) (*net.UDPConn, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", ":0")
+	if err != nil {
+		return nil, fmt.Errorf("net.ResolveUDPAddr failed: %v", err.Error())
+	}
+
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return nil, fmt.Errorf("net.ListenUDP failed: %v\n", err.Error())
+	}
+
+	setSocketBuffers(ctx, conn)
+
+	return conn, nil
 }
 
 func RandPath(suffix string) string {
