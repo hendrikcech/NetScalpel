@@ -132,6 +132,71 @@ func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params Param
 	return nil
 }
 
+func (e *Executor) ProgressiveDurationMultiRate(ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	gap := 900 * time.Millisecond
+	start := ts.Add(1 * time.Second)
+	deadline := nextRi(ts).Add(-time.Second)
+
+	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
+	durationsMs := []uint{100, 300, 500, 700}
+	if _, ok := params["durations"]; ok {
+		var err error
+		if durationsMs, err = params.Uints("durations"); err != nil {
+			slog.Error("parse duration", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	var ratesMbps []uint
+	if direction == pkg.UL {
+		ratesMbps = []uint{70, 35, 10, 5, 1}
+	} else {
+		// ratesMbps = []uint{700, 350, 100, 5, 1}
+		ratesMbps = []uint{500, 250}
+	}
+
+	for _, rateIdx := range rand.Perm(len(ratesMbps)) {
+		rateMbps := ratesMbps[rateIdx]
+
+		for _, idx := range rand.Perm(len(durationsMs)) {
+			durationMs := durationsMs[idx]
+			duration := time.Duration(durationMs) * time.Millisecond
+
+			if start.Add(duration).Add(gap).After(deadline) {
+				break
+			}
+
+			e.RunClient(&pkg.SenderClient{
+				IP:        e.IP,
+				Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%03d_%04d.csv", direction.StringLower(), rateMbps, durationMs)),
+				Direction: direction,
+				StartAt:   start,
+				Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+					Pps:         rateMbps * 1e6 / 8 / 1400,
+					Interval:    time.Millisecond,
+					Duration:    duration,
+					PayloadSize: 1400,
+				}}},
+			})
+
+			start = start.Add(duration).Add(gap)
+		}
+	}
+
+	if start.After(deadline) {
+		panic(fmt.Sprintf("Too many tests: %v > %v", start, deadline))
+	}
+
+	e.tcpdump(resultPath, ts, 15*time.Second)
+
+	return nil
+}
+
 func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
@@ -424,9 +489,9 @@ func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) e
 	}
 
 	start := ts.Add(1 * time.Second)
+	deadline := nextRi(ts).Add(-time.Second)
 	duration := time.Duration(800) * time.Millisecond
 	spacing := time.Duration(2000) * time.Millisecond
-	deadline := nextRi(ts).Add(-time.Second)
 
 	var pps uint
 	if direction == pkg.UL {
@@ -435,68 +500,57 @@ func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) e
 		pps = 700 * 1e6 / 8 / 1400
 	}
 
-	// coolDowns := []int{0, 5, 10, 25, 50, 100, 500, 1000}
-	// for _, idx := range rand.Perm(len(coolDowns)) {
-	var coolDowns []int64
-	for {
-		// coolDownMs := coolDowns[idx]
-		coolDownMs := int64(rand.Intn(1000))
+	offsets := []time.Duration{
+		0 * time.Millisecond,
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		300 * time.Millisecond,
+		400 * time.Millisecond,
+		500 * time.Millisecond,
+		600 * time.Millisecond,
+		700 * time.Millisecond,
+	}
 
-		// Exponential distribution: test small values more
-		// x := rand.ExpFloat64() / 2      // increase rate / lambda
-		// y := 2 / math.Pi * math.Atan(x) // map to interval [0, 1]
-		// minCoolDownMs := int64(50)
-		// maxCoolDownMs := min(deadline.Sub(start.Add(2*duration)).Milliseconds()+minCoolDownMs, 5000-int64(minCoolDownMs))
-		// coolDownMs := minCoolDownMs + int64(y*float64(maxCoolDownMs))
-
-		coolDownDuration := time.Duration(coolDownMs) * time.Millisecond
-
-		// Check if test still fits into the current RI
-		nextStart := start.Add(2 * duration).Add(coolDownDuration)
-		if nextStart.After(deadline) {
-			break
-		}
-		start = nextStart
-		coolDowns = append(coolDowns, coolDownMs)
+	for _, idx := range rand.Perm(len(offsets)) {
+		offset := offsets[idx]
 
 		e.RunClient(&pkg.SenderClient{
 			IP:        e.IP,
-			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d_a.csv", direction.StringLower(), offset.Milliseconds())),
 			Direction: direction,
 			StartAt:   start,
-			Sender: &pkg.RateSender{Params: []pkg.RateParams{
-				pkg.RateParams{
-					Pps:         pps,
-					Interval:    time.Millisecond,
-					Duration:    duration,
-					PayloadSize: 1400,
-				},
-				pkg.RateParams{
-					Pps:         0,
-					Interval:    time.Millisecond,
-					Duration:    coolDownDuration,
-					PayloadSize: 1400,
-				},
-				pkg.RateParams{
-					Pps:         pps,
-					Interval:    time.Millisecond,
-					Duration:    duration,
-					PayloadSize: 1400,
-				},
-			}},
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         pps,
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
 		})
 
-		// Start next test after this one was run
-		start = start.Add(spacing)
-	}
+		start = start.Add(offset)
 
-	slog.Info(fmt.Sprintf("Scheduled with cooldowns: %v", coolDowns))
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d_b.csv", direction.StringLower(), offset.Milliseconds())),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         pps,
+				Interval:    time.Millisecond,
+				Duration:    duration + (duration - offset), // all end after start + 2 * duration
+				PayloadSize: 1400,
+			}}},
+		})
+
+		start = start.Add(duration).Add(spacing)
+
+		// Check if another test still fits into the current RI
+		if start.Add(2 * duration).Add(spacing).After(deadline) {
+			break
+		}
+	}
 
 	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
-
-	if start.After(nextRi(ts).Add(time.Second)) {
-		return fmt.Errorf("Test takes longer than one RI")
-	}
 
 	return nil
 }

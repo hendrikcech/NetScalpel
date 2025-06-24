@@ -346,13 +346,18 @@ func (c *Client) Run(ctx context.Context) {
 func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 	e := NewExecutor(ctx, c.IP, rpcClient)
 
+	// Called once with direction DL and once with direction UL per round
+	// (if param direction is not specified)
 	proceduresUlDl := map[string]ProcedureFunc{
-		"burst":    e.BurstRi,
-		"prograte": e.ProgressiveRate,
-		"cooldown": e.CoolDown,
-		"cdsf":     e.CoolDownSameFlow,
+		"burst":            e.BurstRi,
+		"prograte":         e.ProgressiveRate,
+		"cooldown":         e.CoolDown,
+		"cdsf":             e.CoolDownSameFlow,
+		"multiflow":        e.MultiFlow,
+		"progdurmultirate": e.ProgressiveDurationMultiRate,
 	}
 
+	// Only called once per round
 	proceduresBidir := map[string]ProcedureFunc{
 		"trace": e.TraceRi,
 		"owd":   e.MeasOWD,
@@ -384,12 +389,12 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 		return
 	}
 
-	slog.InfoContext(ctx, "Gathering results")
+	slog.InfoContext(ctx, "Gathering results ...")
 	start := time.Now()
 	if err := e.GatherResults(); err != nil {
-		slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Now().Sub(start).Seconds(), "error", err.Error())
+		slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Since(start).Seconds(), "error", err.Error())
 	} else {
-		slog.InfoContext(ctx, "Gathered results", "duration", time.Now().Sub(start).Seconds())
+		slog.InfoContext(ctx, fmt.Sprintf("Gathered results in %.2fs", time.Since(start).Seconds()))
 	}
 
 	// TODO: add information about pacing and timestamping support
@@ -397,7 +402,7 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 		slog.ErrorContext(ctx, "Failed writing info", "error", err.Error())
 	}
 
-	slog.DebugContext(ctx, "Fetching and writing server log")
+	slog.DebugContext(ctx, "Fetching and writing server log ...")
 	if err := c.WriteServerLog(resultPath, rpcClient); err != nil {
 		slog.ErrorContext(ctx, "Failed fetching and writing server log", "error", err.Error())
 	}
