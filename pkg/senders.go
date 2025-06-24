@@ -141,8 +141,10 @@ func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint
 				continue
 			}
 			if time.Since(tsRcvd) < 250*time.Millisecond {
-				msg := "Stopping but previous packet was received very recently; timed out too soon?"
+				msg := "Wanted to stop but previous packet was received very recently; trying again in 100 ms"
 				slog.WarnContext(ctx, msg, "msSinceLastPacket", time.Since(tsRcvd).Milliseconds())
+				conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+				continue
 			}
 			break
 		}
@@ -485,14 +487,15 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 				panic("elapsed < 0")
 			}
 			if numPacketsSent > numPacketsGoal {
-				slog.ErrorContext(ctx, "numPacketsSent > numPacketsGoal",
+				// I am not sure how this happens but it seldomly does
+				// Give a warning but proceed as if nothing has happened
+				slog.WarnContext(ctx, "numPacketsSent > numPacketsGoal",
 					"sent", numPacketsSent,
 					"goal", numPacketsGoal,
 					"elapsed", elapsed,
 					"start", start,
 					"now", now)
-				return fmt.Errorf("numPacketsSent > numPacketsGoal")
-				// panic("numPacketsSent > numPacketsGoal")
+				continue
 			}
 			numPackets := numPacketsGoal - numPacketsSent
 			if numPackets == 0 {
