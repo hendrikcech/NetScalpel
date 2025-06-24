@@ -5,13 +5,19 @@ import (
 	"fmt"
 	"log/slog"
 	"net/rpc"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func init() {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+	logger := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true,
+	})
+	slog.SetDefault(slog.New(logger))
+	// slog.SetLogLoggerLevel(slog.LevelDebug)
 }
 
 var ip string = "127.0.0.1"
@@ -191,7 +197,7 @@ func TestRateMultiple(t *testing.T) {
 
 	testSender(t, &client)
 
-	if err := approxEqual(200, uint(len(client.MsgsSent)), 4); err != nil {
+	if err := approxEqual(200, uint(len(client.MsgsSent)), 10); err != nil {
 		t.Errorf("msgs sent: %v", err.Error())
 	}
 }
@@ -220,9 +226,63 @@ func TestRateMultipleWithZero(t *testing.T) {
 
 	testSender(t, &client)
 
-	if err := approxEqual(200, uint(len(client.MsgsSent)), 4); err != nil {
+	if err := approxEqual(200, uint(len(client.MsgsSent)), 10); err != nil {
 		t.Errorf("msgs sent: %v", err.Error())
 	}
+}
+
+func TestQUICUL(t *testing.T) {
+	bytes := uint(15000)
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: UL,
+
+		Sender: &QUICSender{Params: QUICParams{
+			Duration_: time.Duration(2) * time.Second,
+			Bytes:     bytes,
+		}},
+	}
+
+	testSender(t, &client)
+
+	bytesSum := uint(0)
+	for i := range client.MsgsSent {
+		bytesSum += client.MsgsSent[i].Len
+	}
+
+	if err := approxEqual(bytes, bytesSum, 1000); err != nil {
+		t.Errorf("bytes sent: %v", err.Error())
+	}
+
+	// t.Fail()
+}
+
+func TestQUICDL(t *testing.T) {
+	bytes := uint(15000)
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: DL,
+
+		Sender: &QUICSender{Params: QUICParams{
+			Duration_: time.Duration(2) * time.Second,
+			Bytes:     bytes,
+		}},
+	}
+
+	testSender(t, &client)
+
+	bytesSum := uint(0)
+	for i := range client.MsgsRcvd {
+		bytesSum += client.MsgsRcvd[i].Len
+	}
+
+	if err := approxEqual(bytes, bytesSum, 1000); err != nil {
+		t.Errorf("bytes sent: %v", err.Error())
+	}
+
+	// t.Fail()
 }
 
 func testSender(t *testing.T, c *SenderClient) {

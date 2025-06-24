@@ -554,3 +554,39 @@ func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) e
 
 	return nil
 }
+
+func (e *Executor) QUIC(ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	start := ts.Add(1 * time.Second)
+	// deadline := nextRi(ts).Add(-time.Second)
+
+	e.RunClient(&pkg.SenderClient{
+		IP:        e.IP,
+		Out:       filepath.Join(resultPath, fmt.Sprintf("quic_%v_10M.csv", direction.StringLower())),
+		Direction: direction,
+		StartAt:   start,
+		Sender: &pkg.QUICSender{Params: pkg.QUICParams{
+			Duration_: 5 * time.Second,
+			Bytes:     10 * 1e6,
+		}},
+	})
+
+	e.RunClient(&pkg.SenderClient{
+		IP:        e.IP,
+		Out:       filepath.Join(resultPath, fmt.Sprintf("quic_%v_unlim.csv", direction.StringLower())),
+		Direction: direction,
+		StartAt:   start.Add(7 * time.Second),
+		Sender: &pkg.QUICSender{Params: pkg.QUICParams{
+			Duration_: 5 * time.Second,
+			Bytes:     1 << 32,
+		}},
+	})
+
+	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
+
+	return nil
+}

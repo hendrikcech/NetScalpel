@@ -15,18 +15,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type UDPServerMode int
+type Mode int
 
 const (
-	Receive UDPServerMode = iota
+	ReceiveUDP Mode = iota
 	SendBurst
 	SendRate
 	SendPeriodic
+	ReceiveQUIC
+	SendQUIC
 )
 
-func (m UDPServerMode) String() string {
+func (m Mode) String() string {
 	switch m {
-	case Receive:
+	case ReceiveUDP:
 		return "receive"
 	case SendBurst:
 		return "burst"
@@ -34,14 +36,19 @@ func (m UDPServerMode) String() string {
 		return "rate"
 	case SendPeriodic:
 		return "periodic"
+	case ReceiveQUIC:
+		return "receiveQUIC"
+	case SendQUIC:
+		return "sendQUIC"
 	default:
-		panic(fmt.Sprintf("Unknown UDPServerMode '%d'", m))
+		panic(fmt.Sprintf("Unknown Mode '%d'", m))
 	}
 }
 
 type Sender interface {
 	GetParams() SenderParams
-	Mode() UDPServerMode
+	SenderMode() Mode
+	ReceiverMode() Mode
 	Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error)
 }
 
@@ -97,8 +104,19 @@ func ListenUDP(ctx context.Context) (*net.UDPConn, error) {
 	return conn, nil
 }
 
+type Receiver interface {
+	Init()
+	Run(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error)
+}
+
+type UDPReceiver struct {
+}
+
+func (r *UDPReceiver) Init() {
+}
+
 // Receives until ctx is cancelled. ReadDeadline = time.Now() is set to wake up and return from ReceiveFrom.
-func ReceiveFrom(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
+func (r *UDPReceiver) Run(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
 	tsEnabled := true
 	if err := enableRxTimestamping(conn); err != nil {
 		slog.WarnContext(ctx, "Failed enabling rx timestamping", "error", err.Error())
@@ -215,8 +233,12 @@ func (r *BurstSender) GetParams() SenderParams {
 	return r.Params
 }
 
-func (s *BurstSender) Mode() UDPServerMode {
+func (s *BurstSender) SenderMode() Mode {
 	return SendBurst
+}
+
+func (s *BurstSender) ReceiverMode() Mode {
+	return ReceiveUDP
 }
 
 func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
@@ -312,8 +334,12 @@ func (r *PeriodicSender) GetParams() SenderParams {
 	return r.Params
 }
 
-func (s *PeriodicSender) Mode() UDPServerMode {
+func (s *PeriodicSender) SenderMode() Mode {
 	return SendPeriodic
+}
+
+func (s *PeriodicSender) ReceiverMode() Mode {
+	return ReceiveUDP
 }
 
 func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
@@ -342,7 +368,6 @@ func (r *PeriodicSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.
 	for {
 		select {
 		case <-ticker.C:
-			// TODO: add pad
 			b := Msg{Seq: uint64(seq), PadN: r.Params.Pad}
 			n, err := b.Encode(buf)
 			if err != nil {
@@ -420,8 +445,12 @@ func (r *RateSender) GetParams() SenderParams {
 	return r.Params
 }
 
-func (s *RateSender) Mode() UDPServerMode {
+func (s *RateSender) SenderMode() Mode {
 	return SendRate
+}
+
+func (s *RateSender) ReceiverMode() Mode {
+	return ReceiveUDP
 }
 
 func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
@@ -462,7 +491,7 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 
 	start := time.Now() // must appear before ticker is started
 	ticker := time.Tick(params.Interval)
-	duration := time.After(params.Duration)
+	duration := time.After(params.Duration) // TODO: remove duration time.after since this function will be cancelled by context
 
 	numPacketsSent := uint(0)
 
@@ -507,9 +536,9 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 			}
 			numPacketsSent += n
 		case <-duration:
-			return ctx.Err()
+			return nil
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil
 		}
 	}
 }
@@ -554,5 +583,5 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr *net.
 			break
 		}
 	}
-	return sent, ctx.Err()
+	return sent, nil
 }

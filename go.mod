@@ -12,10 +12,21 @@ require (
 )
 
 require (
+	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
+	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
+	github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a // indirect
+	github.com/onsi/ginkgo/v2 v2.23.4 // indirect
+	github.com/quic-go/quic-go v0.52.0 // indirect
 	github.com/samber/lo v1.51.0 // indirect
 	github.com/samber/slog-channel v1.4.2 // indirect
 	github.com/samber/slog-common v0.18.1 // indirect
+	go.uber.org/automaxprocs v1.6.0 // indirect
+	go.uber.org/mock v0.5.2 // indirect
+	golang.org/x/crypto v0.39.0 // indirect
+	golang.org/x/mod v0.25.0 // indirect
+	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
+	golang.org/x/tools v0.34.0 // indirect
 )
 
 replace github.com/anacrolix/mmsg => github.com/hendrikcech/mmsg v1.1.1-0.20250620101926-bfaf4885649a

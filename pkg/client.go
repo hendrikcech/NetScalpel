@@ -52,7 +52,7 @@ type SenderClient struct {
 
 func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 	if c.ID == "" {
-		c.ID = GenID(c.Sender.Mode().String())
+		c.ID = GenID(c.Sender.SenderMode().String())
 		ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 	}
 
@@ -68,11 +68,11 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 
 func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	args := RequestUDPServerArgs{
-		ID:      c.ID,
-		Timeout: c.Sender.GetParams().GetDuration() + time.Second,
-		StartAt: c.StartAt,
-		Mode:    Receive,
-		Params:  c.Sender.GetParams(),
+		ID:         c.ID,
+		Timeout:    c.Sender.GetParams().GetDuration() + time.Second,
+		StartAt:    c.StartAt,
+		ServerMode: c.Sender.ReceiverMode(),
+		Params:     c.Sender.GetParams(),
 	}
 	var reply RequestUDPServerReply
 	if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
@@ -97,7 +97,9 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	slog.InfoContext(ctx, "Call Client.Run (UL)", "type", fmt.Sprintf("%T", c.Sender),
 		"params", c.Sender.GetParams(), "remoteAddr", raddr)
 
-	if c.MsgsSent, err = c.Sender.Run(ctx, conn, raddr); err != nil {
+	sendCtx, sendCancel := context.WithTimeout(ctx, c.Sender.GetParams().GetDuration())
+	defer sendCancel()
+	if c.MsgsSent, err = c.Sender.Run(sendCtx, conn, raddr); err != nil {
 		return fmt.Errorf("send failed: %v\n", err)
 	}
 
@@ -106,11 +108,11 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 
 func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 	args := RequestUDPServerArgs{
-		ID:      c.ID,
-		Timeout: c.Sender.GetParams().GetDuration() + time.Second,
-		StartAt: c.StartAt,
-		Mode:    c.Sender.Mode(),
-		Params:  c.Sender.GetParams(),
+		ID:         c.ID,
+		Timeout:    c.Sender.GetParams().GetDuration() + time.Second,
+		StartAt:    c.StartAt,
+		ServerMode: c.Sender.SenderMode(),
+		Params:     c.Sender.GetParams(),
 	}
 	var reply RequestUDPServerReply
 	if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
@@ -175,6 +177,17 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 	}
 
 	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
+	var receiver Receiver
+	switch c.Sender.ReceiverMode() {
+	case ReceiveUDP:
+		receiver = &UDPReceiver{}
+	case ReceiveQUIC:
+		receiver = &QUICReceiver{}
+	default:
+		panic("Unknown ServerMode")
+	}
+
+	receiver.Init()
 
 	if err := waitUntil(ctx, c.StartAt); err != nil {
 		return err
@@ -182,7 +195,7 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
 	defer recvCancel()
-	c.MsgsRcvd, err = ReceiveFrom(recvCtx, conn, c.Sender.GetParams().NumPackets())
+	c.MsgsRcvd, err = receiver.Run(recvCtx, conn, c.Sender.GetParams().NumPackets())
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed ReceiveFrom", "error", err)
 	} else {

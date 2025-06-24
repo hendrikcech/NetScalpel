@@ -355,6 +355,7 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 		"cdsf":             e.CoolDownSameFlow,
 		"multiflow":        e.MultiFlow,
 		"progdurmultirate": e.ProgressiveDurationMultiRate,
+		"quic":             e.QUIC,
 	}
 
 	// Only called once per round

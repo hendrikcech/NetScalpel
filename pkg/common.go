@@ -24,6 +24,7 @@ func RegisterGob() {
 	gob.Register(RateParamsW{})
 	gob.Register(PeriodicParams{})
 	gob.Register(TcpdumpParams{})
+	gob.Register(QUICParams{})
 }
 
 func RandPath(suffix string) string {

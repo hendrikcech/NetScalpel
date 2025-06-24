@@ -112,7 +112,7 @@ type RequestUDPServerArgs struct {
 
 	StartAt time.Time
 
-	Mode UDPServerMode
+	ServerMode Mode
 
 	Params SenderParams
 }
@@ -144,27 +144,35 @@ func (s *Server) RequestUDPServer(args RequestUDPServerArgs, reply *RequestUDPSe
 
 	slog.InfoContext(ctx, "RequestUDPServer", "args", args, "reply", reply, "localAddr", laddr)
 
-	if args.Mode == Receive {
-		go s.handleReceive(ctx, conn, args)
-	} else {
-		var sender Sender
-		switch args.Mode {
-		case SendBurst:
-			sender = &BurstSender{Params: args.Params.(BurstParams)}
-		case SendRate:
-			sender = &RateSender{Params: args.Params.(RateParamsW)}
-		case SendPeriodic:
-			sender = &PeriodicSender{Params: args.Params.(PeriodicParams)}
-		default:
-			return logErrContext(ctx, "RequestUDPServer: unknown mode %v", args.Mode)
-		}
+	var sender Sender
+	var receiver Receiver
+	switch args.ServerMode {
+	case SendBurst:
+		sender = &BurstSender{Params: args.Params.(BurstParams)}
+	case SendRate:
+		sender = &RateSender{Params: args.Params.(RateParamsW)}
+	case SendPeriodic:
+		sender = &PeriodicSender{Params: args.Params.(PeriodicParams)}
+	case SendQUIC:
+		sender = &QUICSender{Params: args.Params.(QUICParams)}
+	case ReceiveUDP:
+		receiver = &UDPReceiver{}
+	case ReceiveQUIC:
+		receiver = &QUICReceiver{}
+	default:
+		return logErrContext(ctx, "RequestUDPServer: unknown mode %v", args.ServerMode)
+	}
+
+	if sender != nil {
 		go s.handleSender(ctx, conn, args, sender)
+	} else {
+		go s.handleReceive(ctx, conn, args, receiver)
 	}
 
 	return nil
 }
 
-func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args RequestUDPServerArgs) {
+func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args RequestUDPServerArgs, receiver Receiver) {
 	defer conn.Close()
 
 	s.resultsLock.Lock()
@@ -180,13 +188,15 @@ func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args Requ
 		s.resultsLock.Unlock()
 	}()
 
+	receiver.Init()
+
 	if result.Err = waitUntil(ctx, args.StartAt); result.Err != nil {
 		return
 	}
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
 	defer recvCancel()
-	if result.Res, result.Err = ReceiveFrom(recvCtx, conn, args.Params.NumPackets()); result.Err != nil {
+	if result.Res, result.Err = receiver.Run(recvCtx, conn, args.Params.NumPackets()); result.Err != nil {
 		return
 	}
 	slog.DebugContext(ctx, "Finished handleReceive", "packets", len(result.Res))
@@ -234,8 +244,12 @@ func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, args Reque
 		return
 	}
 
-	conn.SetReadDeadline(time.Now().Add(args.Timeout))
-	result.Res, result.Err = sender.Run(ctx, conn, raddr.(*net.UDPAddr))
+	// TODO: Why was the read ddeadline set here?
+	// conn.SetReadDeadline(time.Now().Add(args.Timeout))
+
+	sendCtx, sendCancel := context.WithTimeout(ctx, args.Params.GetDuration())
+	defer sendCancel()
+	result.Res, result.Err = sender.Run(sendCtx, conn, raddr.(*net.UDPAddr))
 	if result.Err != nil {
 		return
 	}
