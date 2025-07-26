@@ -100,7 +100,7 @@ func (s *Server) Stop() {
 	s.wg.Wait()
 }
 
-type RequestUDPServerArgs struct {
+type RequestServerArgs struct {
 	ID string
 
 	// Server stops reading from socket after Timeout
@@ -112,14 +112,14 @@ type RequestUDPServerArgs struct {
 
 	Params SenderParams
 }
-type RequestUDPServerReply struct {
+type RequestServerReply struct {
 	Port uint
 }
 
-func (s *Server) RequestUDPServer(args RequestUDPServerArgs, reply *RequestUDPServerReply) error {
+func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply) error {
 	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
 	if args.ID == "" {
-		return logErrContext(ctx, "RequestUDPServer: ID is empty")
+		return logErrContext(ctx, "RequestServer: ID is empty")
 	}
 
 	// Check that the ID is unused
@@ -138,7 +138,7 @@ func (s *Server) RequestUDPServer(args RequestUDPServerArgs, reply *RequestUDPSe
 
 	reply.Port = uint(laddr.Port)
 
-	slog.InfoContext(ctx, "RequestUDPServer", "args", args, "reply", reply, "localAddr", laddr)
+	slog.InfoContext(ctx, "RequestServer", "args", args, "reply", reply, "localAddr", laddr)
 
 	var sender Sender
 	var receiver Receiver
@@ -156,7 +156,7 @@ func (s *Server) RequestUDPServer(args RequestUDPServerArgs, reply *RequestUDPSe
 	case ReceiveQUIC:
 		receiver = &QUICReceiver{}
 	default:
-		return logErrContext(ctx, "RequestUDPServer: unknown mode %v", args.ServerMode)
+		return logErrContext(ctx, "RequestServer: unknown mode %v", args.ServerMode)
 	}
 
 	if sender != nil {
@@ -168,7 +168,7 @@ func (s *Server) RequestUDPServer(args RequestUDPServerArgs, reply *RequestUDPSe
 	return nil
 }
 
-func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args RequestUDPServerArgs, receiver Receiver) {
+func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args RequestServerArgs, receiver Receiver) {
 	defer conn.Close()
 
 	s.resultLock.Lock()
@@ -199,7 +199,7 @@ func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args Requ
 	// , "packets", len(result.Res)
 }
 
-func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, args RequestUDPServerArgs, sender Sender) {
+func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, args RequestServerArgs, sender Sender) {
 	defer conn.Close()
 
 	s.resultLock.Lock()
@@ -254,16 +254,16 @@ func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, args Reque
 	// "packets", len(result.Res),
 }
 
-type RequestUDPServerResultArgs struct {
+type RequestServerResultArgs struct {
 	ID string
 }
-type RequestUDPServerResultReply struct {
+type RequestServerResultReply struct {
 	Result any
 }
 
-func (s *Server) RequestUDPServerResult(args RequestUDPServerResultArgs, reply *RequestUDPServerResultReply) error {
+func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *RequestServerResultReply) error {
 	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
-	slog.DebugContext(ctx, "RequestUDPServerResult: request")
+	slog.DebugContext(ctx, "RequestServerResult: request")
 
 	s.resultLock.Lock()
 	c, ok := s.resultC[args.ID]
@@ -277,13 +277,13 @@ func (s *Server) RequestUDPServerResult(args RequestUDPServerResultArgs, reply *
 		return logErrContext(ctx, "Receive from resultC: %v", err)
 	}
 
-	slog.DebugContext(ctx, "RequestUDPServerResult: responded")
+	slog.DebugContext(ctx, "RequestServerResult: responded")
 
 	return nil
 }
 
 // TODO: remove generics
-func handleChanResult(ctx context.Context, c chan *Result, id string, reply *RequestUDPServerResultReply) error {
+func handleChanResult(ctx context.Context, c chan *Result, id string, reply *RequestServerResultReply) error {
 	var (
 		result *Result
 		closed bool

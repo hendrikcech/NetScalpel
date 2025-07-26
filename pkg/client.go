@@ -67,16 +67,16 @@ func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 }
 
 func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
-	args := RequestUDPServerArgs{
+	args := RequestServerArgs{
 		ID:         c.ID,
 		Timeout:    c.Sender.GetParams().GetDuration() + time.Second,
 		StartAt:    c.StartAt,
 		ServerMode: c.Sender.ReceiverMode(),
 		Params:     c.Sender.GetParams(),
 	}
-	var reply RequestUDPServerReply
-	if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
-		return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
+	var reply RequestServerReply
+	if err := client.Call("Server.RequestServer", args, &reply); err != nil {
+		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
 
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
@@ -116,16 +116,16 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 }
 
 func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
-	args := RequestUDPServerArgs{
+	args := RequestServerArgs{
 		ID:         c.ID,
 		Timeout:    c.Sender.GetParams().GetDuration() + time.Second,
 		StartAt:    c.StartAt,
 		ServerMode: c.Sender.SenderMode(),
 		Params:     c.Sender.GetParams(),
 	}
-	var reply RequestUDPServerReply
-	if err := client.Call("Server.RequestUDPServer", args, &reply); err != nil {
-		return fmt.Errorf("Call Server.RequestUDPServerReply failed: %v", err.Error())
+	var reply RequestServerReply
+	if err := client.Call("Server.RequestServer", args, &reply); err != nil {
+		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
 
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
@@ -229,17 +229,17 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	switch c.Direction {
 	case UL:
 		// Gather results
-		var result RequestUDPServerResultReply
-		if err := client.Call("Server.RequestUDPServerResult",
-			RequestUDPServerResultArgs{ID: c.ID}, &result); err != nil {
-			return fmt.Errorf("Call Server.RequestUDPServerResult failed: %v", err.Error())
+		var result RequestServerResultReply
+		if err := client.Call("Server.RequestServerResult",
+			RequestServerResultArgs{ID: c.ID}, &result); err != nil {
+			return fmt.Errorf("Call Server.RequestServerResult failed: %v", err.Error())
 		}
 		c.MsgsRcvd = result.Result.([]MsgRcvd)
 	case DL:
-		var result RequestUDPServerResultReply
-		if err := client.Call("Server.RequestUDPServerResult",
-			RequestUDPServerResultArgs{ID: c.ID}, &result); err != nil {
-			return fmt.Errorf("Call Server.RequestUDPServerResult failed: %v", err.Error())
+		var result RequestServerResultReply
+		if err := client.Call("Server.RequestServerResult",
+			RequestServerResultArgs{ID: c.ID}, &result); err != nil {
+			return fmt.Errorf("Call Server.RequestServerResult failed: %v", err.Error())
 		}
 		c.MsgsSent = result.Result.([]MsgSent)
 	}
