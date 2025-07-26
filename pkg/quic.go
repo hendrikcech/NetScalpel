@@ -51,7 +51,7 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
-func (r *QUICReceiver) Run(ctx context.Context, udpConn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
+func (r *QUICReceiver) Run(ctx context.Context, udpConn *net.UDPConn, expectedNumPackets uint) (any, error) {
 	tracer := &QUICTracer{rcvdC: make(chan MsgRcvd, 1000)}
 	cr := NewChanReader[MsgRcvd]()
 	go cr.Read(tracer.rcvdC)
@@ -147,7 +147,7 @@ func (s *QUICSender) ReceiverMode() Mode {
 }
 
 // Runs until ctx is cancelled
-func (s *QUICSender) Run(ctx context.Context, udpConn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (s *QUICSender) Run(ctx context.Context, udpConn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
 	tracer := &QUICTracer{sentC: make(chan MsgSent, 1000)}
 	cr := NewChanReader[MsgSent]()
 	go cr.Read(tracer.sentC)

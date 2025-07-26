@@ -99,8 +99,17 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 
 	sendCtx, sendCancel := context.WithTimeout(ctx, c.Sender.GetParams().GetDuration())
 	defer sendCancel()
-	if c.MsgsSent, err = c.Sender.Run(sendCtx, conn, raddr); err != nil {
+
+	res, err := c.Sender.Run(sendCtx, conn, raddr)
+	if err != nil {
 		return fmt.Errorf("send failed: %v\n", err)
+	}
+
+	switch res.(type) {
+	case []MsgSent:
+		c.MsgsSent = res.([]MsgSent)
+	default:
+		panic("Unhandled result type in runUL")
 	}
 
 	return nil
@@ -195,12 +204,19 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
 	defer recvCancel()
-	c.MsgsRcvd, err = receiver.Run(recvCtx, conn, c.Sender.GetParams().NumPackets())
+	res, err := receiver.Run(recvCtx, conn, c.Sender.GetParams().NumPackets())
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed ReceiveFrom", "error", err)
-	} else {
-		slog.InfoContext(ctx, "Finished Run", "packets", len(c.MsgsRcvd))
+		return fmt.Errorf("Failed ReceiveFrom: %v", err)
 	}
+
+	switch res.(type) {
+	case []MsgRcvd:
+		c.MsgsRcvd = res.([]MsgRcvd)
+	default:
+		panic("Unhandled result type in runDL")
+	}
+
+	slog.InfoContext(ctx, "Finished Run", "packets", len(c.MsgsRcvd))
 
 	return nil
 }
@@ -218,14 +234,14 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 			RequestUDPServerResultArgs{ID: c.ID}, &result); err != nil {
 			return fmt.Errorf("Call Server.RequestUDPServerResult failed: %v", err.Error())
 		}
-		c.MsgsRcvd = result.MsgRcvd()
+		c.MsgsRcvd = result.Result.([]MsgRcvd)
 	case DL:
 		var result RequestUDPServerResultReply
 		if err := client.Call("Server.RequestUDPServerResult",
 			RequestUDPServerResultArgs{ID: c.ID}, &result); err != nil {
 			return fmt.Errorf("Call Server.RequestUDPServerResult failed: %v", err.Error())
 		}
-		c.MsgsSent = result.MsgSent()
+		c.MsgsSent = result.Result.([]MsgSent)
 	}
 	slog.DebugContext(ctx, "Received results", "type", fmt.Sprintf("%T", c.Sender))
 

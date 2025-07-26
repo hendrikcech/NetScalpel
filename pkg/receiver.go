@@ -16,7 +16,7 @@ import (
 
 type Receiver interface {
 	Init()
-	Run(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error)
+	Run(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) (any, error)
 }
 
 type UDPReceiver struct {
@@ -26,7 +26,7 @@ func (r *UDPReceiver) Init() {
 }
 
 // Receives until ctx is cancelled. ReadDeadline = time.Now() is set to wake up and return from ReceiveFrom.
-func (r *UDPReceiver) Run(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) ([]MsgRcvd, error) {
+func (r *UDPReceiver) Run(ctx context.Context, conn *net.UDPConn, expectedNumPackets uint) (any, error) {
 	tsEnabled := true
 	if err := enableRxTimestamping(conn); err != nil {
 		slog.WarnContext(ctx, "Failed enabling rx timestamping", "error", err.Error())

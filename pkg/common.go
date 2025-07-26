@@ -24,6 +24,8 @@ import (
 func RegisterGob() {
 	gob.Register(MsgRcvd{})
 	gob.Register(MsgSent{})
+	gob.Register([]MsgRcvd{})
+	gob.Register([]MsgSent{})
 	gob.Register(BurstParams{})
 	gob.Register(RateParams{})
 	gob.Register(RateParamsW{})

@@ -44,7 +44,7 @@ type Sender interface {
 	GetParams() SenderParams
 	SenderMode() Mode
 	ReceiverMode() Mode
-	Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error)
+	Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error)
 }
 
 type SenderParams interface {
@@ -85,7 +85,7 @@ func (s *BurstSender) ReceiverMode() Mode {
 	return ReceiveUDP
 }
 
-func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
 	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
 	defer tsReaderCancel()
 
@@ -186,7 +186,7 @@ func (s *PeriodicSender) ReceiverMode() Mode {
 	return ReceiveUDP
 }
 
-func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
 	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
 	defer tsReaderCancel()
 
@@ -297,7 +297,7 @@ func (s *RateSender) ReceiverMode() Mode {
 	return ReceiveUDP
 }
 
-func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
 	r.msgs = make([]MsgSent, 0, int(float64(r.Params.NumPackets())*1.1))
 	r.tx = make([]mmsg.Message, 1024)
 	for i := range r.tx {
