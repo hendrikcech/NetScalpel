@@ -100,6 +100,7 @@ func (r *UDPReceiver) Run(ctx context.Context, conn *net.UDPConn, expectedNumPac
 					slog.ErrorContext(ctx, "receiveFrom: Failed parsing cmsg", "error", err)
 				}
 
+				timestampParsed := false
 				for _, cm := range cms {
 					if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
 						var times unix.ScmTimestamping
@@ -107,7 +108,12 @@ func (r *UDPReceiver) Run(ctx context.Context, conn *net.UDPConn, expectedNumPac
 						binary.Read(tsBuf, binary.LittleEndian, &times)
 						ts := times.Ts[0]
 						rcvd.TsRcvd = time.Unix(ts.Sec, ts.Nsec)
+						timestampParsed = true
 					}
+				}
+
+				if !timestampParsed {
+					slog.WarnContext(ctx, "Missing rx timestamp", "seq", msg.Seq)
 				}
 			}
 
