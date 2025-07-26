@@ -103,6 +103,15 @@ func enableTxTimestamping(conn *net.UDPConn) error {
 			unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
 		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
+
+		var flag int
+		flag, err = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING)
+		if err != nil {
+			return
+		}
+		if flag != flags {
+			err = fmt.Errorf("TxTimestamping flags not set as expected: %v != %v", flags, flag)
+		}
 	})
 
 	return err
