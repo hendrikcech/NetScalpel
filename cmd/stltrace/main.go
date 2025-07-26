@@ -18,9 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	slogchannel "github.com/samber/slog-channel"
-	slogmulti "github.com/samber/slog-multi"
-
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
 )
 
@@ -48,7 +45,7 @@ func main() {
 
 	pkg.RegisterGob()
 
-	setupSlogBasic()
+	pkg.SetupSlogBasic(slog.LevelInfo)
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
@@ -122,7 +119,7 @@ func main() {
 			}
 			defer logfile.Close()
 		}
-		slogCh := setupSlogMulti(true, logfile)
+		slogCh := pkg.SetupSlogMulti(true, logfile)
 
 		createProfile(*serverProfile)
 		defer pprof.StopCPUProfile()
@@ -138,81 +135,6 @@ func main() {
 		fmt.Println("expected 'client' or 'server' subcommands")
 		os.Exit(1)
 	}
-}
-
-func setupSlogBasic() {
-	// enc := slog.NewJSONHandler(os.Stdout, nil)
-	enc := slog.NewTextHandler(os.Stdout, nil)
-	log := slog.New(pkg.SlogContextHandler{enc, []any{
-		pkg.SlogIDKey{},
-	}})
-	slog.SetDefault(log)
-}
-
-func setupSlogMulti(createChan bool, fs ...*os.File) *chan *slog.Record {
-	var handlers []slog.Handler
-
-	for i := range fs {
-		if fs[i] == nil {
-			continue
-		}
-		fileHandler := pkg.SlogContextHandler{slog.NewTextHandler(fs[i], &slog.HandlerOptions{
-			Level:       slog.LevelDebug,
-			AddSource:   true,
-			ReplaceAttr: slogShortenSource,
-		}), []any{
-			pkg.SlogIDKey{},
-		}}
-		handlers = append(handlers, fileHandler)
-	}
-
-	stdHandler := pkg.SlogContextHandler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		AddSource: false,
-		Level:     slog.LevelInfo,
-	}), []any{
-		pkg.SlogIDKey{},
-	}}
-	handlers = append(handlers, stdHandler)
-
-	var ch *chan *slog.Record
-	if createChan {
-		tmp := make(chan *slog.Record, 1000)
-		ch = &tmp
-		chHandler := slogchannel.Option{
-			Channel:     *ch,
-			Blocking:    false,
-			Level:       slog.LevelDebug,
-			AddSource:   true,
-			ReplaceAttr: slogShortenSource,
-		}.NewChannelHandler()
-
-		chHandler = pkg.SlogContextHandler{chHandler, []any{
-			pkg.SlogIDKey{},
-		}}
-
-		handlers = append(handlers, chHandler)
-	}
-
-	logger := slog.New(
-		slogmulti.Fanout(
-			handlers...,
-		),
-	)
-
-	slog.SetDefault(logger)
-
-	return ch
-}
-
-// Only keep the filename and not the full path
-func slogShortenSource(groups []string, a slog.Attr) slog.Attr {
-	if a.Key == slog.SourceKey {
-		source, _ := a.Value.Any().(*slog.Source)
-		if source != nil {
-			source.File = filepath.Base(source.File)
-		}
-	}
-	return a
 }
 
 func createProfile(profile string) {
@@ -258,7 +180,8 @@ func (p ParamMap) Uints(key string) ([]uint, error) {
 	}
 	listStr, ok := value.([]string)
 	if !ok {
-		return nil, fmt.Errorf("Parameter '%v' must be a list of uints", key)
+		// Only a single element
+		listStr = []string{value.(string)}
 	}
 	list := make([]uint, len(listStr))
 	for i := range listStr {
@@ -317,9 +240,13 @@ type Client struct {
 	Rounds    uint
 	Procedure string
 	Params    map[string]any
-	Logfile   *os.File
 
-	round    uint
+	// Permanent log file supplied by the caller. Needs to be closed by the caller.
+	Logfile *os.File
+
+	round uint
+
+	// Per-round log file
 	slogFile *os.File
 }
 
@@ -327,19 +254,23 @@ func (c *Client) Run(ctx context.Context) {
 	c.setupSlog(ctx, "")
 
 	defer func() {
+		// Make sure to close a potentially open log file (on error)
 		if c.slogFile != nil {
 			c.slogFile.Close()
 		}
 	}()
 
-	rpcClient := dialRpcClient(c.IP, c.Port)
-	defer rpcClient.Close()
-
 	for c.round = range c.Rounds {
+		rpcClient, err := dialRpcClient(ctx, c.IP, c.Port)
+		if err != nil {
+			return
+		}
+		defer rpcClient.Close()
 		if ctx.Err() != nil {
 			return
 		}
 		c.runRound(ctx, rpcClient)
+		rpcClient.Close()
 	}
 }
 
@@ -351,11 +282,13 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 	proceduresUlDl := map[string]ProcedureFunc{
 		"burst":            e.BurstRi,
 		"prograte":         e.ProgressiveRate,
-		"cooldown":         e.CoolDown,
+		"cddf":             e.CoolDownDifferentFlow,
 		"cdsf":             e.CoolDownSameFlow,
 		"multiflow":        e.MultiFlow,
+		"mouseeleph":       e.MouseElephantFlows,
 		"progdurmultirate": e.ProgressiveDurationMultiRate,
-		"quic":             e.QUIC,
+		"simplequic":       e.QUIC,
+		"progdurquic":      e.ProgressiveDurationQUIC,
 	}
 
 	// Only called once per round
@@ -386,8 +319,7 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 	c.setupSlog(ctx, resultPath)
 
 	if err := e.G.Wait(); err != nil {
-		slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Aborting due to failed client.Run", c.round+1, c.Rounds), "error", err)
-		return
+		slog.ErrorContext(ctx, fmt.Sprintf("[Round %v/%v] client.Run failed", c.round+1, c.Rounds), "error", err)
 	}
 
 	slog.InfoContext(ctx, "Gathering results ...")
@@ -415,8 +347,8 @@ func (c *Client) executeProcedure(ctx context.Context, ts time.Time, fn Procedur
 	if direction, ok := params["direction"]; ok {
 		name += "_" + strings.ToLower(direction.(string))
 	}
-	slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Schedule %s in %.2fs at %v", c.round+1, c.Rounds,
-		name, ri.Sub(time.Now()).Seconds(), ri))
+	slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Schedule %s in %.2fs", c.round+1, c.Rounds,
+		name, ri.Sub(time.Now()).Seconds()), "start", ri, "params", params)
 	resultPath, err := mkResultPath(c.Results, ri, name)
 	if err != nil {
 		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())
@@ -443,7 +375,7 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) {
 		}
 	}
 
-	setupSlogMulti(false, c.slogFile, c.Logfile)
+	pkg.SetupSlogMulti(false, c.slogFile, c.Logfile)
 }
 
 func (c *Client) WriteServerLog(path string, rpcClient *rpc.Client) error {
@@ -487,13 +419,27 @@ func mkResultPath(base string, ts time.Time, suffix string) (string, error) {
 	return resultPath, nil
 }
 
-func dialRpcClient(ip string, port uint) *rpc.Client {
-	client, err := rpc.Dial("tcp", fmt.Sprintf("%s:%v", ip, port))
-	if err != nil {
-		fmt.Printf("rpc.Dial failed: %v\n", err.Error())
+func dialRpcClient(ctx context.Context, ip string, port uint) (*rpc.Client, error) {
+	clientC := make(chan *rpc.Client, 1)
+	go func() {
+		client, err := rpc.Dial("tcp", fmt.Sprintf("%s:%v", ip, port))
+		if err != nil {
+			fmt.Printf("rpc.Dial failed: %v\n", err.Error())
+			os.Exit(1)
+		}
+		clientC <- client
+	}()
+
+	select {
+	case <-time.After(10 * time.Second):
+		fmt.Printf("rpc.Dial timed out: %s:%v\n", ip, port)
 		os.Exit(1)
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case client := <-clientC:
+		return client, nil
 	}
-	return client
 }
 
 func dumpOnSig() {

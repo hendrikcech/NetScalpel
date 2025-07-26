@@ -29,22 +29,24 @@ func main() {
 	rateIP := rateCmd.String("ip", "", "ip")
 	ratePort := rateCmd.Uint("port", 8500, "port")
 	rateRate := rateCmd.Float64("rate", 0, "rate in Mbps")
-	rateDuration := rateCmd.Float64("duration", 5, "duration in seconds")
+	rateDuration := rateCmd.Uint("duration", 1000, "duration in milliseconds")
 	rateOut := rateCmd.String("o", "", "write csv to logfile (default stdout)")
 	rateDirection := rateCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
+	rateLog := rateCmd.String("log", "", "write all log output to this file")
 
 	periodicCmd := flag.NewFlagSet("periodic", flag.ExitOnError)
 	periodicIP := periodicCmd.String("ip", "", "ip")
 	periodicPort := periodicCmd.Uint("port", 8500, "port")
 	periodicPad := periodicCmd.Uint("pad", 0, "pad")
 	periodicInterval := periodicCmd.Uint("interval", 1000, "interval in milliseconds")
-	periodicDuration := periodicCmd.Float64("duration", 5, "duration in seconds")
+	periodicDuration := periodicCmd.Uint("duration", 1000, "duration in milliseconds")
 	periodicOut := periodicCmd.String("o", "", "write csv to logfile (default stdout)")
 	periodicDirection := periodicCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	serverIP := serverCmd.String("ip", "0.0.0.0", "ip")
 	serverPort := serverCmd.Uint("port", 8500, "port")
+	serverLog := serverCmd.String("log", "", "write all log output to this file")
 
 	failMessage := "expected 'burst', 'rate', 'periodic', or 'server' subcommand"
 
@@ -55,7 +57,7 @@ func main() {
 
 	pkg.RegisterGob()
 
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+	pkg.SetupSlogBasic(slog.LevelDebug)
 
 	var client pkg.Client
 	var rpcClient *rpc.Client
@@ -112,6 +114,16 @@ func main() {
 			os.Exit(1)
 		}
 
+		if *rateLog != "" {
+			slogFile, err := os.Create(*rateLog)
+			if err != nil {
+				fmt.Printf("Failed opening logfile %v: %v\n", *rateLog, err.Error())
+				os.Exit(1)
+			}
+			defer slogFile.Close()
+			pkg.SetupSlogMulti(false, slogFile)
+		}
+
 		rpcClient = dialRpcClient(*rateIP, *ratePort)
 
 		client = &pkg.SenderClient{
@@ -123,7 +135,7 @@ func main() {
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
 				Pps:         uint(*rateRate * 1e6 / 8 / 1400),
 				Interval:    time.Duration(1) * time.Millisecond,
-				Duration:    time.Duration(*rateDuration) * time.Second,
+				Duration:    time.Duration(*rateDuration) * time.Millisecond,
 				PayloadSize: 1400,
 			}}},
 		}
@@ -154,12 +166,22 @@ func main() {
 
 			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
 				Interval: time.Duration(*periodicInterval) * time.Millisecond,
-				Duration: time.Duration(*periodicDuration) * time.Second,
+				Duration: time.Duration(*periodicDuration) * time.Millisecond,
 				Pad:      *periodicPad,
 			}},
 		}
 	case "server":
 		serverCmd.Parse(os.Args[2:])
+
+		if *serverLog != "" {
+			slogFile, err := os.Create(*serverLog)
+			if err != nil {
+				fmt.Printf("Failed opening logfile %v: %v\n", *serverLog, err.Error())
+				os.Exit(1)
+			}
+			defer slogFile.Close()
+			pkg.SetupSlogMulti(false, slogFile)
+		}
 
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)

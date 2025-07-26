@@ -16,6 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	slogchannel "github.com/samber/slog-channel"
+	slogmulti "github.com/samber/slog-multi"
 )
 
 func RegisterGob() {
@@ -221,4 +224,79 @@ func GenID(content string) string {
 	}
 
 	return fmt.Sprintf("%s_%s_%s", time.Now().Format("20060102T150405"), content, string(b))
+}
+
+func SetupSlogBasic(level slog.Level) {
+	// enc := slog.NewJSONHandler(os.Stdout, nil)
+	enc := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	log := slog.New(SlogContextHandler{enc, []any{
+		SlogIDKey{},
+	}})
+	slog.SetDefault(log)
+}
+
+func SetupSlogMulti(createChan bool, fs ...*os.File) *chan *slog.Record {
+	var handlers []slog.Handler
+
+	for i := range fs {
+		if fs[i] == nil {
+			continue
+		}
+		fileHandler := SlogContextHandler{slog.NewTextHandler(fs[i], &slog.HandlerOptions{
+			Level:       slog.LevelDebug,
+			AddSource:   true,
+			ReplaceAttr: slogShortenSource,
+		}), []any{
+			SlogIDKey{},
+		}}
+		handlers = append(handlers, fileHandler)
+	}
+
+	stdHandler := SlogContextHandler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		AddSource: false,
+		Level:     slog.LevelInfo,
+	}), []any{
+		SlogIDKey{},
+	}}
+	handlers = append(handlers, stdHandler)
+
+	var ch *chan *slog.Record
+	if createChan {
+		tmp := make(chan *slog.Record, 1000)
+		ch = &tmp
+		chHandler := slogchannel.Option{
+			Channel:     *ch,
+			Blocking:    false,
+			Level:       slog.LevelDebug,
+			AddSource:   true,
+			ReplaceAttr: slogShortenSource,
+		}.NewChannelHandler()
+
+		chHandler = SlogContextHandler{chHandler, []any{
+			SlogIDKey{},
+		}}
+
+		handlers = append(handlers, chHandler)
+	}
+
+	logger := slog.New(
+		slogmulti.Fanout(
+			handlers...,
+		),
+	)
+
+	slog.SetDefault(logger)
+
+	return ch
+}
+
+// Only keep the filename and not the full path
+func slogShortenSource(groups []string, a slog.Attr) slog.Attr {
+	if a.Key == slog.SourceKey {
+		source, _ := a.Value.Any().(*slog.Source)
+		if source != nil {
+			source.File = filepath.Base(source.File)
+		}
+	}
+	return a
 }

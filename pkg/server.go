@@ -312,8 +312,9 @@ func handleChanResult[S []T, T any](ctx context.Context, c chan *Result[S, T], i
 	slog.DebugContext(ctx, "Waiting on chan result")
 	select {
 	case result, closed = <-c:
-		slog.DebugContext(ctx, "Received on chan result")
+		slog.DebugContext(ctx, "Received on chan result", "len", len(result.Res))
 	case <-ctx.Done():
+		slog.DebugContext(ctx, "ctx.Done() while waiting on chan result")
 		return ctx.Err()
 	}
 	if closed && result == nil {

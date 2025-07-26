@@ -39,8 +39,9 @@ func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
 	go func() {
 		<-ctx.Done()
 		// Wait to give the reader some time to process the remaining messages
-		time.Sleep(100 * time.Millisecond)
-		conn.Close()
+		duration := 100 * time.Millisecond
+		slog.DebugContext(ctx, "Setting read deadline to exit from TxTsReader", "duration", duration)
+		conn.SetReadDeadline(time.Now().Add(duration))
 	}()
 
 	// batch size
@@ -58,15 +59,15 @@ func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
 	for {
 		n, err := mconn.RecvMsgs(rx, unix.MSG_ERRQUEUE)
 		if err != nil {
+			if n > 0 {
+				panic(fmt.Sprintf("n != 0 but %v", n))
+			}
 			if errors.Is(err, net.ErrClosed) {
 				slog.DebugContext(ctx, "Returning from TxTsReader due to closed conn")
 				return nil
 			}
 
 			if errors.Is(err, os.ErrDeadlineExceeded) {
-				slog.WarnContext(ctx, "Received deadline error",
-					"err", err,
-					"ctxErr", ctx.Err())
 				if ctx.Err() != nil {
 					slog.DebugContext(ctx, "Returning from TxTsReader due to deadline and ctx.Err()")
 					return nil
