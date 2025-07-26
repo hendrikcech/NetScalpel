@@ -88,7 +88,7 @@ func setMaxPacingRate(conn *net.UDPConn, rate uint) error {
 	return err
 }
 
-func enableTxTimestamping(conn *net.UDPConn) error {
+func enableTxTimestamping(conn syscall.Conn) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err
@@ -117,7 +117,7 @@ func enableTxTimestamping(conn *net.UDPConn) error {
 	return err
 }
 
-func enableRxTimestamping(conn *net.UDPConn) error {
+func enableRxTimestamping(conn syscall.Conn) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err

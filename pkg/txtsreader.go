@@ -30,7 +30,7 @@ func NewTxTsReader() *TxTsReader {
 	}
 }
 
-func (t *TxTsReader) Run(ctx context.Context, conn *net.UDPConn) error {
+func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 	sentMsgs := make([]MsgSent, 0, 1024)
 	defer func() {
 		t.C <- sentMsgs

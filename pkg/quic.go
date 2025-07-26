@@ -51,13 +51,13 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
-func (r *QUICReceiver) Run(ctx context.Context, udpConn *net.UDPConn, expectedNumPackets uint) (any, error) {
+func (r *QUICReceiver) Run(ctx context.Context, conn net.Conn, expectedNumPackets uint) (any, error) {
 	tracer := &QUICTracer{rcvdC: make(chan MsgRcvd, 1000)}
 	cr := NewChanReader[MsgRcvd]()
 	go cr.Read(tracer.rcvdC)
 
 	tr := &quic.Transport{
-		Conn: udpConn,
+		Conn: conn.(*net.UDPConn),
 	}
 	conf := &quic.Config{
 		Tracer: tracer.NewReceiveTracer,
@@ -147,12 +147,12 @@ func (s *QUICSender) ReceiverMode() Mode {
 }
 
 // Runs until ctx is cancelled
-func (s *QUICSender) Run(ctx context.Context, udpConn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
+func (s *QUICSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
 	tracer := &QUICTracer{sentC: make(chan MsgSent, 1000)}
 	cr := NewChanReader[MsgSent]()
 	go cr.Read(tracer.sentC)
 
-	if err := s.send(ctx, udpConn, raddr, tracer); err != nil {
+	if err := s.send(ctx, conn, raddr, tracer); err != nil {
 		return nil, err
 	}
 
@@ -162,9 +162,9 @@ func (s *QUICSender) Run(ctx context.Context, udpConn *net.UDPConn, raddr *net.U
 	return cr.Result, nil
 }
 
-func (s *QUICSender) send(ctx context.Context, udpConn *net.UDPConn, raddr *net.UDPAddr, tracer *QUICTracer) error {
+func (s *QUICSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, tracer *QUICTracer) error {
 	tr := &quic.Transport{
-		Conn: udpConn,
+		Conn: conn.(*net.UDPConn),
 	}
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: true,
@@ -173,13 +173,13 @@ func (s *QUICSender) send(ctx context.Context, udpConn *net.UDPConn, raddr *net.
 	conf := &quic.Config{
 		Tracer: tracer.NewSendTracer,
 	}
-	conn, err := tr.Dial(ctx, raddr, tlsConf, conf)
+	quicConn, err := tr.Dial(ctx, raddr, tlsConf, conf)
 	if err != nil {
 		return fmt.Errorf("QUIC Dial failed: %v", err.Error())
 	}
-	defer conn.CloseWithError(0, "")
+	defer quicConn.CloseWithError(0, "")
 
-	stream, err := conn.OpenStreamSync(ctx)
+	stream, err := quicConn.OpenStreamSync(ctx)
 	if err != nil {
 		return err
 	}

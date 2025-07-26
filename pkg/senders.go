@@ -19,6 +19,8 @@ const (
 	SendPeriodic
 	ReceiveQUIC
 	SendQUIC
+	ReceiveTCP
+	SendTCP
 )
 
 func (m Mode) String() string {
@@ -35,6 +37,10 @@ func (m Mode) String() string {
 		return "receiveQUIC"
 	case SendQUIC:
 		return "sendQUIC"
+	case ReceiveTCP:
+		return "receiveTCP"
+	case SendTCP:
+		return "sendTCP"
 	default:
 		panic(fmt.Sprintf("Unknown Mode '%d'", m))
 	}
@@ -44,7 +50,7 @@ type Sender interface {
 	GetParams() SenderParams
 	SenderMode() Mode
 	ReceiverMode() Mode
-	Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error)
+	Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error)
 }
 
 type SenderParams interface {
@@ -85,8 +91,8 @@ func (s *BurstSender) ReceiverMode() Mode {
 	return ReceiveUDP
 }
 
-func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
+func (s *BurstSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn))
 	defer tsReaderCancel()
 
 	msgsSent, err := s.run(ctx, conn, raddr)
@@ -99,7 +105,7 @@ func (s *BurstSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDP
 	return msgsSent, nil
 }
 
-func (s *BurstSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (s *BurstSender) run(ctx context.Context, conn net.Conn, raddr net.Addr) ([]MsgSent, error) {
 	msgsSent := make([]MsgSent, s.Params.Num)
 	msgs := make([]mmsg.Message, s.Params.Num)
 	for i := 0; i < int(s.Params.Num); i++ {
@@ -186,8 +192,8 @@ func (s *PeriodicSender) ReceiverMode() Mode {
 	return ReceiveUDP
 }
 
-func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
+func (r *PeriodicSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn))
 	defer tsReaderCancel()
 
 	msgsSent, err := r.run(ctx, conn, raddr)
@@ -199,7 +205,7 @@ func (r *PeriodicSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.
 
 	return msgsSent, nil
 }
-func (r *PeriodicSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) ([]MsgSent, error) {
+func (r *PeriodicSender) run(ctx context.Context, conn net.Conn, raddr net.Addr) ([]MsgSent, error) {
 	msgsSent := make([]MsgSent, 0, r.Params.NumPackets())
 
 	ticker := time.NewTicker(r.Params.Interval)
@@ -207,6 +213,8 @@ func (r *PeriodicSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.
 	buf := make([]byte, 1500)
 
 	// TODO: close socket on ctx.Done?
+
+	udpConn := conn.(*net.UDPConn)
 
 	seq := 0
 	for {
@@ -221,7 +229,7 @@ func (r *PeriodicSender) run(ctx context.Context, conn *net.UDPConn, raddr *net.
 
 			msgsSent = append(msgsSent, MsgSent{Seq: b.Seq, TsSent: time.Now(), Len: 8 + r.Params.Pad})
 
-			nConn, err := conn.WriteTo(read, raddr)
+			nConn, err := udpConn.WriteTo(read, raddr)
 			if err != nil {
 				return nil, err
 			}
@@ -297,14 +305,14 @@ func (s *RateSender) ReceiverMode() Mode {
 	return ReceiveUDP
 }
 
-func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr) (any, error) {
+func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
 	r.msgs = make([]MsgSent, 0, int(float64(r.Params.NumPackets())*1.1))
 	r.tx = make([]mmsg.Message, 1024)
 	for i := range r.tx {
 		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
 	}
 
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn)
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn))
 	defer tsReaderCancel()
 
 	for i := range r.Params {
@@ -318,7 +326,7 @@ func (r *RateSender) Run(ctx context.Context, conn *net.UDPConn, raddr *net.UDPA
 	return r.msgs, nil
 }
 
-func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr, params RateParams, tsEnabled bool) error {
+func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Addr, params RateParams, tsEnabled bool) error {
 	// Only enable socket pacing if we can retrieve the actual tx timestamps
 	// TODO: reenable
 	// leads to txtsreader returning a different number of packets than Run (half of it)
@@ -387,7 +395,7 @@ func (r *RateSender) runParams(ctx context.Context, conn *net.UDPConn, raddr *ne
 	}
 }
 
-func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr *net.UDPAddr, packets uint, payloadSize uint) (uint, error) {
+func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.Addr, packets uint, payloadSize uint) (uint, error) {
 	packetsLeft := packets
 	sent := uint(0)
 	for packetsLeft > 0 {
