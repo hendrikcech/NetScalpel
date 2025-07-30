@@ -19,6 +19,7 @@ import (
 
 	slogchannel "github.com/samber/slog-channel"
 	slogmulti "github.com/samber/slog-multi"
+	"github.com/mikioh/tcpinfo"
 )
 
 func RegisterGob() {
@@ -32,6 +33,12 @@ func RegisterGob() {
 	gob.Register(PeriodicParams{})
 	gob.Register(TcpdumpParams{})
 	gob.Register(QUICParams{})
+	gob.Register(TCPSenderParams{})
+	gob.Register(TCPMetric{})
+	gob.Register([]TCPMetric{})
+	gob.Register(tcpinfo.WindowScale(0))
+	gob.Register(tcpinfo.SACKPermitted(false))
+	gob.Register(tcpinfo.Timestamps(false))
 }
 
 // UDP packet

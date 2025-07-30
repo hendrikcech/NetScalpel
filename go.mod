@@ -15,6 +15,9 @@ require (
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a // indirect
+	github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c // indirect
+	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
+	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
 	github.com/onsi/ginkgo/v2 v2.23.4 // indirect
 	github.com/quic-go/quic-go v0.52.0 // indirect
 	github.com/samber/lo v1.51.0 // indirect

@@ -128,8 +128,8 @@ func TestRateUL(t *testing.T) {
 
 	testSender(t, &client)
 
-	if len(client.MsgsSent) < int(packets)-2 || len(client.MsgsSent) > int(packets)+2 {
-		t.Errorf("Expected %v packets but %v were sent", packets, len(client.MsgsSent))
+	if len(client.UDPMsgsSent) < int(packets)-2 || len(client.UDPMsgsSent) > int(packets)+2 {
+		t.Errorf("Expected %v packets but %v were sent", packets, len(client.UDPMsgsSent))
 	}
 }
 
@@ -153,8 +153,8 @@ func TestRateDL(t *testing.T) {
 
 	testSender(t, &client)
 
-	if len(client.MsgsSent) < int(packets)-2 || len(client.MsgsSent) > int(packets)+2 {
-		t.Errorf("Expected %v packets but %v were sent", packets, len(client.MsgsSent))
+	if len(client.UDPMsgsSent) < int(packets)-2 || len(client.UDPMsgsSent) > int(packets)+2 {
+		t.Errorf("Expected %v packets but %v were sent", packets, len(client.UDPMsgsSent))
 	}
 }
 
@@ -174,8 +174,8 @@ func TestRateZeroPps(t *testing.T) {
 
 	testSender(t, &client)
 
-	if len(client.MsgsSent) != 0 {
-		t.Errorf("Expected 0 packets but %v were sent", len(client.MsgsSent))
+	if len(client.UDPMsgsSent) != 0 {
+		t.Errorf("Expected 0 packets but %v were sent", len(client.UDPMsgsSent))
 	}
 }
 
@@ -197,7 +197,7 @@ func TestRateMultiple(t *testing.T) {
 
 	testSender(t, &client)
 
-	if err := approxEqual(200, uint(len(client.MsgsSent)), 10); err != nil {
+	if err := approxEqual(200, uint(len(client.UDPMsgsSent)), 10); err != nil {
 		t.Errorf("msgs sent: %v", err.Error())
 	}
 }
@@ -226,7 +226,7 @@ func TestRateMultipleWithZero(t *testing.T) {
 
 	testSender(t, &client)
 
-	if err := approxEqual(200, uint(len(client.MsgsSent)), 10); err != nil {
+	if err := approxEqual(200, uint(len(client.UDPMsgsSent)), 10); err != nil {
 		t.Errorf("msgs sent: %v", err.Error())
 	}
 }
@@ -247,8 +247,8 @@ func TestQUICUL(t *testing.T) {
 	testSender(t, &client)
 
 	bytesSum := uint(0)
-	for i := range client.MsgsSent {
-		bytesSum += client.MsgsSent[i].Len
+	for i := range client.UDPMsgsSent {
+		bytesSum += client.UDPMsgsSent[i].Len
 	}
 
 	if err := approxEqual(bytes, bytesSum, 1000); err != nil {
@@ -274,8 +274,8 @@ func TestQUICDL(t *testing.T) {
 	testSender(t, &client)
 
 	bytesSum := uint(0)
-	for i := range client.MsgsRcvd {
-		bytesSum += client.MsgsRcvd[i].Len
+	for i := range client.UDPMsgsRcvd {
+		bytesSum += client.UDPMsgsRcvd[i].Len
 	}
 
 	if err := approxEqual(bytes, bytesSum, 1000); err != nil {
@@ -284,6 +284,38 @@ func TestQUICDL(t *testing.T) {
 
 	// t.Fail()
 }
+
+func TestTCPUL(t *testing.T) {
+	bytes := uint(15000)
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: UL,
+
+		Sender: &TCPSender{Params: TCPSenderParams{
+			Duration_: time.Duration(2) * time.Second,
+			Bytes:     bytes,
+		}},
+	}
+	testSender(t, &client)
+}
+
+func TestTCPDL(t *testing.T) {
+	bytes := uint(15000)
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: DL,
+
+		Sender: &TCPSender{Params: TCPSenderParams{
+			Duration_: time.Duration(1) * time.Second,
+			Bytes:     bytes,
+		}},
+	}
+	testSender(t, &client)
+}
+
+// ---
 
 func testSender(t *testing.T, c *SenderClient) {
 	t.Parallel()
@@ -315,28 +347,46 @@ func testSender(t *testing.T, c *SenderClient) {
 
 	server.Stop()
 
-	if len(c.MsgsSent) != len(c.MsgsRcvd) {
-		t.Errorf("Not all messages were received: %v != %v", len(c.MsgsSent), len(c.MsgsRcvd))
-	}
-
-	for i, msg := range c.MsgsSent {
-		if msg.Seq != uint64(i) {
-			t.Errorf("expected seq %v, got %v in MsgsSent", i, msg.Seq)
+	switch c.Sender.SenderMode().SocketType() {
+	case UDP:
+		if len(c.UDPMsgsSent) != len(c.UDPMsgsRcvd) {
+			t.Errorf("Not all messages were received: %v != %v", len(c.UDPMsgsSent), len(c.UDPMsgsRcvd))
 		}
-	}
 
-	for i, msg := range c.MsgsRcvd {
-		if msg.Seq != uint64(i) {
-			t.Errorf("expected seq %v, got %v in MsgsRcvd", i, msg.Seq)
+		for i, msg := range c.UDPMsgsSent {
+			if msg.Seq != uint64(i) {
+				t.Errorf("expected seq %v, got %v in UDPMsgsSent", i, msg.Seq)
+			}
 		}
-	}
 
-	// TODO: reenable
-	// for i := range c.MsgsSent {
-	// 	if c.MsgsSent[i].Len != c.MsgsRcvd[i].Len {
-	// 		t.Errorf("length of sent and received packet differs: %v != %v", c.MsgsSent[i].Len, c.MsgsRcvd[i].Len)
-	// 	}
-	// }
+		for i, msg := range c.UDPMsgsRcvd {
+			if msg.Seq != uint64(i) {
+				t.Errorf("expected seq %v, got %v in UDPMsgsRcvd", i, msg.Seq)
+			}
+		}
+
+		// TODO: reenable
+		// for i := range c.UDPMsgsSent {
+		// 	if c.UDPMsgsSent[i].Len != c.UDPMsgsRcvd[i].Len {
+		// 		t.Errorf("length of sent and received packet differs: %v != %v", c.UDPMsgsSent[i].Len, c.UDPMsgsRcvd[i].Len)
+		// 	}
+		// }
+	case TCP:
+		if c.TCPMetricsSndr == nil {
+			t.Errorf("c.TCPMetricsSndr is nil")
+		}
+		if len(c.TCPMetricsSndr) == 0 {
+			t.Errorf("c.TCPMetricsSndr is empty")
+		}
+		if c.TCPMetricsRcvr == nil {
+			t.Errorf("c.TCPMetricsRcvr is nil")
+		}
+		if len(c.TCPMetricsRcvr) == 0 {
+			t.Errorf("c.TCPMetricsRcvr is empty")
+		}
+	default:
+		panic("Unknown SocketType")
+	}
 }
 
 // ----
