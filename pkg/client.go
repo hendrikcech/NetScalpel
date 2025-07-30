@@ -84,7 +84,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 	}
 
-	conn, err := ListenUDP(ctx)
+	conn, err := listenUDP(ctx)
 	if err != nil {
 		return fmt.Errorf("ListenUDP failed: %v", err.Error())
 	}
@@ -133,7 +133,7 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 	}
 
-	conn, err := ListenUDP(ctx)
+	conn, err := listenUDP(ctx)
 	if err != nil {
 		return fmt.Errorf("ListenUDP failed: %v", err.Error())
 	}
@@ -186,7 +186,7 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 	}
 
 	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
-	var receiver Receiver
+	var receiver ReceiverUDP
 	switch c.Sender.ReceiverMode() {
 	case ReceiveUDP:
 		receiver = &UDPReceiver{}

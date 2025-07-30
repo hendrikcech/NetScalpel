@@ -80,7 +80,6 @@ type Server struct {
 	ctx      context.Context
 	slogCh   *chan *slog.Record
 
-	ids        map[string]bool
 	resultC    map[string]chan *Result
 	resultLock sync.RWMutex
 }
@@ -89,7 +88,6 @@ func NewServer(ctx context.Context, slogCh *chan *slog.Record) *Server {
 	return &Server{
 		ctx:     ctx,
 		slogCh:  slogCh,
-		ids:     make(map[string]bool),
 		resultC: make(map[string]chan *Result),
 	}
 }
@@ -122,26 +120,54 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 		return logErrContext(ctx, "RequestServer: ID is empty")
 	}
 
-	// Check that the ID is unused
 	s.resultLock.Lock()
-	if _, ok := s.ids[args.ID]; ok {
+	if _, ok := s.resultC[args.ID]; ok {
 		return logErrContext(ctx, "ID already used")
 	}
-	s.ids[args.ID] = true
+	s.resultC[args.ID] = make(chan *Result, 1)
 	s.resultLock.Unlock()
 
-	conn, err := ListenUDP(ctx)
-	if err != nil {
-		return logErrContext(ctx, "ListenUDP failed: %v", err.Error())
+	var laddr net.Addr
+	switch args.ServerMode.SocketType() {
+	case UDP:
+		conn, err := listenUDP(ctx)
+		if err != nil {
+			return logErrContext(ctx, "listenUDP failed: %v", err.Error())
+		}
+		laddr = conn.LocalAddr()
+		reply.Port = uint(laddr.(*net.UDPAddr).Port)
+		go s.handleRequestServerUDP(ctx, conn, args)
+	case TCP:
+		ln, err := listenTCP(ctx)
+		if err != nil {
+			return logErrContext(ctx, "listenTCP failed: %v", err.Error())
+		}
+		laddr = ln.Addr()
+		reply.Port = uint(laddr.(*net.TCPAddr).Port)
+		go s.handleRequestServerTCP(ctx, ln, args)
 	}
-	laddr := conn.LocalAddr().(*net.UDPAddr)
-
-	reply.Port = uint(laddr.Port)
 
 	slog.InfoContext(ctx, "RequestServer", "args", args, "reply", reply, "localAddr", laddr)
 
+	// Note: returns no error even if requested ServerMode is invalid
+
+	return nil
+}
+
+func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, args RequestServerArgs) {
+	defer conn.Close()
+
+	var result Result
+
+	defer func() {
+		s.resultLock.Lock()
+		s.resultC[args.ID] <- &result
+		close(s.resultC[args.ID])
+		s.resultLock.Unlock()
+	}()
+
 	var sender Sender
-	var receiver Receiver
+	var receiver ReceiverUDP
 	switch args.ServerMode {
 	case SendBurst:
 		sender = &BurstSender{Params: args.Params.(BurstParams)}
@@ -156,89 +182,60 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case ReceiveQUIC:
 		receiver = &QUICReceiver{}
 	default:
-		return logErrContext(ctx, "RequestServer: unknown mode %v", args.ServerMode)
+		slog.ErrorContext(ctx, "RequestServer: unknown mode", "mode", args.ServerMode)
+		result.Err = fmt.Errorf("RequestServer: unknown mode %v", args.ServerMode)
+		return
 	}
 
 	if sender != nil {
-		go s.handleSender(ctx, conn, args, sender)
-	} else {
-		go s.handleReceive(ctx, conn, args, receiver)
-	}
-
-	return nil
-}
-
-func (s *Server) handleReceive(ctx context.Context, conn *net.UDPConn, args RequestServerArgs, receiver Receiver) {
-	defer conn.Close()
-
-	s.resultLock.Lock()
-	s.resultC[args.ID] = make(chan *Result, 1)
-	s.resultLock.Unlock()
-
-	var result Result
-
-	defer func() {
-		s.resultLock.Lock()
-		s.resultC[args.ID] <- &result
-		close(s.resultC[args.ID])
-		s.resultLock.Unlock()
-	}()
-
-	receiver.Init()
-
-	if result.Err = waitUntil(ctx, args.StartAt); result.Err != nil {
-		return
-	}
-
-	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
-	defer recvCancel()
-	if result.Res, result.Err = receiver.Run(recvCtx, conn, args.Params.NumPackets()); result.Err != nil {
-		return
-	}
-	slog.DebugContext(ctx, "Finished handleReceive")
-	// , "packets", len(result.Res)
-}
-
-func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, args RequestServerArgs, sender Sender) {
-	defer conn.Close()
-
-	s.resultLock.Lock()
-	s.resultC[args.ID] = make(chan *Result, 1)
-	s.resultLock.Unlock()
-
-	var result Result
-
-	defer func() {
-		s.resultLock.Lock()
-		s.resultC[args.ID] <- &result
-		close(s.resultC[args.ID])
-		s.resultLock.Unlock()
-	}()
-
-	// Wait for single UDP packet from receiving client UDP socket that opens
-	// the client NAT.
-	var buf [1500]byte
-	_, raddr, err := conn.ReadFrom(buf[0:])
-	if err != nil {
-		if e, ok := err.(net.Error); !ok || !e.Timeout() {
-			// not a timeout
-			result.Err = fmt.Errorf("handleSender: ReadFrom: %v", err.Error())
+		raddr, err := waitForUDPProbe(ctx, conn)
+		if err != nil {
+			slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
+			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
 			return
 		}
+		result.Res, result.Err = handleSender(ctx, conn, args, sender, raddr)
+	} else {
+		result.Res, result.Err = handleReceiverUDP(ctx, conn, args, receiver)
+	}
+}
+
+func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener, args RequestServerArgs) {
+	defer ln.Close()
+
+	var result Result
+
+	defer func() {
+		s.resultLock.Lock()
+		s.resultC[args.ID] <- &result
+		close(s.resultC[args.ID])
+		s.resultLock.Unlock()
+	}()
+
+	switch args.ServerMode {
+	case ReceiveTCP:
+		receiver := &TCPReceiver{}
+		result.Res, result.Err = handleReceiverTCP(ctx, ln, args, receiver)
+	case SendTCP:
+		sender := &TCPSender{Params: args.Params.(TCPSenderParams)}
+		conn, err := ln.AcceptTCP()
+		if err != nil {
+			slog.ErrorContext(ctx, "RequestServerTCP: failed AcceptTCP", "error", err)
+			result.Err = fmt.Errorf("Failed AcceptTCP: %v", err.Error())
+			return
+		}
+		defer conn.Close()
+		result.Res, result.Err = handleSender(ctx, conn, args, sender, conn.RemoteAddr())
+	default:
+		slog.ErrorContext(ctx, "RequestServerTCP: unknown mode", "mode", args.ServerMode)
+		result.Err = fmt.Errorf("RequestServerTCP: unknown mode %v", args.ServerMode)
 		return
 	}
+}
 
-	// Reply to NAT UDP packet
-	if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
-		result.Err = fmt.Errorf("handleSender: WriteTo: %v", err.Error())
-		return
-	}
-
-	slog.DebugContext(ctx, "Received kick-off msg", "remoteAddr", raddr)
-
+func handleSender(ctx context.Context, conn net.Conn, args RequestServerArgs, sender Sender, raddr net.Addr) (any, error) {
 	if err := waitUntil(ctx, args.StartAt); err != nil {
-		result.Err = err
-		return
+		return nil, err
 	}
 
 	// TODO: Why was the read ddeadline set here?
@@ -246,12 +243,65 @@ func (s *Server) handleSender(ctx context.Context, conn *net.UDPConn, args Reque
 
 	sendCtx, sendCancel := context.WithTimeout(ctx, args.Params.GetDuration())
 	defer sendCancel()
-	result.Res, result.Err = sender.Run(sendCtx, conn, raddr.(*net.UDPAddr))
-	if result.Err != nil {
-		return
-	}
+	res, err := sender.Run(sendCtx, conn, raddr)
 	slog.DebugContext(ctx, "Finished handleSender", "remoteAddr", raddr)
 	// "packets", len(result.Res),
+	return res, err
+}
+
+func handleReceiverTCP(ctx context.Context, ln net.Listener, args RequestServerArgs, receiver ReceiverTCP) (any, error) {
+	receiver.Init()
+
+	// Remove this and start listening early?
+	if err := waitUntil(ctx, args.StartAt); err != nil {
+		return nil, err
+	}
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
+	defer recvCancel()
+	res, err := receiver.Run(recvCtx, ln)
+	slog.DebugContext(ctx, "Finished handleReceiveTCP")
+	// , "packets", len(result.Res)
+	return res, err
+}
+
+// TODO: make function generic over conn/listener and receiverUDP/receiverTCP?
+func handleReceiverUDP(ctx context.Context, conn net.Conn, args RequestServerArgs, receiver ReceiverUDP) (any, error) {
+	receiver.Init()
+
+	if err := waitUntil(ctx, args.StartAt); err != nil {
+		return nil, err
+	}
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
+	defer recvCancel()
+	res, err := receiver.Run(recvCtx, conn, args.Params.NumPackets())
+	slog.DebugContext(ctx, "Finished handleReceiverUDP")
+	// , "packets", len(result.Res)
+	return res, err
+}
+
+func waitForUDPProbe(ctx context.Context, conn *net.UDPConn) (net.Addr, error) {
+	// Wait for single UDP packet from receiving client UDP socket that opens
+	// the client NAT.
+	var buf [1500]byte
+	_, raddr, err := conn.ReadFrom(buf[0:])
+	if err != nil {
+		if e, ok := err.(net.Error); !ok || !e.Timeout() {
+			// not a timeout
+			return nil, fmt.Errorf("waitForUDPProbe ReadFrom: %v", err.Error())
+		}
+		return nil, nil // TODO: return error?
+	}
+
+	// Reply to NAT UDP packet
+	if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
+		return nil, fmt.Errorf("handleSender: WriteTo: %v", err.Error())
+	}
+
+	slog.DebugContext(ctx, "Received kick-off msg", "remoteAddr", raddr)
+
+	return raddr, nil
 }
 
 type RequestServerResultArgs struct {
@@ -332,10 +382,9 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 
 	c := make(chan *Result, 1)
 	s.resultLock.Lock()
-	if _, ok := s.ids[args.ID]; ok {
+	if _, ok := s.resultC[args.ID]; ok {
 		return logErrContext(ctx, "ID already used")
 	}
-	s.ids[args.ID] = true
 	s.resultC[args.ID] = c
 	s.resultLock.Unlock()
 

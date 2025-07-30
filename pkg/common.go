@@ -65,13 +65,13 @@ func (m *Msg) Decode(buf []byte) {
 	m.Seq = binary.BigEndian.Uint64(buf[0:])
 }
 
-func ListenUDP(ctx context.Context) (*net.UDPConn, error) {
-	udpAddr, err := net.ResolveUDPAddr("udp", ":0")
+func listenUDP(ctx context.Context) (*net.UDPConn, error) {
+	addr, err := net.ResolveUDPAddr("udp", ":0")
 	if err != nil {
 		return nil, fmt.Errorf("net.ResolveUDPAddr failed: %v", err.Error())
 	}
 
-	conn, err := net.ListenUDP("udp", udpAddr)
+	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("net.ListenUDP failed: %v\n", err.Error())
 	}
@@ -79,6 +79,19 @@ func ListenUDP(ctx context.Context) (*net.UDPConn, error) {
 	setSocketBuffers(ctx, conn)
 
 	return conn, nil
+}
+
+func listenTCP(ctx context.Context) (*net.TCPListener, error) {
+	addr, err := net.ResolveTCPAddr("tcp", ":0")
+	if err != nil {
+		return nil, fmt.Errorf("net.ResolveTCPAddr failed: %v", err.Error())
+	}
+
+	ln, err := net.ListenTCP("tcp", addr)
+
+	// TODO: set socket buffers?
+
+	return ln, nil
 }
 
 func RandPath(suffix string) string {

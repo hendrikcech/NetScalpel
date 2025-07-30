@@ -19,9 +19,14 @@ type SenderParams interface {
 	GetDuration() time.Duration
 }
 
-type Receiver interface {
+type ReceiverUDP interface {
 	Init()
 	Run(ctx context.Context, conn net.Conn, expectedNumPackets uint) (any, error)
+}
+
+type ReceiverTCP interface {
+	Init()
+	Run(ctx context.Context, listener net.Listener) (any, error)
 }
 
 type Mode int
@@ -36,6 +41,17 @@ const (
 	ReceiveTCP
 	SendTCP
 )
+
+var NetModes = []Mode{
+	ReceiveUDP,
+	SendBurst,
+	SendRate,
+	SendPeriodic,
+	ReceiveQUIC,
+	SendQUIC,
+	ReceiveTCP,
+	SendTCP,
+}
 
 func (m Mode) String() string {
 	switch m {
@@ -55,6 +71,24 @@ func (m Mode) String() string {
 		return "receiveTCP"
 	case SendTCP:
 		return "sendTCP"
+	default:
+		panic(fmt.Sprintf("Unknown Mode '%d'", m))
+	}
+}
+
+type SocketType int
+
+const (
+	UDP SocketType = iota
+	TCP
+)
+
+func (m Mode) SocketType() SocketType {
+	switch m {
+	case ReceiveUDP, SendBurst, SendRate, SendPeriodic, ReceiveQUIC, SendQUIC:
+		return UDP
+	case ReceiveTCP, SendTCP:
+		return TCP
 	default:
 		panic(fmt.Sprintf("Unknown Mode '%d'", m))
 	}
