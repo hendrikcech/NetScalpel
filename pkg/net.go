@@ -19,14 +19,9 @@ type SenderParams interface {
 	GetDuration() time.Duration
 }
 
-type ReceiverUDP interface {
+type Receiver interface {
 	Init()
-	Run(ctx context.Context, conn net.Conn, expectedNumPackets uint) (any, error)
-}
-
-type ReceiverTCP interface {
-	Init()
-	Run(ctx context.Context, listener net.Listener) (any, error)
+	Run(ctx context.Context, ln net.Listener) (any, error)
 }
 
 type Mode int

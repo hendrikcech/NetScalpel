@@ -167,7 +167,7 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 	}()
 
 	var sender Sender
-	var receiver ReceiverUDP
+	var receiver Receiver
 	switch args.ServerMode {
 	case SendBurst:
 		sender = &BurstSender{Params: args.Params.(BurstParams)}
@@ -196,7 +196,8 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 		}
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, raddr)
 	} else {
-		result.Res, result.Err = handleReceiverUDP(ctx, conn, args, receiver)
+		ln := NewDummyListener(conn, conn.LocalAddr())
+		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
 	}
 }
 
@@ -215,7 +216,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 	switch args.ServerMode {
 	case ReceiveTCP:
 		receiver := &TCPReceiver{}
-		result.Res, result.Err = handleReceiverTCP(ctx, ln, args, receiver)
+		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
 	case SendTCP:
 		sender := &TCPSender{Params: args.Params.(TCPSenderParams)}
 		conn, err := ln.AcceptTCP()
@@ -249,10 +250,10 @@ func handleSender(ctx context.Context, conn net.Conn, args RequestServerArgs, se
 	return res, err
 }
 
-func handleReceiverTCP(ctx context.Context, ln net.Listener, args RequestServerArgs, receiver ReceiverTCP) (any, error) {
+// TODO: make function generic over conn/listener and receiverUDP/receiverTCP?
+func handleReceiver(ctx context.Context, ln net.Listener, args RequestServerArgs, receiver Receiver) (any, error) {
 	receiver.Init()
 
-	// Remove this and start listening early?
 	if err := waitUntil(ctx, args.StartAt); err != nil {
 		return nil, err
 	}
@@ -260,23 +261,7 @@ func handleReceiverTCP(ctx context.Context, ln net.Listener, args RequestServerA
 	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
 	defer recvCancel()
 	res, err := receiver.Run(recvCtx, ln)
-	slog.DebugContext(ctx, "Finished handleReceiveTCP")
-	// , "packets", len(result.Res)
-	return res, err
-}
-
-// TODO: make function generic over conn/listener and receiverUDP/receiverTCP?
-func handleReceiverUDP(ctx context.Context, conn net.Conn, args RequestServerArgs, receiver ReceiverUDP) (any, error) {
-	receiver.Init()
-
-	if err := waitUntil(ctx, args.StartAt); err != nil {
-		return nil, err
-	}
-
-	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
-	defer recvCancel()
-	res, err := receiver.Run(recvCtx, conn, args.Params.NumPackets())
-	slog.DebugContext(ctx, "Finished handleReceiverUDP")
+	slog.DebugContext(ctx, "Finished handleReceiver")
 	// , "packets", len(result.Res)
 	return res, err
 }

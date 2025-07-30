@@ -79,19 +79,37 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
 
-	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
-	if err != nil {
-		return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+	if args.ServerMode.SocketType() != UDP && args.ServerMode.SocketType() != TCP {
+		panic("Unknown SocketType")
 	}
 
-	conn, err := listenUDP(ctx)
-	if err != nil {
-		return fmt.Errorf("ListenUDP failed: %v", err.Error())
+	var conn net.Conn
+	var raddr net.Addr
+	var err error
+	if args.ServerMode.SocketType() == UDP {
+		if raddr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
+			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+		}
+
+		if conn, err = listenUDP(ctx); err != nil {
+			return fmt.Errorf("listenUDP failed: %v", err.Error())
+		}
+		defer conn.Close()
 	}
-	defer conn.Close()
 
 	if err := waitUntil(ctx, c.StartAt); err != nil {
 		return err
+	}
+
+	// TCP Handshake is part of the test
+	if args.ServerMode.SocketType() == TCP {
+		if raddr, err = net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
+			return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
+		}
+		if conn, err = net.DialTCP("tcp", nil, raddr.(*net.TCPAddr)); err != nil {
+			return fmt.Errorf("net.DialTCP failed: %v", err.Error())
+		}
+		defer conn.Close()
 	}
 
 	slog.InfoContext(ctx, "Call Client.Run (UL)", "type", fmt.Sprintf("%T", c.Sender),
@@ -128,7 +146,18 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
 
-	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port))
+	switch args.ServerMode.SocketType() {
+	case UDP:
+		return c.runDLUDP(ctx, reply.Port, args.Timeout)
+	case TCP:
+		return c.runDLTCP(ctx, reply.Port, args.Timeout)
+	default:
+		panic("Unknown SocketType")
+	}
+}
+
+func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Duration) error {
+	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, rport))
 	if err != nil {
 		return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 	}
@@ -138,8 +167,93 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		return fmt.Errorf("ListenUDP failed: %v", err.Error())
 	}
 	defer conn.Close()
-	laddr := conn.LocalAddr().(*net.UDPAddr)
+	// laddr := conn.LocalAddr().(*net.UDPAddr)
 
+	if err := c.probeUDP(ctx, conn, raddr); err != nil {
+		return fmt.Errorf("Return due to failed UDP probing: %v", err.Error())
+	}
+
+	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
+	var receiver Receiver
+	switch c.Sender.ReceiverMode() {
+	case ReceiveUDP:
+		receiver = &UDPReceiver{}
+	case ReceiveQUIC:
+		receiver = &QUICReceiver{}
+	default:
+		panic("Unknown ServerMode")
+	}
+
+	receiver.Init()
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
+	}
+
+	ln := NewDummyListener(conn, conn.LocalAddr())
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, timeout)
+	defer recvCancel()
+	res, err := receiver.Run(recvCtx, ln)
+	if err != nil {
+		return fmt.Errorf("Failed ReceiveFrom: %v", err)
+	}
+
+	switch res.(type) {
+	case []MsgRcvd:
+		c.MsgsRcvd = res.([]MsgRcvd)
+	default:
+		panic("Unhandled result type in runDL")
+	}
+
+	slog.InfoContext(ctx, "Finished Run", "packets", len(c.MsgsRcvd))
+
+	return nil
+}
+
+func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Duration) error {
+	var receiver Receiver
+	switch c.Sender.ReceiverMode() {
+	case ReceiveTCP:
+		receiver = &TCPReceiver{}
+	default:
+		panic("Unknown ServerMode")
+	}
+
+	receiver.Init()
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
+	}
+
+	raddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%v", c.IP, rport))
+	if err != nil {
+		return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
+	}
+
+	conn, err := net.DialTCP("tcp", nil, raddr)
+	if err != nil {
+		return fmt.Errorf("net.DialTCP failed: %v", err.Error())
+	}
+	defer conn.Close()
+
+	ln := NewDummyListener(conn, conn.LocalAddr())
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, timeout)
+	defer recvCancel()
+	res, err := receiver.Run(recvCtx, ln)
+	if err != nil {
+		return fmt.Errorf("Failed ReceiveFrom: %v", err)
+	}
+
+	slog.InfoContext(ctx, "Finished Run", "res", res)
+
+	// TODO: process result
+
+	return nil
+}
+
+func (c *SenderClient) probeUDP(ctx context.Context, conn *net.UDPConn, raddr net.Addr) error {
 	probeReplyReceived := false
 	maxTry := 5
 	for try := range maxTry {
@@ -147,7 +261,7 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		// a hole into a potentially existing NAT and wait for the reply.
 		if try > 0 {
 			slog.DebugContext(ctx, "Sending NAT probe", "try", try+1, "maxTry", maxTry,
-				"localAddr", laddr, "remoteAddr", raddr)
+				"remoteAddr", raddr)
 		}
 		if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
 			return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
@@ -167,15 +281,14 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		}
 
 		var buf [1500]byte
-		_, _, err = conn.ReadFrom(buf[:])
-		if err != nil {
+		if _, _, err := conn.ReadFrom(buf[:]); err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Timeout() {
 				return fmt.Errorf("Failed ReadFrom: %v", err.Error())
 			}
-			// Timeout occured
+			// Timeout occured, send another probe
 			continue
 		}
-		slog.DebugContext(ctx, "Received NAT probe", "try", try+1, "localAddr", laddr)
+		slog.DebugContext(ctx, "Received NAT probe", "try", try+1)
 		probeReplyReceived = true
 		// Effectively deactive ReadDeadline set for probing
 		conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
@@ -184,40 +297,6 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 	if !probeReplyReceived {
 		return fmt.Errorf("No probe reply received")
 	}
-
-	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
-	var receiver ReceiverUDP
-	switch c.Sender.ReceiverMode() {
-	case ReceiveUDP:
-		receiver = &UDPReceiver{}
-	case ReceiveQUIC:
-		receiver = &QUICReceiver{}
-	default:
-		panic("Unknown ServerMode")
-	}
-
-	receiver.Init()
-
-	if err := waitUntil(ctx, c.StartAt); err != nil {
-		return err
-	}
-
-	recvCtx, recvCancel := context.WithTimeout(ctx, args.Timeout)
-	defer recvCancel()
-	res, err := receiver.Run(recvCtx, conn, c.Sender.GetParams().NumPackets())
-	if err != nil {
-		return fmt.Errorf("Failed ReceiveFrom: %v", err)
-	}
-
-	switch res.(type) {
-	case []MsgRcvd:
-		c.MsgsRcvd = res.([]MsgRcvd)
-	default:
-		panic("Unhandled result type in runDL")
-	}
-
-	slog.InfoContext(ctx, "Finished Run", "packets", len(c.MsgsRcvd))
-
 	return nil
 }
 

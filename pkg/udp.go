@@ -14,6 +14,42 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Dummy type to unify UDP and TCP receiver interfaces. Is constructed with a conn
+// and simply returns that conn on the first call to Accept().
+type DummyListener struct {
+	c     chan net.Conn
+	laddr net.Addr
+}
+
+func NewDummyListener(conn net.Conn, laddr net.Addr) *DummyListener {
+	c := make(chan net.Conn, 1)
+	c <- conn
+	return &DummyListener{c: c, laddr: laddr}
+}
+
+// Accept returns conn and nothing afterwards.
+func (l *DummyListener) Accept() (net.Conn, error) {
+	conn, ok := <-l.c
+	if !ok {
+		return nil, fmt.Errorf("DummyListener closed")
+	}
+	return conn, nil
+}
+
+// Close closes the listener.
+// Any blocked Accept operations will be unblocked and return errors.
+func (l *DummyListener) Close() error {
+	close(l.c)
+	return nil
+}
+
+// Addr returns the listener's network address.
+func (l *DummyListener) Addr() net.Addr {
+	return l.laddr
+}
+
+var _ net.Listener = (*DummyListener)(nil)
+
 type UDPReceiver struct {
 }
 
@@ -21,7 +57,13 @@ func (r *UDPReceiver) Init() {
 }
 
 // Receives until ctx is cancelled. ReadDeadline = time.Now() is set to wake up and return from ReceiveFrom.
-func (r *UDPReceiver) Run(ctx context.Context, conn net.Conn, expectedNumPackets uint) (any, error) {
+func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
+	// DummyListener used
+	conn, err := ln.Accept()
+	if err != nil {
+		panic(err)
+	}
+
 	tsEnabled := true
 	if err := enableRxTimestamping(conn.(*net.UDPConn)); err != nil {
 		slog.WarnContext(ctx, "Failed enabling rx timestamping", "error", err.Error())
@@ -29,7 +71,8 @@ func (r *UDPReceiver) Run(ctx context.Context, conn net.Conn, expectedNumPackets
 	}
 
 	// conn ReadDeadline must be set, otherwise this function never returns
-	msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
+	// msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
+	msgs := make([]MsgRcvd, 0, 1024)
 
 	// batch size
 	rx := make([]mmsg.Message, 1024)

@@ -51,10 +51,16 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
-func (r *QUICReceiver) Run(ctx context.Context, conn net.Conn, expectedNumPackets uint) (any, error) {
+func (r *QUICReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 	tracer := &QUICTracer{rcvdC: make(chan MsgRcvd, 1000)}
 	cr := NewChanReader[MsgRcvd]()
 	go cr.Read(tracer.rcvdC)
+
+	// DummyListener used
+	conn, err := ln.Accept()
+	if err != nil {
+		panic(err)
+	}
 
 	tr := &quic.Transport{
 		Conn: conn.(*net.UDPConn),
