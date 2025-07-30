@@ -315,6 +315,38 @@ func TestTCPDL(t *testing.T) {
 	testSender(t, &client)
 }
 
+func TestTCPULBBR(t *testing.T) {
+	bytes := uint(15000)
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: UL,
+
+		Sender: &TCPSender{Params: TCPSenderParams{
+			Duration_: time.Duration(2) * time.Second,
+			Bytes:     bytes,
+			CCA:       BBR,
+		}},
+	}
+	testSender(t, &client)
+}
+
+func TestTCPDLBBR(t *testing.T) {
+	bytes := uint(15000)
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: UL,
+
+		Sender: &TCPSender{Params: TCPSenderParams{
+			Duration_: time.Duration(2) * time.Second,
+			Bytes:     bytes,
+			CCA:       BBR,
+		}},
+	}
+	testSender(t, &client)
+}
+
 // ---
 
 func testSender(t *testing.T, c *SenderClient) {

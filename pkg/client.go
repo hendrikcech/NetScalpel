@@ -97,22 +97,19 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		if conn, err = listenUDP(ctx); err != nil {
 			return fmt.Errorf("listenUDP failed: %v", err.Error())
 		}
-		defer conn.Close()
-	}
-
-	if err := waitUntil(ctx, c.StartAt); err != nil {
-		return err
-	}
-
-	// TCP Handshake is part of the test
-	if args.ServerMode.SocketType() == TCP {
+	} else if args.ServerMode.SocketType() == TCP {
+		// TCP Handshake is performed before the test starts
 		if raddr, err = net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
 			return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
 		}
 		if conn, err = net.DialTCP("tcp", nil, raddr.(*net.TCPAddr)); err != nil {
 			return fmt.Errorf("net.DialTCP failed: %v", err.Error())
 		}
-		defer conn.Close()
+	}
+	defer conn.Close()
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
 	}
 
 	slog.InfoContext(ctx, "Call Client.Run (UL)", "type", fmt.Sprintf("%T", c.Sender),
@@ -133,7 +130,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		c.TCPMetricsSndr = res.([]TCPMetric)
 	default:
 		// panic("Unhandled result type in runUL")
-		 slog.ErrorContext(ctx, "Unhandled result type in runUL", "result", res)
+		slog.ErrorContext(ctx, "Unhandled result type in runUL", "result", res)
 	}
 
 	return nil
@@ -228,10 +225,6 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 
 	receiver.Init()
 
-	if err := waitUntil(ctx, c.StartAt); err != nil {
-		return err
-	}
-
 	raddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%v", c.IP, rport))
 	if err != nil {
 		return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
@@ -244,6 +237,10 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 	defer conn.Close()
 
 	ln := NewDummyListener(conn, conn.LocalAddr())
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
+	}
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, timeout)
 	defer recvCancel()
@@ -343,7 +340,7 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		}
 	default:
 		// panic("Unhandled result type in runUL")
-		 slog.ErrorContext(ctx, "Unhandled result type in Gather", "result", res)
+		slog.ErrorContext(ctx, "Unhandled result type in Gather", "result", res)
 	}
 
 	slog.DebugContext(ctx, "Received results", "type", fmt.Sprintf("%T", c.Sender))
@@ -440,15 +437,15 @@ func generateTCPResultRows(results []TCPMetric) [][]string {
 		"State", //             State              `json:"state"`               // connection state
 		// "Options", //           []Option           `json:"opts,omitempty"`      // requesting options
 		// "PeerOptions", //       []Option           `json:"peer_opts,omitempty"` // options requested from peer
-		"SenderMSS", //         MaxSegSize         `json:"snd_mss"`             // maximum segment size for sender in bytes
-		"ReceiverMSS", //       MaxSegSize         `json:"rcv_mss"`             // maximum segment size for receiver in bytes
-		"RTT", //               time.Duration      `json:"rtt"`                 // round-trip time
-		"RTTVar", //            time.Duration      `json:"rttvar"`              // round-trip time variation
-		"RTO", //               time.Duration      `json:"rto"`                 // retransmission timeout
-		"ATO", //               time.Duration      `json:"ato"`                 // delayed acknowledgement timeout [Linux only]
-		"LastDataSent", //      time.Duration      `json:"last_data_sent"`      // since last data sent [Linux only]
+		"SenderMSS",        //         MaxSegSize         `json:"snd_mss"`             // maximum segment size for sender in bytes
+		"ReceiverMSS",      //       MaxSegSize         `json:"rcv_mss"`             // maximum segment size for receiver in bytes
+		"RTT",              //               time.Duration      `json:"rtt"`                 // round-trip time
+		"RTTVar",           //            time.Duration      `json:"rttvar"`              // round-trip time variation
+		"RTO",              //               time.Duration      `json:"rto"`                 // retransmission timeout
+		"ATO",              //               time.Duration      `json:"ato"`                 // delayed acknowledgement timeout [Linux only]
+		"LastDataSent",     //      time.Duration      `json:"last_data_sent"`      // since last data sent [Linux only]
 		"LastDataReceived", //  time.Duration      `json:"last_data_rcvd"`      // since last data received [FreeBSD and Linux]
-		"LastAckReceived", //   time.Duration      `json:"last_ack_rcvd"`       // since last ack received [Linux only]
+		"LastAckReceived",  //   time.Duration      `json:"last_ack_rcvd"`       // since last ack received [Linux only]
 		// "FlowControl", //       *FlowControl       `json:"flow_ctl,omitempty"`  // flow control information
 		// "CongestionControl", // *CongestionControl `json:"cong_ctl,omitempty"`  // congestion control information
 		// "Sys", //               *SysInfo           `json:"sys,omitempty"`       // platform-specific information
@@ -461,45 +458,45 @@ func generateTCPResultRows(results []TCPMetric) [][]string {
 
 	// CongestionControl
 	rows[0] = append(rows[0], []string{
-		"SenderSSThreshold", //   uint `json:"snd_ssthresh"`   // slow start threshold for sender in bytes or # of segments
+		"SenderSSThreshold",   //   uint `json:"snd_ssthresh"`   // slow start threshold for sender in bytes or # of segments
 		"ReceiverSSThreshold", // uint `json:"rcv_ssthresh"`   // slow start threshold for receiver in bytes [Linux only]
-		"SenderWindowBytes", //   uint `json:"snd_cwnd_bytes"` // congestion window for sender in bytes [Darwin and FreeBSD]
-		"SenderWindowSegs", //    uint `json:"snd_cwnd_segs"`  // congestion window for sender in # of segments [Linux and NetBSD]
+		"SenderWindowBytes",   //   uint `json:"snd_cwnd_bytes"` // congestion window for sender in bytes [Darwin and FreeBSD]
+		"SenderWindowSegs",    //    uint `json:"snd_cwnd_segs"`  // congestion window for sender in # of segments [Linux and NetBSD]
 	}...)
 
 	// Sys
 	rows[0] = append(rows[0], []string{
 		"PathMTU", //                 uint          `json:"path_mtu"`           // path maximum transmission unit
 		// "AdvertisedMSS", //           MaxSegSize    `json:"adv_mss"`            // advertised maximum segment size
-		"CAState", //                 CAState       `json:"ca_state"`           // state of congestion avoidance
-		"Retransmissions", //         uint          `json:"rexmits"`            // # of retranmissions on timeout invoked
-		"Backoffs", //                uint          `json:"backoffs"`           // # of times retransmission backoff timer invoked
+		"CAState",                 //                 CAState       `json:"ca_state"`           // state of congestion avoidance
+		"Retransmissions",         //         uint          `json:"rexmits"`            // # of retranmissions on timeout invoked
+		"Backoffs",                //                uint          `json:"backoffs"`           // # of times retransmission backoff timer invoked
 		"WindowOrKeepAliveProbes", // uint          `json:"wnd_ka_probes"`      // # of window or keep alive probes sent
-		"UnackedSegs", //             uint          `json:"unacked_segs"`       // # of unack'd segments
-		"SackedSegs", //              uint          `json:"sacked_segs"`        // # of sack'd segments
-		"LostSegs", //                uint          `json:"lost_segs"`          // # of lost segments
-		"RetransSegs", //             uint          `json:"retrans_segs"`       // # of retransmitting segments in transmission queue
-		"ForwardAckSegs", //          uint          `json:"fack_segs"`          // # of forward ack segments in transmission queue
-		"ReorderedSegs", //           uint          `json:"reord_segs"`         // # of reordered segments allowed
-		"ReceiverRTT", //             time.Duration `json:"rcv_rtt"`            // current RTT for receiver
-		"TotalRetransSegs", //        uint          `json:"total_retrans_segs"` // # of retransmitted segments
-		"PacingRate", //              uint64        `json:"pacing_rate"`        // pacing rate
-		"ThruBytesAcked", //          uint64        `json:"thru_bytes_acked"`   // # of bytes for which cumulative acknowledgments have been received
-		"ThruBytesReceived", //       uint64        `json:"thru_bytes_rcvd"`    // # of bytes for which cumulative acknowledgments have been sent
-		"SegsOut", //                 uint          `json:"segs_out"`           // # of segments sent
-		"SegsIn", //                  uint          `json:"segs_in"`            // # of segments received
-		"NotSentBytes", //            uint          `json:"not_sent_bytes"`     // # of bytes not sent yet
-		"MinRTT", //                  time.Duration `json:"min_rtt"`            // current measured minimum RTT; zero means not available
-		"DataSegsOut", //             uint          `json:"data_segs_out"`      // # of segments sent containing a positive length data segment
-		"DataSegsIn", //              uint          `json:"data_segs_in"`       // # of segments received containing a positive length data segment
+		"UnackedSegs",             //             uint          `json:"unacked_segs"`       // # of unack'd segments
+		"SackedSegs",              //              uint          `json:"sacked_segs"`        // # of sack'd segments
+		"LostSegs",                //                uint          `json:"lost_segs"`          // # of lost segments
+		"RetransSegs",             //             uint          `json:"retrans_segs"`       // # of retransmitting segments in transmission queue
+		"ForwardAckSegs",          //          uint          `json:"fack_segs"`          // # of forward ack segments in transmission queue
+		"ReorderedSegs",           //           uint          `json:"reord_segs"`         // # of reordered segments allowed
+		"ReceiverRTT",             //             time.Duration `json:"rcv_rtt"`            // current RTT for receiver
+		"TotalRetransSegs",        //        uint          `json:"total_retrans_segs"` // # of retransmitted segments
+		"PacingRate",              //              uint64        `json:"pacing_rate"`        // pacing rate
+		"ThruBytesAcked",          //          uint64        `json:"thru_bytes_acked"`   // # of bytes for which cumulative acknowledgments have been received
+		"ThruBytesReceived",       //       uint64        `json:"thru_bytes_rcvd"`    // # of bytes for which cumulative acknowledgments have been sent
+		"SegsOut",                 //                 uint          `json:"segs_out"`           // # of segments sent
+		"SegsIn",                  //                  uint          `json:"segs_in"`            // # of segments received
+		"NotSentBytes",            //            uint          `json:"not_sent_bytes"`     // # of bytes not sent yet
+		"MinRTT",                  //                  time.Duration `json:"min_rtt"`            // current measured minimum RTT; zero means not available
+		"DataSegsOut",             //             uint          `json:"data_segs_out"`      // # of segments sent containing a positive length data segment
+		"DataSegsIn",              //              uint          `json:"data_segs_in"`       // # of segments received containing a positive length data segment
 	}...)
 
 	// BBRInfo
 	rows[0] = append(rows[0], []string{
-		"MaxBW", //          uint64        `json:"max_bw"`      // maximum-filtered bandwidth in bps
-		"MinRTT", //         time.Duration `json:"min_rtt"`     // minimum-filtered round-trip time
-		"PacingGain", //     uint          `json:"pacing_gain"` // pacing gain shifted left 8 bits
-		"CongWindowGain", // uint          `json:"cwnd_gain"`   // congestion window gain shifted left 8 bits
+		"BBRMaxBW",          //          uint64        `json:"max_bw"`      // maximum-filtered bandwidth in bps
+		"BBRMinRTT",         //         time.Duration `json:"min_rtt"`     // minimum-filtered round-trip time
+		"BBRPacingGain",     //     uint          `json:"pacing_gain"` // pacing gain shifted left 8 bits
+		"BBRCongWindowGain", // uint          `json:"cwnd_gain"`   // congestion window gain shifted left 8 bits
 	}...)
 
 	for j := uint(0); j < uint(len(results)); j++ {

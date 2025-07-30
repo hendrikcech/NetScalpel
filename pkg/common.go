@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mikioh/tcpinfo"
 	slogchannel "github.com/samber/slog-channel"
 	slogmulti "github.com/samber/slog-multi"
-	"github.com/mikioh/tcpinfo"
 )
 
 func RegisterGob() {

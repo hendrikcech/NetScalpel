@@ -760,3 +760,64 @@ func (e *Executor) ProgressiveDurationQUIC(ts time.Time, resultPath string, para
 
 	return nil
 }
+
+func (e *Executor) DurationTCP(ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	gap := 1000 * time.Millisecond
+	start := ts.Add(1 * time.Second)
+	deadline := nextRi(ts).Add(-time.Second)
+
+	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
+	durationsMs := []uint{100, 400, 1000, 3000}
+	if _, ok := params["durations"]; ok {
+		var err error
+		if durationsMs, err = params.Uints("durations"); err != nil {
+			slog.Error("parse duration", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.BBR}
+
+outer:
+	for _, idx := range rand.Perm(len(durationsMs)) {
+		durationMs := durationsMs[idx]
+		duration := time.Duration(durationMs) * time.Millisecond
+
+		for _, ccaIdx := range rand.Perm(len(ccas)) {
+			cca := ccas[ccaIdx]
+
+			nextStart := start.Add(duration).Add(gap)
+			if nextStart.After(deadline) {
+				// Would take too much time
+				break outer
+			}
+
+			e.RunClient(&pkg.SenderClient{
+				IP:        e.IP,
+				Out:       filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv", direction.StringLower(), cca.String(), durationMs)),
+				Direction: direction,
+				StartAt:   start,
+				Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
+					Duration_: duration,
+					Bytes:     1 << 32,
+					CCA:       cca,
+				}},
+			})
+
+			start = nextStart
+		}
+	}
+
+	if start.After(deadline) {
+		panic(fmt.Sprintf("Too many tests: %v > %v", start, deadline))
+	}
+
+	e.tcpdump(resultPath, ts, 15*time.Second)
+
+	return nil
+}

@@ -2,13 +2,15 @@ package pkg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	mathRand "math/rand"
 	"net"
-	"time"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/mikioh/tcp"
 	"github.com/mikioh/tcpinfo"
@@ -36,12 +38,12 @@ func monitorTCP(ctx context.Context, conn net.Conn) ([]TCPMetric, error) {
 
 	var metrics []TCPMetric
 
-	ticker := time.Tick(10 * time.Millisecond)
+	ticker := time.Tick(5 * time.Millisecond)
 	var b [256]byte
 	for {
 		select {
 		case <-ticker:
-			m := TCPMetric { Time: time.Now() }
+			m := TCPMetric{Time: time.Now()}
 			var err error
 			if m.Info, err = queryTCPInfo(ctx, tc, b[:]); err != nil {
 				return nil, err
@@ -93,7 +95,7 @@ func tcpCCName(ctx context.Context, tc *tcp.Conn) (string, error) {
 		return "", err
 	}
 	info := opt.(tcpinfo.CCAlgorithm)
-	slog.InfoContext(ctx, "CCAlgorithm", "info", info, "type", fmt.Sprintf("%T", info))
+	// slog.InfoContext(ctx, "CCAlgorithm", "info", info, "type", fmt.Sprintf("%T", info))
 	return string(info), nil
 }
 
@@ -112,15 +114,16 @@ func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 
 		// TODO: introduce support for handling multiple TCP clients
 
-
 		go func() {
 			<-ctx.Done()
 			conn.SetWriteDeadline(time.Now())
 		}()
 
-		go func () {
+		recvErrC := make(chan error, 1)
+		go func() {
+			defer close(recvErrC)
 			if err := r.run(ctx, conn); err != nil {
-				slog.WarnContext(ctx, "TCPReceiver run errored", "error", err)
+				recvErrC <- err
 			}
 		}()
 
@@ -128,23 +131,48 @@ func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		recvErr := <-recvErrC
+		if recvErr != nil {
+			return nil, recvErr
+		}
+
 		return metrics, nil
 	}
 }
 
-func (r *TCPReceiver) run(ctx context.Context, conn net.Conn) (error) {
+func (r *TCPReceiver) run(ctx context.Context, conn net.Conn) error {
 	slog.DebugContext(ctx, "Reading from TCP conn")
 	n, err := io.Copy(droppingWriter{}, conn)
-	slog.DebugContext(ctx, "TCPReceiver: io.Copy returned", "n", n, "error", err)
-	if err != nil {
+	slog.DebugContext(ctx, "TCPReceiver: io.Copy returned", "n", n)
+	if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 		return fmt.Errorf("Unexpected TCPReceiver error: %v", err)
 	}
 	return nil
 }
 
+type TCPCCA int
+
+const (
+	CUBIC TCPCCA = iota
+	BBR
+)
+
+func (c TCPCCA) String() string {
+	switch c {
+	case CUBIC:
+		return "cubic"
+	case BBR:
+		return "bbr"
+	default:
+		panic("Unknown TCPCC")
+	}
+}
+
 type TCPSenderParams struct {
 	Duration_ time.Duration
 	Bytes     uint
+	CCA       TCPCCA
 }
 
 func (p TCPSenderParams) GetDuration() time.Duration {
@@ -168,16 +196,27 @@ func (s *TCPSender) ReceiverMode() Mode {
 }
 
 func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
+	if err := setTCPCC(ctx, conn.(*net.TCPConn), s.Params.CCA.String()); err != nil {
+		return nil, err
+	}
+
 	go func() {
 		<-ctx.Done()
 		conn.SetWriteDeadline(time.Now())
 	}()
 
-	var sendErr error
+	sendErrC := make(chan error, 1)
 	go func() {
-		var n int64
-		n, sendErr = io.CopyN(conn, mathRand.New(mathRand.NewSource(0)), int64(s.Params.Bytes))
-		slog.DebugContext(ctx, "io.copyN of sender returned", "n", n, "error", sendErr)
+		defer close(sendErrC)
+		n, err := io.CopyN(conn, mathRand.New(mathRand.NewSource(0)), int64(s.Params.Bytes))
+		if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+			// Actual error
+			slog.ErrorContext(ctx, "io.copyN returned error", "error", err)
+			sendErrC <- err
+		} else {
+			// Expected timeout error (SetWriteDeadline) to break send
+			slog.DebugContext(ctx, "io.copyN returned", "n", n)
+		}
 	}()
 
 	metrics, err := monitorTCP(ctx, conn)
@@ -185,13 +224,10 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 		return nil, err
 	}
 
-	_ = sendErr
-
-	// if sendErr != nil {
-	// 	if errors.Is(sendErr, os.ErrDeadlineExceeded) {
-	// 	}
-	// }
-
+	sendErr := <-sendErrC
+	if sendErr != nil {
+		return nil, sendErr
+	}
 
 	return metrics, nil
 }

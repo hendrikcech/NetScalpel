@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"strings"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -135,4 +138,54 @@ func enableRxTimestamping(conn syscall.Conn) error {
 	})
 
 	return err
+}
+
+func setTCPCC(ctx context.Context, conn syscall.Conn, cc string) error {
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+
+	var cbErr error
+	err = rawConn.Control(func(fd uintptr) {
+		cbErr = syscall.SetsockoptString(int(fd), syscall.IPPROTO_TCP, syscall.TCP_CONGESTION, cc)
+		if cbErr != nil {
+			return
+		}
+
+		var buf [256]byte
+		cbErr = GetsockoptString(int(fd), syscall.IPPROTO_TCP, syscall.TCP_CONGESTION, buf[:])
+		if cbErr != nil {
+			return
+		}
+
+		newCC := string(buf[:])
+		if !strings.HasPrefix(newCC, cc) {
+			cbErr = fmt.Errorf("NewCC differs: %v != %v", newCC, cc)
+		}
+
+		slog.Debug("Set TCP socket CC", "cc", newCC[:10], "reqCC", cc)
+	})
+
+	if err != nil {
+		return err
+	}
+	if cbErr != nil {
+		return cbErr
+	}
+	return nil
+}
+
+// syscall.GetsockoptString emulation
+func GetsockoptString(fd, level, opt int, buf []byte) error {
+	var size = uint32(len(buf))
+	return getsockopt(fd, level, opt, unsafe.Pointer(&buf[0]), &size)
+}
+
+func getsockopt(fd, level, opt int, val unsafe.Pointer, vallen *uint32) (err error) {
+	_, _, e1 := syscall.Syscall6(syscall.SYS_GETSOCKOPT, uintptr(fd), uintptr(level), uintptr(opt), uintptr(val), uintptr(unsafe.Pointer(vallen)), 0)
+	if e1 != 0 {
+		err = os.NewSyscallError("getsockopt", e1)
+	}
+	return
 }
