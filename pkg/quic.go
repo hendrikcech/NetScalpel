@@ -128,10 +128,6 @@ type QUICParams struct {
 
 var _ SenderParams = (*QUICParams)(nil)
 
-func (b QUICParams) NumPackets() uint {
-	return 0 // TODO: this doesn't make sense for QUIC
-}
-
 func (b QUICParams) GetDuration() time.Duration {
 	return b.Duration_
 }

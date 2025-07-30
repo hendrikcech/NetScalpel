@@ -15,7 +15,6 @@ type Sender interface {
 }
 
 type SenderParams interface {
-	NumPackets() uint
 	GetDuration() time.Duration
 }
 

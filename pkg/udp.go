@@ -71,7 +71,6 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 	}
 
 	// conn ReadDeadline must be set, otherwise this function never returns
-	// msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
 	msgs := make([]MsgRcvd, 0, 1024)
 
 	// batch size
@@ -169,10 +168,6 @@ type BurstParams struct {
 }
 
 var _ SenderParams = (*BurstParams)(nil)
-
-func (b BurstParams) NumPackets() uint {
-	return b.Num
-}
 
 func (b BurstParams) GetDuration() time.Duration {
 	return b.Timeout

@@ -17,11 +17,6 @@ func (r *TCPReceiver) Run(ctx context.Context, listener net.Listener) (any, erro
 type TCPSenderParams struct {
 }
 
-func (p TCPSenderParams) NumPackets() uint {
-	// TODO
-	return 0
-}
-
 func (p TCPSenderParams) GetDuration() time.Duration {
 	// TODO
 	return time.Duration(0)
