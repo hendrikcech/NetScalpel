@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/rpc"
@@ -11,193 +10,139 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alecthomas/kong"
 	"github.com/google/uuid"
+
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
 )
 
+var cli struct {
+	IP        string `help:"Server IP." default:"0.0.0.0"`
+	Port      uint   `help:"Server port." default:"8500"`
+	Direction string `help:"Direction: UL or DL." default:"ul" enum:"dl,ul,DL,UL"`
+	Log       string `help:"Write debug log to this file."`
+	Out       string `help:"CSV file to write results to (default: stdout)."`
+
+	UDPBurst struct {
+		Num     uint `help:"Number of packets to send in burst." default:"10"`
+		Pad     uint `help:"Number of bytes append to each packet." default:"0"`
+		Timeout uint `help:"Server timeout in ms." default:"1000"`
+	} `cmd:"" help:"Send a burst of UDP packets."`
+
+	UDPRate struct {
+		Rate     float64 `help:"Rate in Mbps." default:"1"`
+		Duration uint    `help:"Duration in ms." default:"1000"`
+	} `cmd:"" help:"Send UDP packets at a steady rate."`
+
+	UDPPeriodic struct {
+		Interval uint `help:"Time between each packet in ms." default:"100"`
+		Duration uint `help:"Duration in ms." default:"1000"`
+		Pad      uint `help:"Number of bytes append to each packet." default:"0"`
+	} `cmd:"" help:"Send UDP packets at a constant interval."`
+
+	TCP struct {
+		Duration uint   `help:"Duration in ms."`
+		Bytes    uint   `help:"Send a number of bytes."`
+		CCA      string `help:"Use a specific congestion controller algorithm." default:"cubic"`
+	} `cmd:"" help:"Send TCP at a constant interval. Both duration and bytes can be specified."`
+
+	Server struct{} `cmd:"" help:"Run in server mode."`
+}
+
 func main() {
-	burstCmd := flag.NewFlagSet("burst", flag.ExitOnError)
-	burstIP := burstCmd.String("ip", "", "ip")
-	burstPort := burstCmd.Uint("port", 8500, "port")
-	burstNum := burstCmd.Uint("num", 10, "num")
-	burstPad := burstCmd.Uint("pad", 0, "pad")
-	burstTimeout := burstCmd.Uint("timeout", 1000, "server timeout in milliseconds")
-	burstOut := burstCmd.String("o", "", "write csv to logfile (default stdout)")
-	burstDirection := burstCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
-
-	rateCmd := flag.NewFlagSet("rate", flag.ExitOnError)
-	rateIP := rateCmd.String("ip", "", "ip")
-	ratePort := rateCmd.Uint("port", 8500, "port")
-	rateRate := rateCmd.Float64("rate", 0, "rate in Mbps")
-	rateDuration := rateCmd.Uint("duration", 1000, "duration in milliseconds")
-	rateOut := rateCmd.String("o", "", "write csv to logfile (default stdout)")
-	rateDirection := rateCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
-	rateLog := rateCmd.String("log", "", "write all log output to this file")
-
-	periodicCmd := flag.NewFlagSet("periodic", flag.ExitOnError)
-	periodicIP := periodicCmd.String("ip", "", "ip")
-	periodicPort := periodicCmd.Uint("port", 8500, "port")
-	periodicPad := periodicCmd.Uint("pad", 0, "pad")
-	periodicInterval := periodicCmd.Uint("interval", 1000, "interval in milliseconds")
-	periodicDuration := periodicCmd.Uint("duration", 1000, "duration in milliseconds")
-	periodicOut := periodicCmd.String("o", "", "write csv to logfile (default stdout)")
-	periodicDirection := periodicCmd.String("direction", "ul", "Send direction: 'ul' (client to server)")
-
-	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
-	serverIP := serverCmd.String("ip", "0.0.0.0", "ip")
-	serverPort := serverCmd.Uint("port", 8500, "port")
-	serverLog := serverCmd.String("log", "", "write all log output to this file")
-
-	failMessage := "expected 'burst', 'rate', 'periodic', or 'server' subcommand"
-
-	if len(os.Args) < 2 {
-		fmt.Println(failMessage)
+	kongctx := kong.Parse(&cli)
+	if kongctx.Error != nil {
+		fmt.Printf("kong error: %v\n", kongctx.Error.Error())
 		os.Exit(1)
 	}
 
 	pkg.RegisterGob()
 
-	pkg.SetupSlogBasic(slog.LevelDebug)
+	if cli.Log != "" {
+		slogFile, err := os.Create(cli.Log)
+		if err != nil {
+			fmt.Printf("Failed opening logfile %v: %v\n", cli.Log, err.Error())
+			os.Exit(1)
+		}
+		defer slogFile.Close()
+		pkg.SetupSlogMulti(false, slogFile)
+	} else {
+		pkg.SetupSlogBasic(slog.LevelInfo)
+	}
 
-	var client pkg.Client
-	var rpcClient *rpc.Client
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
-	switch os.Args[1] {
-	case "burst":
-		burstCmd.Parse(os.Args[2:])
-		if *burstIP == "" {
-			fmt.Println("expected -ip")
-			os.Exit(1)
-		}
-		if *burstPort == 0 {
-			fmt.Println("expected -port")
-			os.Exit(1)
-		}
-		direction, err := pkg.ParseDirection(*burstDirection)
-		if err != nil {
-			fmt.Println(err.Error())
-			os.Exit(1)
-		}
-
-		rpcClient = dialRpcClient(*burstIP, *burstPort)
-
-		client = &pkg.SenderClient{
-			IP:        *burstIP,
-			Out:       *burstOut,
-			Direction: direction,
-			ID:        uuid.New().String(),
-
-			Sender: &pkg.BurstSender{Params: pkg.BurstParams{
-				Timeout: time.Duration(*burstTimeout) * time.Millisecond,
-				Num:     *burstNum,
-				Pad:     *burstPad,
-			}},
-		}
-	case "rate":
-		rateCmd.Parse(os.Args[2:])
-		if *rateIP == "" {
-			fmt.Println("expected -ip")
-			os.Exit(1)
-		}
-		if *ratePort == 0 {
-			fmt.Println("expected -port")
-			os.Exit(1)
-		}
-		if *rateRate == 0 {
-			fmt.Println("expected -rate")
-			os.Exit(1)
-		}
-		direction, err := pkg.ParseDirection(*rateDirection)
-		if err != nil {
-			fmt.Println(err.Error())
-			os.Exit(1)
-		}
-
-		if *rateLog != "" {
-			slogFile, err := os.Create(*rateLog)
-			if err != nil {
-				fmt.Printf("Failed opening logfile %v: %v\n", *rateLog, err.Error())
-				os.Exit(1)
-			}
-			defer slogFile.Close()
-			pkg.SetupSlogMulti(false, slogFile)
-		}
-
-		rpcClient = dialRpcClient(*rateIP, *ratePort)
-
-		client = &pkg.SenderClient{
-			IP:        *rateIP,
-			Out:       *rateOut,
-			Direction: direction,
-			ID:        uuid.New().String(),
-
-			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
-				Pps:         uint(*rateRate * 1e6 / 8 / 1400),
-				Interval:    time.Duration(1) * time.Millisecond,
-				Duration:    time.Duration(*rateDuration) * time.Millisecond,
-				PayloadSize: 1400,
-			}}},
-		}
-
-	case "periodic":
-		periodicCmd.Parse(os.Args[2:])
-		if *periodicIP == "" {
-			fmt.Println("expected -ip")
-			os.Exit(1)
-		}
-		if *periodicPort == 0 {
-			fmt.Println("expected -port")
-			os.Exit(1)
-		}
-		direction, err := pkg.ParseDirection(*periodicDirection)
-		if err != nil {
-			fmt.Println(err.Error())
-			os.Exit(1)
-		}
-
-		rpcClient = dialRpcClient(*periodicIP, *periodicPort)
-
-		client = &pkg.SenderClient{
-			IP:        *periodicIP,
-			Out:       *periodicOut,
-			Direction: direction,
-			ID:        uuid.New().String(),
-
-			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
-				Interval: time.Duration(*periodicInterval) * time.Millisecond,
-				Duration: time.Duration(*periodicDuration) * time.Millisecond,
-				Pad:      *periodicPad,
-			}},
-		}
-	case "server":
-		serverCmd.Parse(os.Args[2:])
-
-		if *serverLog != "" {
-			slogFile, err := os.Create(*serverLog)
-			if err != nil {
-				fmt.Printf("Failed opening logfile %v: %v\n", *serverLog, err.Error())
-				os.Exit(1)
-			}
-			defer slogFile.Close()
-			pkg.SetupSlogMulti(false, slogFile)
-		}
-
+	if kongctx.Command() == "server" {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-		s := pkg.RunServer(ctx, *serverIP, *serverPort, nil)
+		s := pkg.RunServer(ctx, cli.IP, cli.Port, nil)
 
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)
 		ctxCancel()
 		s.Stop()
 		os.Exit(0)
-	default:
-		fmt.Println(failMessage)
+	}
+
+	if cli.IP == "0.0.0.0" {
+		fmt.Println("Argument --ip required")
 		os.Exit(1)
 	}
 
+	direction, err := pkg.ParseDirection(cli.Direction)
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+
+	client := &pkg.SenderClient{
+		IP:        cli.IP,
+		Out:       cli.Out,
+		Direction: direction,
+		ID:        uuid.New().String(),
+	}
+
+	switch kongctx.Command() {
+	case "udp-burst":
+		client.Sender = &pkg.BurstSender{Params: pkg.BurstParams{
+			Timeout: time.Duration(cli.UDPBurst.Timeout) * time.Millisecond,
+			Num:     cli.UDPBurst.Num,
+			Pad:     cli.UDPBurst.Pad,
+		}}
+	case "udp-rate":
+		client.Sender = &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+			Pps:         uint(cli.UDPRate.Rate * 1e6 / 8 / 1400),
+			Interval:    time.Duration(1) * time.Millisecond,
+			Duration:    time.Duration(cli.UDPRate.Duration) * time.Millisecond,
+			PayloadSize: 1400,
+		}}}
+	case "udp-periodic":
+		client.Sender = &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+			Interval: time.Duration(cli.UDPPeriodic.Interval) * time.Millisecond,
+			Duration: time.Duration(cli.UDPPeriodic.Duration) * time.Millisecond,
+			Pad:      cli.UDPPeriodic.Pad,
+		}}
+	case "tcp":
+		cca, err := pkg.ParseTCPCCA(cli.TCP.CCA)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
+		if cli.TCP.Duration == 0 && cli.TCP.Bytes == 0 {
+			fmt.Println("Either --duration or --bytes need to be set.")
+			os.Exit(1)
+		}
+		client.Sender = &pkg.TCPSender{Params: pkg.TCPSenderParams{
+			Duration_: time.Duration(cli.TCP.Duration) * time.Millisecond,
+			Bytes:     cli.TCP.Bytes,
+			CCA:       cca,
+		}}
+	default:
+		panic(kongctx.Command())
+	}
+
+	rpcClient := dialRpcClient(cli.IP, cli.Port)
 	defer rpcClient.Close()
 	if err := client.Run(ctx, rpcClient); err != nil {
 		println(err)

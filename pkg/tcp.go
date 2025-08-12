@@ -37,30 +37,43 @@ func monitorTCP(ctx context.Context, conn net.Conn) ([]TCPMetric, error) {
 	bbrUsed := strings.HasPrefix(ccName, "bbr")
 
 	var metrics []TCPMetric
-
-	ticker := time.Tick(5 * time.Millisecond)
 	var b [256]byte
+
+	queryTCPOnce := func() error {
+		m := TCPMetric{Time: time.Now()}
+		var err error
+		if m.Info, err = queryTCPInfo(ctx, tc, b[:]); err != nil {
+			return err
+		}
+		if bbrUsed {
+			if m.BBRInfo, err = queryBBRInfo(ctx, tc, b[:]); err != nil {
+				return err
+			}
+		}
+		metrics = append(metrics, m)
+		// slog.InfoContext(ctx, "TCPInfo", "info", m, "type", fmt.Sprintf("%T", info), "cc", info.CongestionControl)
+		// slog.InfoContext(ctx, "BBRInfo", "info", info, "type", fmt.Sprintf("%T", info))
+		return nil
+	}
+
+	// Call it at least once even for very short transfer
+	if err := queryTCPOnce(); err != nil {
+		return nil, err
+	}
+	ticker := time.Tick(5 * time.Millisecond)
 	for {
 		select {
 		case <-ticker:
-			m := TCPMetric{Time: time.Now()}
-			var err error
-			if m.Info, err = queryTCPInfo(ctx, tc, b[:]); err != nil {
+			if err := queryTCPOnce(); err != nil {
 				return nil, err
 			}
-			if bbrUsed {
-				if m.BBRInfo, err = queryBBRInfo(ctx, tc, b[:]); err != nil {
-					return nil, err
-				}
-			}
-			metrics = append(metrics, m)
-			// slog.InfoContext(ctx, "TCPInfo", "info", m, "type", fmt.Sprintf("%T", info), "cc", info.CongestionControl)
-			// slog.InfoContext(ctx, "BBRInfo", "info", info, "type", fmt.Sprintf("%T", info))
 		case <-ctx.Done():
+			if err := queryTCPOnce(); err != nil {
+				return nil, err
+			}
 			return metrics, nil
 		}
 	}
-
 }
 
 func queryTCPInfo(ctx context.Context, tc *tcp.Conn, b []byte) (*tcpinfo.Info, error) {
@@ -169,6 +182,17 @@ func (c TCPCCA) String() string {
 	}
 }
 
+func ParseTCPCCA(cca string) (TCPCCA, error) {
+	switch strings.ToLower(cca) {
+	case "cubic":
+		return CUBIC, nil
+	case "bbr":
+		return BBR, nil
+	default:
+		return 999, fmt.Errorf("Unknown TCPCCA value '%s'", cca)
+	}
+}
+
 type TCPSenderParams struct {
 	Duration_ time.Duration
 	Bytes     uint
@@ -205,6 +229,11 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 		conn.SetWriteDeadline(time.Now())
 	}()
 
+	metrics, err := monitorTCP(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+
 	sendErrC := make(chan error, 1)
 	go func() {
 		defer close(sendErrC)
@@ -218,11 +247,6 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 			slog.DebugContext(ctx, "io.copyN returned", "n", n)
 		}
 	}()
-
-	metrics, err := monitorTCP(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
 
 	sendErr := <-sendErrC
 	if sendErr != nil {

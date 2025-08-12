@@ -202,10 +202,10 @@ func (d Direction) StringLower() string {
 }
 
 func ParseDirection(direction string) (Direction, error) {
-	switch direction {
-	case "ul", "UL":
+	switch strings.ToLower(direction) {
+	case "ul":
 		return UL, nil
-	case "dl", "DL":
+	case "dl":
 		return DL, nil
 	default:
 		return 999, fmt.Errorf("Unknown Direction value '%s'", direction)
