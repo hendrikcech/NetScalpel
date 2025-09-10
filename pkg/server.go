@@ -366,6 +366,7 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 	}
 
 	c := make(chan *Result, 1)
+
 	s.resultLock.Lock()
 	if _, ok := s.resultC[args.ID]; ok {
 		return logErrContext(ctx, "ID already used")
@@ -378,11 +379,13 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 	case TcpdumpParams:
 		command = &TcpdumpCommand{Params_: args.Params.(TcpdumpParams)}
 	default:
+		c <- &Result{Err: fmt.Errorf("Unknown params %v", args.Params)}
 		return fmt.Errorf("Unknown params %v", args.Params)
 	}
 
 	resultDir, err := RandDir(args.Params.Name())
 	if err != nil {
+		c <- &Result{Err: fmt.Errorf("RunCommand: failed RandDir: %v", err.Error())}
 		return logErrContext(ctx, "RunCommand: failed RandDir: %v", err.Error())
 	}
 
@@ -391,6 +394,7 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 	go func() {
 		if err := waitUntil(ctx, args.StartAt); err != nil {
 			slog.WarnContext(ctx, "WaitUntil failed", "error", err)
+			c <- &Result{Err: fmt.Errorf("WaitUntil failed: %v", err.Error())}
 			return
 		}
 
@@ -431,7 +435,7 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 
 	result := <-c
 	if result.Err != nil {
-		return logErrContext(ctx, "%v", result.Err.Error())
+		return logErrContext(ctx, "RequestRunCommandResult returning error: %v", result.Err.Error())
 	}
 
 	resultPath := result.Res.(string)
