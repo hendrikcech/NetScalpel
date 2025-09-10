@@ -290,6 +290,7 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 		"simplequic":       e.QUIC,
 		"progdurquic":      e.ProgressiveDurationQUIC,
 		"durationtcp":      e.DurationTCP,
+		"rateri":           e.RateRI,
 	}
 
 	// Only called once per round

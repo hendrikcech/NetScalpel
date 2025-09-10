@@ -143,7 +143,7 @@ func (e *Executor) ProgressiveDurationMultiRate(ts time.Time, resultPath string,
 
 	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
 	// durationsMs := []uint{100, 300, 500, 700}
-	durationsMs := []uint{2000}
+	durationsMs := []uint{700}
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
@@ -197,6 +197,44 @@ func (e *Executor) ProgressiveDurationMultiRate(ts time.Time, resultPath string,
 	}
 
 	e.tcpdump(resultPath, ts, 15*time.Second)
+
+	return nil
+}
+
+// Schedules a rate test over a Starlink reconfiguration.
+// Sends for 700 ms before the RI and for 700 ms after the RI.
+func (e *Executor) RateRI(ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	durationMs := 1400
+	duration := time.Duration(durationMs) * time.Millisecond
+	start := ts.Add(-duration / 2)
+
+	var rateMbps uint
+	if direction == pkg.UL {
+		rateMbps = 70
+	} else {
+		rateMbps = 700
+	}
+
+	e.RunClient(&pkg.SenderClient{
+		IP: e.IP,
+		Out: filepath.Join(resultPath, fmt.Sprintf("rateri_%v_%03d_%04d.csv",
+			direction.StringLower(), rateMbps, durationMs)),
+		Direction: direction,
+		StartAt:   start,
+		Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+			Pps:         rateMbps * 1e6 / 8 / 1400,
+			Interval:    time.Millisecond,
+			Duration:    duration,
+			PayloadSize: 1400,
+		}}},
+	})
+
+	e.tcpdump(resultPath, start.Add(-time.Second), 5*time.Second)
 
 	return nil
 }
