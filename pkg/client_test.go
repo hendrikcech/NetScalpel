@@ -365,11 +365,9 @@ func testSender(t *testing.T, c *SenderClient) {
 		t.Fatalf("%v", err.Error())
 	}
 	start := time.Now()
-	fmt.Printf("Calling Run\n")
 	if err := c.Run(ctxC, rpcClient); err != nil {
 		t.Fatalf("client.Run failed: %v", err.Error())
 	}
-	fmt.Printf("Calling Gather\n")
 	if err := c.Gather(ctxC, rpcClient); err != nil {
 		t.Fatalf("client.Gather failed: %v", err.Error())
 	}

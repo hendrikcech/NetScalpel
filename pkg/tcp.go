@@ -229,11 +229,6 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 		conn.SetWriteDeadline(time.Now())
 	}()
 
-	metrics, err := monitorTCP(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
-
 	sendErrC := make(chan error, 1)
 	go func() {
 		defer close(sendErrC)
@@ -247,6 +242,11 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 			slog.DebugContext(ctx, "io.copyN returned", "n", n)
 		}
 	}()
+
+	metrics, err := monitorTCP(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
 
 	sendErr := <-sendErrC
 	if sendErr != nil {

@@ -120,7 +120,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 
 	res, err := c.Sender.Run(sendCtx, conn, raddr)
 	if err != nil {
-		return fmt.Errorf("send failed: %v\n", err)
+		return fmt.Errorf("UL failed: %v\n", err)
 	}
 
 	switch res.(type) {
