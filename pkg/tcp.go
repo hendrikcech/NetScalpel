@@ -23,20 +23,35 @@ type TCPMetric struct {
 	BBRInfo *tcpinfo.BBRInfo
 }
 
-// Returns on ctx.Done()
-func monitorTCP(ctx context.Context, conn net.Conn) ([]TCPMetric, error) {
+type TCPMonitor struct {
+	C   chan bool // Closed when TCPMonitor has terminated
+	Res []TCPMetric
+	Err error
+}
+
+func NewTCPMonitor() *TCPMonitor {
+	return &TCPMonitor{
+		C: make(chan bool),
+	}
+}
+
+// Returns until ctx.Done()
+func (t *TCPMonitor) Run(ctx context.Context, conn net.Conn) {
+	defer func() {
+		close(t.C)
+	}()
+
 	tc, err := tcp.NewConn(conn)
 	if err != nil {
-		return nil, fmt.Errorf("Failed opening tcp info conn: %v", err.Error())
+		t.Err = fmt.Errorf("Failed opening tcp info conn: %v", err.Error())
 	}
 
 	ccName, err := tcpCCName(ctx, tc)
 	if err != nil {
-		return nil, fmt.Errorf("Failed getCCName: %v", err.Error())
+		t.Err = fmt.Errorf("Failed getCCName: %v", err.Error())
 	}
 	bbrUsed := strings.HasPrefix(ccName, "bbr")
 
-	var metrics []TCPMetric
 	var b [256]byte
 
 	queryTCPOnce := func() error {
@@ -50,7 +65,7 @@ func monitorTCP(ctx context.Context, conn net.Conn) ([]TCPMetric, error) {
 				return err
 			}
 		}
-		metrics = append(metrics, m)
+		t.Res = append(t.Res, m)
 		// slog.InfoContext(ctx, "TCPInfo", "info", m, "type", fmt.Sprintf("%T", info), "cc", info.CongestionControl)
 		// slog.InfoContext(ctx, "BBRInfo", "info", info, "type", fmt.Sprintf("%T", info))
 		return nil
@@ -58,20 +73,49 @@ func monitorTCP(ctx context.Context, conn net.Conn) ([]TCPMetric, error) {
 
 	// Call it at least once even for very short transfer
 	if err := queryTCPOnce(); err != nil {
-		return nil, err
+		t.Err = err
+		return
 	}
 	ticker := time.Tick(5 * time.Millisecond)
+outer:
 	for {
 		select {
 		case <-ticker:
 			if err := queryTCPOnce(); err != nil {
-				return nil, err
+				slog.ErrorContext(ctx, "TCPMonitor Run", "error", err)
+				t.Err = err
+				return
 			}
 		case <-ctx.Done():
 			if err := queryTCPOnce(); err != nil {
-				return nil, err
+				t.Err = err
+				return
 			}
-			return metrics, nil
+			break outer
+		}
+	}
+
+	timeoutDuration := 10 * time.Second
+	timeout := time.NewTimer(timeoutDuration)
+	slog.DebugContext(ctx, "Wait for TCP send queue to drain", "timeout", timeoutDuration)
+
+	for {
+		select {
+		case <-ticker:
+			if err := queryTCPOnce(); err != nil {
+				t.Err = err
+				return
+			}
+			// Terminate once send queue has been drained and all bytes have been received
+			if len(t.Res) > 0 {
+				info := t.Res[len(t.Res)-1].Info.Sys
+				if info.UnackedSegs == 0 && info.NotSentBytes == 0 {
+					return
+				}
+			}
+		case <-timeout.C:
+			slog.WarnContext(ctx, "TCP send queue did not drain in-time", "timeout", timeoutDuration)
+			return
 		}
 	}
 }
@@ -112,6 +156,43 @@ func tcpCCName(ctx context.Context, tc *tcp.Conn) (string, error) {
 	return string(info), nil
 }
 
+func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error)) ([]TCPMetric, error) {
+	tcpMonitor := NewTCPMonitor()
+	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
+	go tcpMonitor.Run(monitorCtx, conn)
+
+	ioErrC := make(chan error, 1)
+	go ioFn(ioErrC)
+
+	// Wait for either TCPMonitor or IO to terminate
+	select {
+	case <-tcpMonitor.C: // fires when tcpMonitor has terminated
+		if tcpMonitor.Err != nil {
+			return nil, tcpMonitor.Err
+		}
+	case ioErr := <-ioErrC:
+		// Also terminate tcpMonitor
+		monitorCtxCancel()
+		if ioErr != nil {
+			return nil, ioErr
+		}
+	case <-ctx.Done():
+	}
+
+	// Terminate sender
+	conn.SetWriteDeadline(time.Now())
+
+	// TCPMonitor has terminated without error because of tcp.Done()
+	// -> IO also terminates because of WriteDeadline
+	//
+	// IO has terminated (because all bytes were sent / received) without error
+	// -> TCPMonitor will also terminate because of monitorCtxCancel()
+
+	// Make sure TCPMonitor has terminated
+	<-tcpMonitor.C
+	return tcpMonitor.Res, tcpMonitor.Err
+}
+
 type TCPReceiver struct {
 }
 
@@ -127,30 +208,15 @@ func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 
 		// TODO: introduce support for handling multiple TCP clients
 
-		go func() {
-			<-ctx.Done()
-			conn.SetWriteDeadline(time.Now())
-		}()
-
-		recvErrC := make(chan error, 1)
-		go func() {
-			defer close(recvErrC)
+		recvFn := func(c chan error) {
+			defer close(c)
 			if err := r.run(ctx, conn); err != nil {
-				recvErrC <- err
+				c <- err
 			}
-		}()
-
-		metrics, err := monitorTCP(ctx, conn)
-		if err != nil {
-			return nil, err
+			slog.DebugContext(ctx, "TCPReceiver run returned")
 		}
 
-		recvErr := <-recvErrC
-		if recvErr != nil {
-			return nil, recvErr
-		}
-
-		return metrics, nil
+		return runTCPMonitorAndIO(ctx, conn, recvFn)
 	}
 }
 
@@ -167,13 +233,15 @@ func (r *TCPReceiver) run(ctx context.Context, conn net.Conn) error {
 type TCPCCA int
 
 const (
-	CUBIC TCPCCA = iota
+	CUBIC            TCPCCA = iota
+	CUBIC_NO_HYSTART TCPCCA = iota
 	BBR
 )
 
-func (c TCPCCA) String() string {
+// Used to set CCA with sysctl
+func (c TCPCCA) KernelName() string {
 	switch c {
-	case CUBIC:
+	case CUBIC, CUBIC_NO_HYSTART:
 		return "cubic"
 	case BBR:
 		return "bbr"
@@ -182,10 +250,27 @@ func (c TCPCCA) String() string {
 	}
 }
 
+// Human-facing string
+func (c TCPCCA) String() string {
+	switch c {
+	case CUBIC:
+		return "cubic"
+	case CUBIC_NO_HYSTART:
+		return "cubic-nohy"
+	case BBR:
+		return "bbr"
+	default:
+		panic("Unknown TCPCC")
+	}
+}
+
+// Parse human-facing name of CCA
 func ParseTCPCCA(cca string) (TCPCCA, error) {
 	switch strings.ToLower(cca) {
 	case "cubic":
 		return CUBIC, nil
+	case "cubic_nohy":
+		return CUBIC_NO_HYSTART, nil
 	case "bbr":
 		return BBR, nil
 	default:
@@ -220,38 +305,26 @@ func (s *TCPSender) ReceiverMode() Mode {
 }
 
 func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
-	if err := setTCPCC(ctx, conn.(*net.TCPConn), s.Params.CCA.String()); err != nil {
+	if err := applyTCPCCA(ctx, conn.(*net.TCPConn), s.Params.CCA); err != nil {
 		return nil, err
 	}
 
-	go func() {
-		<-ctx.Done()
-		conn.SetWriteDeadline(time.Now())
-	}()
+	// if err := setTCPLingerOff(conn.(*net.TCPConn)); err != nil {
+	// 	return nil, err
+	// }
 
-	sendErrC := make(chan error, 1)
-	go func() {
-		defer close(sendErrC)
+	sendFn := func(c chan error) {
 		n, err := io.CopyN(conn, mathRand.New(mathRand.NewSource(0)), int64(s.Params.Bytes))
 		if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 			// Actual error
 			slog.ErrorContext(ctx, "io.copyN returned error", "error", err)
-			sendErrC <- err
+			c <- err
 		} else {
 			// Expected timeout error (SetWriteDeadline) to break send
 			slog.DebugContext(ctx, "io.copyN returned", "n", n)
 		}
-	}()
-
-	metrics, err := monitorTCP(ctx, conn)
-	if err != nil {
-		return nil, err
+		close(c)
 	}
 
-	sendErr := <-sendErrC
-	if sendErr != nil {
-		return nil, sendErr
-	}
-
-	return metrics, nil
+	return runTCPMonitorAndIO(ctx, conn, sendFn)
 }

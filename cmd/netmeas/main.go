@@ -41,8 +41,8 @@ var cli struct {
 	} `cmd:"" help:"Send UDP packets at a constant interval."`
 
 	TCP struct {
-		Duration uint   `help:"Duration in ms."`
-		Bytes    uint   `help:"Send a number of bytes."`
+		Duration uint   `help:"Duration in ms." default:"4294967296"`
+		Bytes    uint   `help:"Send a number of bytes." default:"4294967296"`
 		CCA      string `help:"Use a specific congestion controller algorithm." default:"cubic"`
 	} `cmd:"" help:"Send TCP at a constant interval. Both duration and bytes can be specified."`
 
@@ -129,7 +129,7 @@ func main() {
 			fmt.Println(err.Error())
 			os.Exit(1)
 		}
-		if cli.TCP.Duration == 0 && cli.TCP.Bytes == 0 {
+		if cli.TCP.Duration == 4294967296 && cli.TCP.Bytes == 4294967296 {
 			fmt.Println("Either --duration or --bytes need to be set.")
 			os.Exit(1)
 		}
@@ -152,7 +152,11 @@ func main() {
 		println(err)
 		os.Exit(1)
 	}
-	fmt.Println(client.Summary())
+
+	// TODO: implement sensible output for TCP mode
+	if kongctx.Command() != "tcp" {
+		fmt.Println(client.Summary())
+	}
 }
 
 func dialRpcClient(ip string, port uint) *rpc.Client {

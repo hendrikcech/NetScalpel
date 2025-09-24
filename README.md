@@ -59,7 +59,7 @@ seq,ts_sent,ts_rcvd,owd_ms,size,lost
 # this can be changed with --direction dl
 ```
 
-## UDP Output
+## UDP Tests
 UDP tests provide information about each sent packet in CSV format.
 - seq: The sequence number starting at 0.
 - ts_sent: The timestamp taken when the packet is sent. This is retrieved from the kernel by requesting software transmission timestamps.
@@ -76,17 +76,33 @@ seq,ts_sent,ts_rcvd,owd_ms,size,lost
 4,2025-08-12T23:13:01.831040549+02:00,2025-08-12T23:13:01.831044604+02:00,0.004055,8,false
 ```
 
-## TCP Output
+## TCP Tests
 Information about TCP connections is sampled every 5 ms.
 See `generateTCPResultRows()` in `./pkg/client.go` for more information about each field.
 
-``` csv
+The transfers can be bounded by the number of bytes (`--bytes`) or their duration (`--duration` in milliseconds).
+Both flags can be used and the transfer stop once one of the two conditions is met.
+Please note that *writing* to the TCP connection stops after `--duration`.
+The sender waits until all written data is flushed and all data is ACKed before returning.
+
+```
+$ ./netmeas tcp --ip 127.0.0.1 --bytes 100000
+
 Time,State,SenderMSS,ReceiverMSS,RTT,RTTVar,RTO,ATO,LastDataSent,LastDataReceived,LastAckReceived,ReceiverWindow,SenderSSThreshold,ReceiverSSThreshold,SenderWindowBytes,SenderWindowSegs,PathMTU,CAState,Retransmissions,Backoffs,WindowOrKeepAliveProbes,UnackedSegs,SackedSegs,LostSegs,RetransSegs,ForwardAckSegs,ReorderedSegs,ReceiverRTT,TotalRetransSegs,PacingRate,ThruBytesAcked,ThruBytesReceived,SegsOut,SegsIn,NotSentBytes,MinRTT,DataSegsOut,DataSegsIn,BBRMaxBW,BBRMinRTT,BBRPacingGain,BBRCongWindowGain
-2025-08-12T23:17:19.483024706+02:00,established,32741,536,0.011,0.005,203.333,0,0,0,0,65495,2147483647,65495,0,10,65535,open,0,0,0,0,0,0,0,0,3,0,0,59529090909,1,0,2,1,0,0.011,0,0,,,,
-2025-08-12T23:17:19.488196842+02:00,established,32741,536,0.011,0.005,203.333,0,4,4,4,65495,2147483647,65495,0,10,65535,open,0,0,0,0,0,0,0,0,3,0,0,59529090909,1,0,2,1,0,0.011,0,0,,,,
-2025-08-12T23:17:19.493351371+02:00,established,32741,536,0.011,0.005,203.333,0,10,10,10,65495,2147483647,65495,0,10,65535,open,0,0,0,0,0,0,0,0,3,0,0,59529090909,1,0,2,1,0,0.011,0,0,,,,
-2025-08-12T23:17:19.498534743+02:00,established,32741,536,0.011,0.005,203.333,0,14,14,14,65495,2147483647,65495,0,10,65535,open,0,0,0,0,0,0,0,0,3,0,0,59529090909,1,0,2,1,0,0.011,0,0,,,,
-2025-08-12T23:17:19.503684467+02:00,established,32741,536,0.011,0.005,203.333,0,20,20,20,65495,2147483647,65495,0,10,65535,open,0,0,0,0,0,0,0,0,3,0,0,59529090909,1,0,2,1,0,0.011,0,0,,,,
+2025-09-24T14:09:22.809948975+02:00,established,1400,536,15.601,7.8,250,0,4,4,4,14480,2147483647,64088,0,10,1500,open,0,0,0,0,0,0,0,0,3,0,0,1794756,1,0,2,1,0,15.601,0,0,,,,
+2025-09-24T14:09:22.810733868+02:00,established,1400,536,15.601,7.8,250,0,0,4,4,14480,2147483647,64088,0,10,1500,open,0,0,0,10,0,0,0,0,3,0,0,1794756,1,0,12,1,86000,15.601,10,0,,,,
+2025-09-24T14:09:22.815291558+02:00,established,1400,536,15.601,7.8,250,0,4,7,7,14480,2147483647,64088,0,10,1500,open,0,0,0,10,0,0,0,0,3,0,0,1794756,1,0,12,1,86000,15.601,10,0,,,,
+2025-09-24T14:09:22.8204693+02:00,established,1400,536,15.601,7.8,250,0,10,14,14,14480,2147483647,64088,0,10,1500,open,0,0,0,10,0,0,0,0,3,0,0,1794756,1,0,12,1,86000,15.601,10,0,,,,
+2025-09-24T14:09:22.825795009+02:00,established,1400,536,15.464,4.622,216.666,0,0,17,0,14480,2147483647,64088,0,14,1500,open,0,0,0,14,0,0,0,0,3,0,0,2534776,5601,0,20,3,74800,14.998,18,0,,,,
+2025-09-24T14:09:22.830968035+02:00,established,1400,536,15.844,3.257,216.666,0,4,24,4,14480,2147483647,64088,0,20,1500,open,0,0,0,20,0,0,0,0,3,0,0,3534265,14001,0,32,5,58000,14.998,30,0,,,,
+2025-09-24T14:09:22.835158935+02:00,established,1400,536,15.844,3.257,216.666,0,7,27,7,14480,2147483647,64088,0,20,1500,open,0,0,0,20,0,0,0,0,3,0,0,3534265,14001,0,32,5,58000,14.998,30,0,,,,
+2025-09-24T14:09:22.840564121+02:00,established,1400,536,15.352,1.674,216.666,0,4,34,4,14480,2147483647,64088,0,28,1500,open,0,0,0,28,0,0,0,0,3,0,0,5106618,25201,0,48,9,35600,14.645,46,0,,,,
+2025-09-24T14:09:22.845821618+02:00,established,1400,536,15.745,1.695,216.666,0,0,37,0,14480,2147483647,64088,0,40,1500,open,0,0,0,40,0,0,0,0,3,0,0,7113143,42001,0,72,15,2000,13.949,70,0,,,,
+2025-09-24T14:09:22.850024545+02:00,established,1400,536,15.745,1.695,216.666,0,7,44,7,14480,2147483647,64088,0,40,1500,open,0,0,0,40,0,0,0,0,3,0,0,7113143,42001,0,72,15,2000,13.949,70,0,,,,
+2025-09-24T14:09:22.855146764+02:00,established,1400,536,15.116,0.745,216.666,0,0,47,0,14480,2147483647,64088,0,50,1500,open,0,0,0,32,0,0,0,0,3,0,0,9261173,56001,0,74,21,0,13.747,72,0,,,,
+2025-09-24T14:09:22.860424163+02:00,established,1400,536,16.136,1.141,216.666,0,7,54,4,14480,2147483647,64088,0,61,1500,open,0,0,0,21,0,0,0,0,3,0,0,10584535,71401,0,74,27,0,13.747,72,0,,,,
+2025-09-24T14:09:22.865715655+02:00,established,1400,536,18.011,2.566,220,0,10,57,0,14480,2147483647,64088,0,67,1500,open,0,0,0,15,0,0,0,0,3,0,0,10415856,79801,0,74,32,0,13.747,72,0,,,,
+2025-09-24T14:09:22.870976509+02:00,established,1400,536,18.611,2.536,220,0,17,64,4,14480,2147483647,64088,0,82,1500,open,0,0,0,0,0,0,0,0,3,0,0,12336541,100001,0,74,40,0,13.747,72,0,,,,
 ```
 
 ### Analysis

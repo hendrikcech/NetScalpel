@@ -227,6 +227,9 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 		}
 		defer conn.Close()
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, conn.RemoteAddr())
+		if result.Err != nil {
+			slog.ErrorContext(ctx, "handleSender failed", "error", err)
+		}
 	default:
 		slog.ErrorContext(ctx, "RequestServerTCP: unknown mode", "mode", args.ServerMode)
 		result.Err = fmt.Errorf("RequestServerTCP: unknown mode %v", args.ServerMode)

@@ -34,6 +34,7 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 	sentMsgs := make([]MsgSent, 0, 1024)
 	defer func() {
 		t.C <- sentMsgs
+		close(t.C)
 	}()
 
 	go func() {
