@@ -140,6 +140,57 @@ func enableRxTimestamping(conn syscall.Conn) error {
 	return err
 }
 
+// https://ndeepak.com/posts/2016-10-21-tcprst/
+// Discard all queued data and close connection immediately
+func setTCPLingerOff(conn *net.TCPConn) error {
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+
+	var syscallErr error
+	err = rawConn.Control(func(fd uintptr) {
+		linger := syscall.Linger{
+			Onoff:  1,
+			Linger: 0,
+		}
+
+		syscallErr = syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &linger)
+	})
+
+	if syscallErr != nil {
+		return syscallErr
+	}
+	return err
+}
+
+// Used by the application
+func applyTCPCCA(ctx context.Context, conn syscall.Conn, cca TCPCCA) error {
+	if err := setTCPCC(ctx, conn, cca.KernelName()); err != nil {
+		return err
+	}
+
+	if cca == CUBIC || cca == CUBIC_NO_HYSTART {
+		hy, err := hystartEnabled()
+		if err != nil {
+			return err
+		}
+		if cca == CUBIC && !hy {
+			if err := enableHystart(true); err != nil {
+				return err
+			}
+		}
+		if cca == CUBIC_NO_HYSTART && hy {
+			if err := enableHystart(false); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// Set sysctl tcp congestion control
 func setTCPCC(ctx context.Context, conn syscall.Conn, cc string) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
@@ -173,6 +224,7 @@ func setTCPCC(ctx context.Context, conn syscall.Conn, cc string) error {
 	if cbErr != nil {
 		return cbErr
 	}
+
 	return nil
 }
 
@@ -188,4 +240,66 @@ func getsockopt(fd, level, opt int, val unsafe.Pointer, vallen *uint32) (err err
 		err = os.NewSyscallError("getsockopt", e1)
 	}
 	return
+}
+
+// Check if the process has the CAP_SYS_ADMIN capability
+func hasCapSysAdmin() bool {
+	var caps unix.CapUserHeader
+	var data unix.CapUserData
+
+	caps.Version = unix.LINUX_CAPABILITY_VERSION_3
+	caps.Pid = 0 // 0 = self
+
+	err := unix.Capget(&caps, &data)
+	if err != nil {
+		slog.Error("capget failed", "error", err)
+		return false
+	}
+
+	const CAP_SYS_ADMIN = 21
+	return (data.Effective>>CAP_SYS_ADMIN)&1 == 1
+}
+
+// Return true if root or CAP_SYS_ADMIN
+func hasElevatedPrivileges() bool {
+	return os.Geteuid() == 0 || hasCapSysAdmin()
+}
+
+const hystartPath = "/sys/module/tcp_cubic/parameters/hystart"
+
+func enableHystart(enable bool) error {
+	file, err := os.OpenFile(hystartPath, os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("Failed to open hystart parameter: %v\n", err)
+	}
+	defer file.Close()
+
+	content := "0"
+	if enable {
+		content = "1"
+	}
+
+	if _, err = file.WriteString(content); err != nil {
+		return fmt.Errorf("Failed to write to hystart parameter: %v\n", err)
+	}
+
+	return nil
+}
+
+// reads the current value of tcp_cubic's hystart parameter
+func hystartEnabled() (bool, error) {
+	data, err := os.ReadFile(hystartPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read hystart parameter: %w", err)
+	}
+
+	value := strings.TrimSpace(string(data))
+	switch value {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected hystart value: %s", value)
+	}
 }

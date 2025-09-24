@@ -154,14 +154,30 @@ func (e *Executor) ProgressiveDurationMultiRate(ts time.Time, resultPath string,
 
 	var ratesMbps []uint
 	if direction == pkg.UL {
-		// ratesMbps = []uint{70, 35, 10, 5, 1}
-		ratesMbps = []uint{50, 35, 25, 20}
+		if _, ok := params["ratesUL"]; ok {
+			var err error
+			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
+				slog.Error("parse ratesUL", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			// ratesMbps = []uint{70, 35, 10, 5, 1}
+			ratesMbps = []uint{50, 35, 25, 20}
+		}
 	} else {
-		// ratesMbps = []uint{700, 350, 100, 5, 1}
-		// ratesMbps = []uint{500, 250, 200}
-		// ratesMbps = []uint{175, 150, 125}
-		// ratesMbps = []uint{700, 600, 500}
-		ratesMbps = []uint{550, 600, 650}
+		if _, ok := params["ratesDL"]; ok {
+			var err error
+			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
+				slog.Error("parse ratesDL", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			// ratesMbps = []uint{700, 350, 100, 5, 1}
+			// ratesMbps = []uint{500, 250, 200}
+			// ratesMbps = []uint{175, 150, 125}
+			// ratesMbps = []uint{700, 600, 500}
+			ratesMbps = []uint{550, 600, 650}
+		}
 	}
 
 	for _, rateIdx := range rand.Perm(len(ratesMbps)) {
@@ -810,7 +826,8 @@ func (e *Executor) DurationTCP(ts time.Time, resultPath string, params ParamMap)
 	deadline := nextRi(ts).Add(-time.Second)
 
 	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
-	durationsMs := []uint{100, 400, 1000, 3000}
+	// durationsMs := []uint{100, 400, 1000, 3000}
+	durationsMs := []uint{3000}
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
@@ -819,7 +836,8 @@ func (e *Executor) DurationTCP(ts time.Time, resultPath string, params ParamMap)
 		}
 	}
 
-	ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.BBR}
+	// Tuple of CCA and enableHystart
+	ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.CUBIC_NO_HYSTART, pkg.BBR}
 
 outer:
 	for _, idx := range rand.Perm(len(durationsMs)) {
