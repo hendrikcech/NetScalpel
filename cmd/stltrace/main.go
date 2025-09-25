@@ -279,6 +279,25 @@ func (c *Client) Run(ctx context.Context) {
 		}
 	}()
 
+	paramsSet := []map[string]any{c.Params}
+	var procFn ProcedureFunc
+	if fn, ok := proceduresUlDl[c.Procedure]; ok {
+		procFn = fn
+		if _, ok := c.Params["direction"]; !ok {
+			// Direction wasn't specified: execute procedure twice, once on UL once on DL
+			paramsDL := maps.Clone(c.Params)
+			paramsDL["direction"] = pkg.DL.String()
+			paramsUL := maps.Clone(c.Params)
+			paramsUL["direction"] = pkg.UL.String()
+			paramsSet = []map[string]any{paramsDL, paramsUL}
+		}
+	} else if fn, ok := proceduresBidir[c.Procedure]; ok {
+		procFn = fn
+	} else {
+		slog.ErrorContext(ctx, "Unknown -procedure", "procedure", c.Procedure)
+		os.Exit(1)
+	}
+
 	for c.round = range c.Rounds {
 		rpcClient, err := dialRpcClient(ctx, c.IP, c.Port)
 		if err != nil {
@@ -288,35 +307,18 @@ func (c *Client) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		c.runRound(ctx, rpcClient)
+
+		for _, params := range paramsSet {
+			e := NewExecutor(ctx, c.IP, rpcClient)
+			resultPath := c.executeProcedure(ctx, e, time.Now(), procFn, params)
+			c.runRound(ctx, e, rpcClient, resultPath)
+		}
+
 		rpcClient.Close()
 	}
 }
 
-func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
-	e := NewExecutor(ctx, c.IP, rpcClient)
-
-	// Called once with direction DL and once with direction UL per round
-	// (if param direction is not specified)
-	now := time.Now()
-	resultPath := ""
-	if fn, ok := proceduresUlDl[c.Procedure]; ok {
-		if _, ok := c.Params["direction"]; ok {
-			resultPath = c.executeProcedure(ctx, e, now, fn, c.Params)
-		} else {
-			params := maps.Clone(c.Params)
-			params["direction"] = pkg.DL.String()
-			resultPath = c.executeProcedure(ctx, e, now, fn, params)
-			params["direction"] = pkg.UL.String()
-			resultPath = c.executeProcedure(ctx, e, now.Add(15*time.Second), fn, params)
-		}
-	} else if fn, ok := proceduresBidir[c.Procedure]; ok {
-		resultPath = c.executeProcedure(ctx, e, now, fn, c.Params)
-	} else {
-		slog.ErrorContext(ctx, "Unknown -procedure", "procedure", c.Procedure)
-		os.Exit(1)
-	}
-
+func (c *Client) runRound(ctx context.Context, e *Executor, rpcClient *rpc.Client, resultPath string) {
 	c.setupSlog(ctx, resultPath)
 
 	if err := e.G.Wait(); err != nil {
