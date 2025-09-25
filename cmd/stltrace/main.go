@@ -131,8 +131,27 @@ func main() {
 		ctxCancel()
 		s.Stop()
 
+	case "procedures":
+		var b strings.Builder
+
+		b.WriteString("UL/DL Procedures:\n")
+		for k := range proceduresUlDl {
+			b.WriteString("* ")
+			b.WriteString(k)
+			b.WriteString("\n")
+		}
+
+		b.WriteString("Bidir Procedures:\n")
+		for k := range proceduresBidir {
+			b.WriteString("* ")
+			b.WriteString(k)
+			b.WriteString("\n")
+		}
+
+		fmt.Print(b.String())
+
 	default:
-		fmt.Println("expected 'client' or 'server' subcommands")
+		fmt.Println("expected 'client', 'server', or 'procedures' subcommand")
 		os.Exit(1)
 	}
 }
@@ -153,7 +172,7 @@ func createProfile(profile string) {
 	slog.Info("Writing pprof profile", "path", profile)
 }
 
-type ProcedureFunc func(time.Time, string, ParamMap) error
+type ProcedureFunc func(*Executor, time.Time, string, ParamMap) error
 
 type ParamMap map[string]any
 
@@ -279,40 +298,20 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 
 	// Called once with direction DL and once with direction UL per round
 	// (if param direction is not specified)
-	proceduresUlDl := map[string]ProcedureFunc{
-		"burst":            e.BurstRi,
-		"prograte":         e.ProgressiveRate,
-		"cddf":             e.CoolDownDifferentFlow,
-		"cdsf":             e.CoolDownSameFlow,
-		"multiflow":        e.MultiFlow,
-		"mouseeleph":       e.MouseElephantFlows,
-		"progdurmultirate": e.ProgressiveDurationMultiRate,
-		"simplequic":       e.QUIC,
-		"progdurquic":      e.ProgressiveDurationQUIC,
-		"durationtcp":      e.DurationTCP,
-		"rateri":           e.RateRI,
-	}
-
-	// Only called once per round
-	proceduresBidir := map[string]ProcedureFunc{
-		"trace": e.TraceRi,
-		"owd":   e.MeasOWD,
-	}
-
 	now := time.Now()
 	resultPath := ""
 	if fn, ok := proceduresUlDl[c.Procedure]; ok {
 		if _, ok := c.Params["direction"]; ok {
-			resultPath = c.executeProcedure(ctx, now, fn, c.Params)
+			resultPath = c.executeProcedure(ctx, e, now, fn, c.Params)
 		} else {
 			params := maps.Clone(c.Params)
 			params["direction"] = pkg.DL.String()
-			resultPath = c.executeProcedure(ctx, now, fn, params)
+			resultPath = c.executeProcedure(ctx, e, now, fn, params)
 			params["direction"] = pkg.UL.String()
-			resultPath = c.executeProcedure(ctx, now.Add(15*time.Second), fn, params)
+			resultPath = c.executeProcedure(ctx, e, now.Add(15*time.Second), fn, params)
 		}
 	} else if fn, ok := proceduresBidir[c.Procedure]; ok {
-		resultPath = c.executeProcedure(ctx, now, fn, c.Params)
+		resultPath = c.executeProcedure(ctx, e, now, fn, c.Params)
 	} else {
 		slog.ErrorContext(ctx, "Unknown -procedure", "procedure", c.Procedure)
 		os.Exit(1)
@@ -343,7 +342,7 @@ func (c *Client) runRound(ctx context.Context, rpcClient *rpc.Client) {
 	}
 }
 
-func (c *Client) executeProcedure(ctx context.Context, ts time.Time, fn ProcedureFunc, params ParamMap) string {
+func (c *Client) executeProcedure(ctx context.Context, e *Executor, ts time.Time, fn ProcedureFunc, params ParamMap) string {
 	ri := nextRi(ts)
 	name := "_" + c.Procedure
 	if direction, ok := params["direction"]; ok {
@@ -356,7 +355,7 @@ func (c *Client) executeProcedure(ctx context.Context, ts time.Time, fn Procedur
 		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())
 		os.Exit(1)
 	}
-	if err := fn(ri, resultPath, params); err != nil {
+	if err := fn(e, ri, resultPath, params); err != nil {
 		slog.Error("Procedure errored", "error", err)
 		os.Exit(1)
 	}

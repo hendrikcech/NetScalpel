@@ -11,7 +11,40 @@ import (
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
 )
 
-func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) error {
+var proceduresUlDl = map[string]ProcedureFunc{
+	"burst":            BurstRi,
+	"prograte":         ProgressiveRate,
+	"cddf":             CoolDownDifferentFlow,
+	"cdsf":             CoolDownSameFlow,
+	"multiflow":        MultiFlow,
+	"mouseeleph":       MouseElephantFlows,
+	"progdurmultirate": ProgressiveDurationMultiRate,
+	"simplequic":       QUIC,
+	"progdurquic":      ProgressiveDurationQUIC,
+	"durationtcp":      DurationTCP,
+	"rateri":           RateRI,
+	"owd":              MeasOWD,
+	"rate":             MeasRate,
+}
+
+// Only called once per round
+var proceduresBidir = map[string]ProcedureFunc{
+	"trace":     TraceRi,
+	"owdbidir":  MeasOWD,
+	"ratebidir": MeasRate,
+}
+
+func PPS(direction pkg.Direction) uint {
+	if direction == pkg.UL {
+		return 70 * 1e6 / 8 / 1400
+	} else if direction == pkg.DL {
+		return 700 * 1e6 / 8 / 1400
+	} else {
+		panic("Unknown direction")
+	}
+}
+
+func TraceRi(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	owdStart := ts.Add(7 * time.Second)
 	e.RunClient(&pkg.SenderClient{
 		IP:        e.IP,
@@ -69,7 +102,7 @@ func (e *Executor) TraceRi(ts time.Time, resultPath string, params ParamMap) err
 	return nil
 }
 
-func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params ParamMap) error {
+func ProgressiveRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -131,7 +164,7 @@ func (e *Executor) ProgressiveRate(ts time.Time, resultPath string, params Param
 	return nil
 }
 
-func (e *Executor) ProgressiveDurationMultiRate(ts time.Time, resultPath string, params ParamMap) error {
+func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -219,7 +252,7 @@ func (e *Executor) ProgressiveDurationMultiRate(ts time.Time, resultPath string,
 
 // Schedules a rate test over a Starlink reconfiguration.
 // Sends for 700 ms before the RI and for 700 ms after the RI.
-func (e *Executor) RateRI(ts time.Time, resultPath string, params ParamMap) error {
+func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -255,7 +288,7 @@ func (e *Executor) RateRI(ts time.Time, resultPath string, params ParamMap) erro
 	return nil
 }
 
-func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) error {
+func BurstRi(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -344,7 +377,7 @@ func (e *Executor) BurstRi(ts time.Time, resultPath string, params ParamMap) err
 	return nil
 }
 
-func (e *Executor) CoolDownDifferentFlow(ts time.Time, resultPath string, params ParamMap) error {
+func CoolDownDifferentFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -432,7 +465,7 @@ outer:
 	return nil
 }
 
-func (e *Executor) CoolDownSameFlow(ts time.Time, resultPath string, params ParamMap) error {
+func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -524,38 +557,7 @@ outer:
 	return nil
 }
 
-func (e *Executor) MeasOWD(ts time.Time, resultPath string, params ParamMap) error {
-	start := ts.Add(1 * time.Second)
-
-	duration := 300 * time.Second
-	if _, ok := params["duration_ms"]; ok {
-		value, err := params.Uint("duration_ms")
-		if err != nil {
-			return err
-		}
-		duration = time.Duration(value) * time.Millisecond
-	}
-
-	for _, direction := range []pkg.Direction{pkg.DL, pkg.UL} {
-		e.RunClient(&pkg.SenderClient{
-			IP:        e.IP,
-			Out:       filepath.Join(resultPath, fmt.Sprintf("owd_%v.csv", direction.StringLower())),
-			Direction: direction,
-			StartAt:   start,
-			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
-				Interval: 1 * time.Millisecond,
-				Duration: duration,
-				Pad:      0,
-			}},
-		})
-	}
-
-	e.tcpdump(resultPath, ts, duration+time.Second)
-
-	return nil
-}
-
-func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) error {
+func MultiFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -628,7 +630,7 @@ func (e *Executor) MultiFlow(ts time.Time, resultPath string, params ParamMap) e
 	return nil
 }
 
-func (e *Executor) MouseElephantFlows(ts time.Time, resultPath string, params ParamMap) error {
+func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -725,7 +727,7 @@ outer:
 	return nil
 }
 
-func (e *Executor) QUIC(ts time.Time, resultPath string, params ParamMap) error {
+func QUIC(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -761,7 +763,7 @@ func (e *Executor) QUIC(ts time.Time, resultPath string, params ParamMap) error 
 	return nil
 }
 
-func (e *Executor) ProgressiveDurationQUIC(ts time.Time, resultPath string, params ParamMap) error {
+func ProgressiveDurationQUIC(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -815,7 +817,7 @@ func (e *Executor) ProgressiveDurationQUIC(ts time.Time, resultPath string, para
 	return nil
 }
 
-func (e *Executor) DurationTCP(ts time.Time, resultPath string, params ParamMap) error {
+func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -874,6 +876,94 @@ outer:
 	}
 
 	e.tcpdump(resultPath, ts, 15*time.Second)
+
+	return nil
+}
+
+// Bidirectional, if called without direction parameter
+func MeasOWD(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	directions := []pkg.Direction{pkg.DL, pkg.UL}
+	if _, ok := params["direction"]; ok {
+		var err error
+		direction, err := params.Direction()
+		if err != nil {
+			slog.Error("parse duration", "error", err)
+			os.Exit(1)
+		}
+		directions = []pkg.Direction{direction}
+	}
+
+	start := ts.Add(5 * time.Second)
+
+	duration := 60 * time.Second
+	if _, ok := params["duration_ms"]; ok {
+		value, err := params.Uint("duration_ms")
+		if err != nil {
+			return err
+		}
+		duration = time.Duration(value) * time.Millisecond
+	}
+
+	for _, direction := range directions {
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("owd_%v.csv", direction.StringLower())),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+				Interval: 1 * time.Millisecond,
+				Duration: duration,
+				Pad:      0,
+			}},
+		})
+	}
+
+	// e.tcpdump(resultPath, ts, duration+time.Second)
+
+	return nil
+}
+
+// Bidirectional, if called without direction parameter
+func MeasRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	directions := []pkg.Direction{pkg.DL, pkg.UL}
+	if _, ok := params["direction"]; ok {
+		var err error
+		direction, err := params.Direction()
+		if err != nil {
+			slog.Error("parse duration", "error", err)
+			os.Exit(1)
+		}
+		directions = []pkg.Direction{direction}
+	}
+
+	start := ts.Add(5 * time.Second)
+
+	duration := 60 * time.Second
+	if _, ok := params["duration_ms"]; ok {
+		value, err := params.Uint("duration_ms")
+		if err != nil {
+			return err
+		}
+		duration = time.Duration(value) * time.Millisecond
+	}
+
+	for _, direction := range directions {
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v.csv", direction.StringLower())),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         PPS(direction),
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
+		})
+	}
+
+	// Don't run tcpdump due to large pcaps
+	// e.tcpdump(resultPath, ts, duration+time.Second)
 
 	return nil
 }

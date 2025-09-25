@@ -70,7 +70,7 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				if ctx.Err() != nil {
-					slog.DebugContext(ctx, "Returning from TxTsReader due to deadline and ctx.Err()")
+					slog.DebugContext(ctx, "Returning from TxTsReader due to deadline and ctx.Err()", "ctx.Err()", ctx.Err())
 					return nil
 				} else {
 					slog.DebugContext(ctx, "Extending TxTsReader conn deadline")
