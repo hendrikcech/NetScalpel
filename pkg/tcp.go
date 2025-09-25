@@ -159,6 +159,7 @@ func tcpCCName(ctx context.Context, tc *tcp.Conn) (string, error) {
 func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error)) ([]TCPMetric, error) {
 	tcpMonitor := NewTCPMonitor()
 	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
+	defer monitorCtxCancel() // satisfy vet
 	go tcpMonitor.Run(monitorCtx, conn)
 
 	ioErrC := make(chan error, 1)
