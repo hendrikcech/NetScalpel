@@ -47,8 +47,9 @@ func PPS(direction pkg.Direction) uint {
 }
 
 // https://stackoverflow.com/a/39868255
+// min inclusive, max exclusive
 func makeRange(min, max uint) []uint {
-	a := make([]uint, max-min+1)
+	a := make([]uint, max-min)
 	for i := range a {
 		a[i] = min + uint(i)
 	}
@@ -836,7 +837,7 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 			StartAt:   start,
 			Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
 				Duration_: duration,
-				Bytes:     1 << 32,
+				Bytes: 0,
 				CCA:       cca,
 			}},
 		})

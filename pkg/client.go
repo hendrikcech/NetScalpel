@@ -106,13 +106,16 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 			return fmt.Errorf("net.DialTCP failed: %v", err.Error())
 		}
 	}
-	defer conn.Close()
+	defer func() {
+		slog.DebugContext(ctx, "Closing conn")
+		conn.Close()
+	}()
 
 	if err := waitUntil(ctx, c.StartAt); err != nil {
 		return err
 	}
 
-	slog.InfoContext(ctx, "Call Client.Run (UL)", "type", fmt.Sprintf("%T", c.Sender),
+	slog.InfoContext(ctx, "Start UL client", "type", fmt.Sprintf("%T", c.Sender),
 		"params", c.Sender.GetParams(), "remoteAddr", raddr)
 
 	sendCtx, sendCancel := context.WithTimeout(ctx, c.Sender.GetParams().GetDuration())
@@ -137,6 +140,9 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 }
 
 func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
+	slog.InfoContext(ctx, "Request DL server", "type", fmt.Sprintf("%T", c.Sender),
+		"params", c.Sender.GetParams())
+
 	args := RequestServerArgs{
 		ID:         c.ID,
 		Timeout:    c.Sender.GetParams().GetDuration() + time.Second,

@@ -42,7 +42,7 @@ var cli struct {
 
 	TCP struct {
 		Duration uint   `help:"Duration in ms." default:"4294967296"`
-		Bytes    uint   `help:"Send a number of bytes." default:"4294967296"`
+		Bytes    uint   `help:"Send a number of bytes (default: unlimited)." default:"0"`
 		CCA      string `help:"Use a specific congestion controller algorithm." default:"cubic"`
 	} `cmd:"" help:"Send TCP at a constant interval. Both duration and bytes can be specified."`
 

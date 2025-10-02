@@ -36,7 +36,7 @@ func NewTCPMonitor() *TCPMonitor {
 }
 
 // Returns until ctx.Done()
-func (t *TCPMonitor) Run(ctx context.Context, conn net.Conn) {
+func (t *TCPMonitor) Run(ctx context.Context, conn net.Conn, drainQueue bool) {
 	defer func() {
 		close(t.C)
 	}()
@@ -76,7 +76,9 @@ func (t *TCPMonitor) Run(ctx context.Context, conn net.Conn) {
 		t.Err = err
 		return
 	}
+
 	ticker := time.Tick(5 * time.Millisecond)
+
 outer:
 	for {
 		select {
@@ -91,11 +93,15 @@ outer:
 				t.Err = err
 				return
 			}
-			break outer
+			if drainQueue {
+				break outer
+			} else {
+				return
+			}
 		}
 	}
 
-	timeoutDuration := 10 * time.Second
+	timeoutDuration := 60 * time.Second
 	timeout := time.NewTimer(timeoutDuration)
 	slog.DebugContext(ctx, "Wait for TCP send queue to drain", "timeout", timeoutDuration)
 
@@ -156,11 +162,11 @@ func tcpCCName(ctx context.Context, tc *tcp.Conn) (string, error) {
 	return string(info), nil
 }
 
-func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error)) ([]TCPMetric, error) {
+func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error), drainQueue bool) ([]TCPMetric, error) {
 	tcpMonitor := NewTCPMonitor()
 	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
 	defer monitorCtxCancel() // satisfy vet
-	go tcpMonitor.Run(monitorCtx, conn)
+	go tcpMonitor.Run(monitorCtx, conn, drainQueue)
 
 	ioErrC := make(chan error, 1)
 	go ioFn(ioErrC)
@@ -191,6 +197,7 @@ func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error
 
 	// Make sure TCPMonitor has terminated
 	<-tcpMonitor.C
+	slog.DebugContext(ctx, "TCPMonitor has terminated, return", "error", tcpMonitor.Err)
 	return tcpMonitor.Res, tcpMonitor.Err
 }
 
@@ -217,7 +224,7 @@ func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 			slog.DebugContext(ctx, "TCPReceiver run returned")
 		}
 
-		return runTCPMonitorAndIO(ctx, conn, recvFn)
+		return runTCPMonitorAndIO(ctx, conn, recvFn, false)
 	}
 }
 
@@ -241,9 +248,10 @@ const (
 	CUBIC_SUSS
 	BBR1
 	BBR3
+	ILLINOIS
 )
 
-var TCPCCAS []TCPCCA = []TCPCCA{CUBIC, CUBIC_NO_HYSTART, CUBIC_HYSTARTPP, CUBIC_SEARCH, CUBIC_SUSS, BBR1, BBR3}
+var TCPCCAS []TCPCCA = []TCPCCA{CUBIC, CUBIC_NO_HYSTART, CUBIC_HYSTARTPP, CUBIC_SEARCH, CUBIC_SUSS, BBR1, BBR3, ILLINOIS}
 
 // Used to set CCA with sysctl
 func (c TCPCCA) KernelName() string {
@@ -277,7 +285,9 @@ func (c TCPCCA) KernelName() string {
 	case CUBIC_SEARCH:
 		return "cubic_search"
 	case CUBIC_SUSS:
-		return "cubic_SUSS"
+		return "cubic_suss"
+	case ILLINOIS:
+		return "illinois"
 	default:
 		panic("Unknown TCPCC")
 	}
@@ -300,6 +310,8 @@ func (c TCPCCA) String() string {
 		return "bbr1"
 	case BBR3:
 		return "bbr3"
+	case ILLINOIS:
+		return "illinois"
 	default:
 		panic("Unknown TCPCC")
 	}
@@ -322,11 +334,17 @@ func ParseTCPCCA(cca string) (TCPCCA, error) {
 		return BBR1, nil
 	case "bbr3":
 		return BBR3, nil
+	case "illinois":
+		return ILLINOIS, nil
 	default:
 		return 999, fmt.Errorf("Unknown TCPCCA value '%s'", cca)
 	}
 }
 
+
+// Set Bytes to 0 to send until Duration_ is reached. Otherwise sending will
+// terminate once Duration_ is reached or Bytes has been acked, whatever happens
+// first.
 type TCPSenderParams struct {
 	Duration_ time.Duration
 	Bytes     uint
@@ -354,6 +372,10 @@ func (s *TCPSender) ReceiverMode() Mode {
 }
 
 func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
+	// if s.Params.Duration_ != time.Duration(0) && s.Parms.Bytes != 0 {
+	// 	return nil, fmt.Errorf("TCPSender: Duration and Bytes are exclusive")
+	// }
+
 	if err := applyTCPCCA(ctx, conn.(*net.TCPConn), s.Params.CCA); err != nil {
 		return nil, err
 	}
@@ -362,8 +384,20 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 	// 	return nil, err
 	// }
 
+	// If the sender stops because Duration has been reached, TCP Monitor will
+	// not for wait the send queue to drain but stop abruptly.
+	//
+	// If the sender stops because Bytes-many bytes have been sent, TCP Monitor
+	// will only terminate once the send queue is empty (-> all bytes have been
+	// ACKed).
+	drainQueue := s.Params.Bytes > 0
+
 	sendFn := func(c chan error) {
-		n, err := io.CopyN(conn, mathRand.New(mathRand.NewSource(0)), int64(s.Params.Bytes))
+		sendBytes := int64(s.Params.Bytes)
+		if sendBytes == 0 {
+			sendBytes = 1 << 62
+		}
+		n, err := io.CopyN(conn, mathRand.New(mathRand.NewSource(0)), sendBytes)
 		if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 			// Actual error
 			slog.ErrorContext(ctx, "io.copyN returned error", "error", err)
@@ -375,5 +409,5 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 		close(c)
 	}
 
-	return runTCPMonitorAndIO(ctx, conn, sendFn)
+	return runTCPMonitorAndIO(ctx, conn, sendFn, drainQueue)
 }

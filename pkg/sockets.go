@@ -167,7 +167,7 @@ func setTCPLingerOff(conn *net.TCPConn) error {
 // Used by the application
 func applyTCPCCA(ctx context.Context, conn syscall.Conn, cca TCPCCA) error {
 	if err := setTCPCC(ctx, conn, cca.KernelName()); err != nil {
-		return err
+		return fmt.Errorf("Failed setting TCPCCA %v (%v): %v", cca.String(), cca.KernelName(), err.Error())
 	}
 
 	if cca == CUBIC || cca == CUBIC_NO_HYSTART {
