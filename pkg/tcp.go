@@ -234,18 +234,50 @@ func (r *TCPReceiver) run(ctx context.Context, conn net.Conn) error {
 type TCPCCA int
 
 const (
-	CUBIC            TCPCCA = iota
-	CUBIC_NO_HYSTART TCPCCA = iota
-	BBR
+	CUBIC TCPCCA = iota
+	CUBIC_NO_HYSTART
+	CUBIC_HYSTARTPP
+	CUBIC_SEARCH
+	CUBIC_SUSS
+	BBR1
+	BBR3
 )
+
+var TCPCCAS []TCPCCA = []TCPCCA{CUBIC, CUBIC_NO_HYSTART, CUBIC_HYSTARTPP, CUBIC_SEARCH, CUBIC_SUSS, BBR1, BBR3}
 
 // Used to set CCA with sysctl
 func (c TCPCCA) KernelName() string {
+	if c == BBR1 || c == BBR3 {
+		ccas, err := readAvailableKernelCCAs()
+		if err != nil {
+			panic(fmt.Sprintf("Failed to fetch kernel CCAs: %v", err))
+		}
+
+		if strings.Contains(ccas, "bbr1") {
+			// The kernel is compiled with BBRv3 and a BBRv1 is "bbr1"
+			if c == BBR1 {
+				return "bbr1"
+			} else {
+				return "bbr"
+			}
+		} else {
+			// Assume that it's a BBRv1 kernel
+			if c == BBR3 {
+				slog.Warn("Assuming that a BBRv1 kernel is running")
+			}
+			return "bbr"
+		}
+	}
+
 	switch c {
 	case CUBIC, CUBIC_NO_HYSTART:
 		return "cubic"
-	case BBR:
-		return "bbr"
+	case CUBIC_HYSTARTPP:
+		return "cubic_hystartpp"
+	case CUBIC_SEARCH:
+		return "cubic_search"
+	case CUBIC_SUSS:
+		return "cubic_SUSS"
 	default:
 		panic("Unknown TCPCC")
 	}
@@ -258,8 +290,16 @@ func (c TCPCCA) String() string {
 		return "cubic"
 	case CUBIC_NO_HYSTART:
 		return "cubic-nohy"
-	case BBR:
-		return "bbr"
+	case CUBIC_HYSTARTPP:
+		return "hystartpp"
+	case CUBIC_SEARCH:
+		return "search"
+	case CUBIC_SUSS:
+		return "suss"
+	case BBR1:
+		return "bbr1"
+	case BBR3:
+		return "bbr3"
 	default:
 		panic("Unknown TCPCC")
 	}
@@ -270,10 +310,18 @@ func ParseTCPCCA(cca string) (TCPCCA, error) {
 	switch strings.ToLower(cca) {
 	case "cubic":
 		return CUBIC, nil
-	case "cubic_nohy":
+	case "cubic-nohy":
 		return CUBIC_NO_HYSTART, nil
-	case "bbr":
-		return BBR, nil
+	case "hystartpp":
+		return CUBIC_HYSTARTPP, nil
+	case "search":
+		return CUBIC_SEARCH, nil
+	case "suss":
+		return CUBIC_SUSS, nil
+	case "bbr1":
+		return BBR1, nil
+	case "bbr3":
+		return BBR3, nil
 	default:
 		return 999, fmt.Errorf("Unknown TCPCCA value '%s'", cca)
 	}

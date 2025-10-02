@@ -13,6 +13,7 @@ require (
 
 require (
 	github.com/alecthomas/kong v1.12.1 // indirect
+	github.com/alistanis/cartesian v0.0.0-20220409094110-a224e60a7f74 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a // indirect

@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/alistanis/cartesian"
+
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
 )
 
 var proceduresUlDl = map[string]ProcedureFunc{
-	"burst":            BurstRi,
+	"burst":            Burst,
 	"prograte":         ProgressiveRate,
 	"cddf":             CoolDownDifferentFlow,
 	"cdsf":             CoolDownSameFlow,
@@ -42,6 +44,15 @@ func PPS(direction pkg.Direction) uint {
 	} else {
 		panic("Unknown direction")
 	}
+}
+
+// https://stackoverflow.com/a/39868255
+func makeRange(min, max uint) []uint {
+	a := make([]uint, max-min+1)
+	for i := range a {
+		a[i] = min + uint(i)
+	}
+	return a
 }
 
 func TraceRi(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
@@ -288,82 +299,44 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 	return nil
 }
 
-func BurstRi(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+func Burst(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
 	}
 
-	// smallTimeout := 500 * time.Millisecond
-	// largeTimeout := 2000 * time.Millisecond
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
+	gap := 4000 * time.Millisecond
 
-	// nums := []uint{1, 10, 50, 100, 150, 200, 250, 300, 400, 550, 700, 850, 1000, 2000}
-	// nums := []uint{1, 10, 20, 30, 40, 50, 100, 150, 200, 250, 300, 400, 500, 1000, 2000}
+	pad := []uint{0, 700, 1400}
 	var nums []uint
-	var gaps []time.Duration
 	if direction == pkg.UL {
-		nums = []uint{100, 500, 750, 1000, 2000, 3000, 4000, 5000}
-		gaps = []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond, 2500 * time.Millisecond}
+		nums = []uint{1000, 3000, 6000, 10000}
 	} else {
-		nums = []uint{100, 500, 750, 1000, 2000, 3000, 4000, 5000}
-		gaps = []time.Duration{500 * time.Millisecond, 1000 * time.Millisecond, 1500 * time.Millisecond}
+		nums = []uint{1000, 3000, 6000, 10000}
 	}
+	args := cartesian.Product(nums, pad)
 
 	// Execute the bursts in random order
-	for i, idx := range rand.Perm(len(nums) + 1) {
-		var gap time.Duration
-		// Special case: execute rate test
-		if idx == len(nums) {
-			duration := 2 * time.Second
-			gap = duration + gaps[2]
-			if start.Add(gap).After(deadline) {
-				slog.Info(fmt.Sprintf("Only executing %v/%v %v tests", i, len(nums), direction))
-				break
-			}
-			var pps uint
-			if direction == pkg.UL {
-				pps = 70 * 1e6 / 8 / 1400
-			} else {
-				pps = 700 * 1e6 / 8 / 1400
-			}
-			e.RunClient(&pkg.SenderClient{
-				IP:        e.IP,
-				Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v.csv", direction.StringLower())),
-				Direction: direction,
-				StartAt:   start,
-				Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
-					Pps:         pps,
-					Interval:    time.Millisecond,
-					Duration:    duration,
-					PayloadSize: 1400,
-				}}},
-			})
-		} else {
-			num := nums[idx]
-			gap = gaps[0]
-			if num <= 2000 {
-				gap = gaps[1]
-			} else {
-				gap = gaps[2]
-			}
-			if start.Add(gap).After(deadline) {
-				slog.Info(fmt.Sprintf("Only executing %v/%v %v tests", i, len(nums), direction))
-				break
-			}
-			e.RunClient(&pkg.SenderClient{
-				IP:        e.IP,
-				Out:       filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d.csv", direction.StringLower(), num)),
-				Direction: direction,
-				StartAt:   start,
-				Sender: &pkg.BurstSender{Params: pkg.BurstParams{
-					Timeout: 4 * time.Second,
-					Num:     num,
-					Pad:     1400,
-				}},
-			})
+	for i, idx := range rand.Perm(len(args)) {
+		num := args[idx][0]
+		pad := args[idx][1]
+		if start.Add(gap).After(deadline) {
+			slog.Info(fmt.Sprintf("Only executing %v/%v %v tests", i, len(args), direction))
+			break
 		}
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d_%04d.csv", direction.StringLower(), num, pad)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.BurstSender{Params: pkg.BurstParams{
+				Timeout: 4 * time.Second,
+				Num:     num,
+				Pad:     pad,
+			}},
+		})
 
 		start = start.Add(gap)
 	}
@@ -839,36 +812,36 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	}
 
 	// Tuple of CCA and enableHystart
-	ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.CUBIC_NO_HYSTART, pkg.BBR}
+	// ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.CUBIC_NO_HYSTART, pkg.BBR1}
+	ccas := pkg.TCPCCAS
+	ccaIdxs := makeRange(0, uint(len(ccas)))
 
-outer:
-	for _, idx := range rand.Perm(len(durationsMs)) {
-		durationMs := durationsMs[idx]
+	args := cartesian.Product(durationsMs, ccaIdxs)
+
+	for _, idx := range rand.Perm(len(args)) {
+		durationMs := args[idx][0]
 		duration := time.Duration(durationMs) * time.Millisecond
+		cca := ccas[args[idx][1]]
 
-		for _, ccaIdx := range rand.Perm(len(ccas)) {
-			cca := ccas[ccaIdx]
-
-			nextStart := start.Add(duration).Add(gap)
-			if nextStart.After(deadline) {
-				// Would take too much time
-				break outer
-			}
-
-			e.RunClient(&pkg.SenderClient{
-				IP:        e.IP,
-				Out:       filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv", direction.StringLower(), cca.String(), durationMs)),
-				Direction: direction,
-				StartAt:   start,
-				Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
-					Duration_: duration,
-					Bytes:     1 << 32,
-					CCA:       cca,
-				}},
-			})
-
-			start = nextStart
+		nextStart := start.Add(duration).Add(gap)
+		if nextStart.After(deadline) {
+			// Would take too much time
+			break
 		}
+
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv", direction.StringLower(), cca.String(), durationMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
+				Duration_: duration,
+				Bytes:     1 << 32,
+				CCA:       cca,
+			}},
+		})
+
+		start = nextStart
 	}
 
 	if start.After(deadline) {

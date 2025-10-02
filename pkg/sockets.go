@@ -190,7 +190,7 @@ func applyTCPCCA(ctx context.Context, conn syscall.Conn, cca TCPCCA) error {
 	return nil
 }
 
-// Set sysctl tcp congestion control
+// Set TCP congestion control of an TCP socket
 func setTCPCC(ctx context.Context, conn syscall.Conn, cc string) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
@@ -290,7 +290,7 @@ func enableHystart(enable bool) error {
 func hystartEnabled() (bool, error) {
 	data, err := os.ReadFile(hystartPath)
 	if err != nil {
-		return false, fmt.Errorf("failed to read hystart parameter: %w", err)
+		return false, fmt.Errorf("failed to read hystart parameter: %v", err)
 	}
 
 	value := strings.TrimSpace(string(data))
@@ -302,4 +302,13 @@ func hystartEnabled() (bool, error) {
 	default:
 		return false, fmt.Errorf("unexpected hystart value: %s", value)
 	}
+}
+
+func readAvailableKernelCCAs() (string, error) {
+	path := "/proc/sys/net/ipv4/tcp_available_congestion_control"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read available congestion controls: %v", err)
+	}
+	return string(data), nil
 }

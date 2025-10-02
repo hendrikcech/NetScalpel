@@ -325,7 +325,7 @@ func TestTCPULBBR(t *testing.T) {
 		Sender: &TCPSender{Params: TCPSenderParams{
 			Duration_: time.Duration(2) * time.Second,
 			Bytes:     bytes,
-			CCA:       BBR,
+			CCA:       BBR1,
 		}},
 	}
 	testSender(t, &client)
@@ -341,7 +341,7 @@ func TestTCPDLBBR(t *testing.T) {
 		Sender: &TCPSender{Params: TCPSenderParams{
 			Duration_: time.Duration(2) * time.Second,
 			Bytes:     bytes,
-			CCA:       BBR,
+			CCA:       BBR1,
 		}},
 	}
 	testSender(t, &client)
