@@ -19,11 +19,13 @@ var proceduresUlDl = map[string]ProcedureFunc{
 	"cddf":             CoolDownDifferentFlow,
 	"cdsf":             CoolDownSameFlow,
 	"multiflow":        MultiFlow,
+	"switchflow":       SwitchFlow,
 	"mouseeleph":       MouseElephantFlows,
 	"progdurmultirate": ProgressiveDurationMultiRate,
 	"simplequic":       QUIC,
 	"progdurquic":      ProgressiveDurationQUIC,
 	"durationtcp":      DurationTCP,
+	"tcpri":            DurationTCPRI,
 	"rateri":           RateRI,
 	"owd":              MeasOWD,
 	"rate":             MeasRate,
@@ -182,13 +184,13 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
 	}
 
-	gap := 900 * time.Millisecond
+	gap := 2000 * time.Millisecond
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
 	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
 	// durationsMs := []uint{100, 300, 500, 700}
-	durationsMs := []uint{700}
+	durationsMs := []uint{1000, 1500, 2000}
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
@@ -207,7 +209,8 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 			}
 		} else {
 			// ratesMbps = []uint{70, 35, 10, 5, 1}
-			ratesMbps = []uint{50, 35, 25, 20}
+			// ratesMbps = []uint{50, 35, 25, 20}
+			ratesMbps = []uint{70}
 		}
 	} else {
 		if _, ok := params["ratesDL"]; ok {
@@ -221,7 +224,7 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 			// ratesMbps = []uint{500, 250, 200}
 			// ratesMbps = []uint{175, 150, 125}
 			// ratesMbps = []uint{700, 600, 500}
-			ratesMbps = []uint{550, 600, 650}
+			ratesMbps = []uint{700}
 		}
 	}
 
@@ -604,6 +607,69 @@ func MultiFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) er
 	return nil
 }
 
+// Start with one UDP flow. Flow 1 stops after 800 ms and flow 2 starts at the
+// same time. Observe if flow 2 has a ramp-up.
+func SwitchFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	start := ts.Add(1 * time.Second)
+	deadline := nextRi(ts).Add(-time.Second)
+	duration := time.Duration(800) * time.Millisecond
+	spacing := time.Duration(2000) * time.Millisecond
+
+	var rates []uint
+	if direction == pkg.UL {
+		rates = []uint{20, 40, 70}
+	} else {
+		rates = []uint{200, 250, 300, 700}
+	}
+
+	for _, idx := range rand.Perm(len(rates)) {
+		rate := rates[idx]
+		pps := uint(rate*1e6) / 8 / 1400
+
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d_a.csv", direction.StringLower(), rate)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         pps,
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
+		})
+		start = start.Add(duration)
+
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d_b.csv", direction.StringLower(), rate)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         pps,
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
+		})
+		start = start.Add(duration).Add(spacing)
+
+		// Check if another test still fits into the current RI
+		if start.Add(2 * duration).Add(spacing).After(deadline) {
+			break
+		}
+	}
+
+	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
+
+	return nil
+}
+
 func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
@@ -837,7 +903,7 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 			StartAt:   start,
 			Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
 				Duration_: duration,
-				Bytes: 0,
+				Bytes:     0,
 				CCA:       cca,
 			}},
 		})
@@ -850,6 +916,63 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	}
 
 	e.tcpdump(resultPath, ts, 15*time.Second)
+
+	return nil
+}
+
+func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	durationMs := 6000
+	duration := time.Duration(durationMs) * time.Millisecond
+	start := ts.Add(-duration / 2)
+	if time.Until(start) < 2*time.Second {
+		start = start.Add(15 * time.Second)
+	}
+
+	maxIdx := len(pkg.TCPCCAS) + 1
+	idx := rand.Intn(maxIdx)
+	if idx == maxIdx-1 {
+		// Perform UDP rate test
+		var rateMbps uint
+		if direction == pkg.UL {
+			rateMbps = 70
+		} else {
+			rateMbps = 700
+		}
+		e.RunClient(&pkg.SenderClient{
+			IP: e.IP,
+			Out: filepath.Join(resultPath, fmt.Sprintf("udp_%v_%03d_%04d.csv",
+				direction.StringLower(), rateMbps, durationMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         rateMbps * 1e6 / 8 / 1400,
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
+		})
+	} else {
+		cca := pkg.TCPCCAS[idx]
+		e.RunClient(&pkg.SenderClient{
+			IP: e.IP,
+			Out: filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv",
+				direction.StringLower(), cca.String(), durationMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
+				Duration_: duration,
+				Bytes:     0,
+				CCA:       cca,
+			}},
+		})
+	}
+
+	e.tcpdump(resultPath, start.Add(-time.Second), duration+2*time.Second)
 
 	return nil
 }
