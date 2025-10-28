@@ -68,6 +68,23 @@ func (p ParamMap) Uint(key string) (uint, error) {
 	return uint(parsed), nil
 }
 
+func (p ParamMap) TCPCCAs(key string) ([]pkg.TCPCCA, error) {
+	listStr, err := p.Strings(key)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]pkg.TCPCCA, len(listStr))
+	for i := range listStr {
+		var err error
+		list[i], err = pkg.ParseTCPCCA(listStr[i])
+		if err != nil {
+			return nil, fmt.Errorf("Parameter %v: failed parsing '%s' as TCPCCA", key, listStr[i])
+		}
+	}
+	return list, nil
+
+}
+
 // Parses semicolon-separated key=value pairs
 // If value contains a comma, the value is parsed as a list
 // Example:

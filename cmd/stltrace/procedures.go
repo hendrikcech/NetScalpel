@@ -15,6 +15,7 @@ import (
 
 var proceduresUlDl = map[string]ProcedureFunc{
 	"burst":            Burst,
+	"multiburst":       MultiBurst,
 	"prograte":         ProgressiveRate,
 	"cddf":             CoolDownDifferentFlow,
 	"cdsf":             CoolDownSameFlow,
@@ -273,16 +274,34 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
 	}
 
-	durationMs := 1400
+	durationMs := 3000
 	duration := time.Duration(durationMs) * time.Millisecond
 	start := ts.Add(-duration / 2)
 
-	var rateMbps uint
+	var ratesMbps []uint
 	if direction == pkg.UL {
-		rateMbps = 70
+		if _, ok := params["ratesUL"]; ok {
+			var err error
+			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
+				slog.Error("parse ratesUL", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			ratesMbps = []uint{70}
+		}
 	} else {
-		rateMbps = 700
+		if _, ok := params["ratesDL"]; ok {
+			var err error
+			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
+				slog.Error("parse ratesDL", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			ratesMbps = []uint{700}
+		}
 	}
+
+	rateMbps := ratesMbps[rand.Intn(len(ratesMbps))]
 
 	e.RunClient(&pkg.SenderClient{
 		IP: e.IP,
@@ -304,6 +323,15 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 }
 
 func Burst(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	return _MultiBurst(e, ts, resultPath, params, []string{"a"})
+}
+
+func MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	return _MultiBurst(e, ts, resultPath, params, []string{"a", "b"})
+}
+
+// Send two bursts in parallel
+func _MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap, runs []string) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -330,17 +358,26 @@ func Burst(e *Executor, ts time.Time, resultPath string, params ParamMap) error 
 			slog.Info(fmt.Sprintf("Only executing %v/%v %v tests", i, len(args), direction))
 			break
 		}
-		e.RunClient(&pkg.SenderClient{
-			IP:        e.IP,
-			Out:       filepath.Join(resultPath, fmt.Sprintf("burst_%v_%04d_%04d.csv", direction.StringLower(), num, pad)),
-			Direction: direction,
-			StartAt:   start,
-			Sender: &pkg.BurstSender{Params: pkg.BurstParams{
-				Timeout: 4 * time.Second,
-				Num:     num,
-				Pad:     pad,
-			}},
-		})
+		for run := range runs {
+			// Single or multiple parallel bursts?
+			var filename string
+			if len(runs) == 1 {
+				filename = fmt.Sprintf("burst_%v_%04d_%04d.csv", direction.StringLower(), num, pad)
+			} else {
+				filename = fmt.Sprintf("burst_%v_%04d_%04d_%v.csv", direction.StringLower(), num, pad, run)
+			}
+			e.RunClient(&pkg.SenderClient{
+				IP:        e.IP,
+				Out:       filepath.Join(resultPath, filename),
+				Direction: direction,
+				StartAt:   start,
+				Sender: &pkg.BurstSender{Params: pkg.BurstParams{
+					Timeout: 4 * time.Second,
+					Num:     num,
+					Pad:     pad,
+				}},
+			})
+		}
 
 		start = start.Add(gap)
 	}
@@ -863,6 +900,17 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
 	}
 
+	// ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.CUBIC_NO_HYSTART, pkg.BBR1}
+	ccas := pkg.TCPCCAS
+	if _, ok := params["ccas"]; ok {
+		var err error
+		ccas, err = params.TCPCCAs("ccas")
+		if err != nil {
+			slog.Error("parse tcpccas", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	gap := 1000 * time.Millisecond
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
@@ -878,11 +926,7 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 		}
 	}
 
-	// Tuple of CCA and enableHystart
-	// ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.CUBIC_NO_HYSTART, pkg.BBR1}
-	ccas := pkg.TCPCCAS
 	ccaIdxs := makeRange(0, uint(len(ccas)))
-
 	args := cartesian.Product(durationsMs, ccaIdxs)
 
 	for _, idx := range rand.Perm(len(args)) {
@@ -926,6 +970,16 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
 	}
 
+	ccas := pkg.TCPCCAS
+	if _, ok := params["ccas"]; ok {
+		var err error
+		ccas, err = params.TCPCCAs("ccas")
+		if err != nil {
+			slog.Error("parse tcpccas", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	durationMs := 6000
 	duration := time.Duration(durationMs) * time.Millisecond
 	start := ts.Add(-duration / 2)
@@ -957,7 +1011,7 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 			}}},
 		})
 	} else {
-		cca := pkg.TCPCCAS[idx]
+		cca := ccas[idx]
 		e.RunClient(&pkg.SenderClient{
 			IP: e.IP,
 			Out: filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv",
