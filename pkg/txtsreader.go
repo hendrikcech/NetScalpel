@@ -162,14 +162,19 @@ func selectMsgsSent(ctx context.Context, reader *TxTsReader, cancelReader contex
 	}
 	cancelReader()
 	slog.DebugContext(ctx, "selectMsgsSent: waiting on TxTsReader.C")
+	var selectedMsgs []MsgSent
 	tsMsgs := <-reader.C
 	if len(sentMsgs) != len(tsMsgs) {
-		slog.ErrorContext(ctx, fmt.Sprintf("run function returned %v, txTsReader %v msgs",
+		// Something went wrong with txTsReader: it does for example not work reliably within containers
+		slog.ErrorContext(ctx, fmt.Sprintf("run function returned %v, txTsReader %v msgs -> using timestamps from run function",
 			len(sentMsgs), len(tsMsgs)))
+		selectedMsgs = sentMsgs
+	} else {
+		for i := range tsMsgs {
+			tsMsgs[i].Len = sentMsgs[0].Len
+		}
+		selectedMsgs = tsMsgs
+		slog.DebugContext(ctx, "selectMsgsSent: returning with txTsReader infos")
 	}
-	for i := range tsMsgs {
-		tsMsgs[i].Len = sentMsgs[0].Len
-	}
-	slog.DebugContext(ctx, "selectMsgsSent: returning with tsMsgs")
-	return tsMsgs
+	return selectedMsgs
 }
