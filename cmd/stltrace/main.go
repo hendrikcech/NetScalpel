@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"math"
@@ -13,28 +12,15 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/alecthomas/kong"
+
 	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
 )
 
 func main() {
-	clientCmd := flag.NewFlagSet("client", flag.ExitOnError)
-	clientIP := clientCmd.String("ip", "", "server ip")
-	clientPort := clientCmd.Uint("port", 8500, "server port")
-	clientResults := clientCmd.String("results", "results", "path to results folder")
-	clientRounds := clientCmd.Uint("rounds", 1, "number of measurement rounds to run; 0 = infinite")
-	clientProcedure := clientCmd.String("procedure", "", "test procedure")
-	clientParams := clientCmd.String("params", "", "semicolon-separated key=value pairs passed to procedure")
-	clientProfile := clientCmd.String("profile", "", "write pprof to file")
-	clientLog := clientCmd.String("log", "", "write all log output to this file")
-
-	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
-	serverIP := serverCmd.String("ip", "0.0.0.0", "ip")
-	serverPort := serverCmd.Uint("port", 8500, "port")
-	serverProfile := serverCmd.String("profile", "", "write pprof to file")
-	serverLog := serverCmd.String("log", "", "write all log output to this file")
-
-	if len(os.Args) < 2 {
-		fmt.Println("expected 'client' or 'server' subcommands")
+	kongctx := kong.Parse(&cli)
+	if kongctx.Error != nil {
+		fmt.Printf("kong error: %v\n", kongctx.Error.Error())
 		os.Exit(1)
 	}
 
@@ -47,29 +33,38 @@ func main() {
 	signalC := make(chan os.Signal, 1)
 	signal.Notify(signalC, syscall.SIGINT, syscall.SIGTERM)
 
-	go dumpOnSig()
+	// go dumpOnSig()
 
-	switch os.Args[1] {
+	var logfile *os.File
+	if cli.Log != "" {
+		var err error
+		if logfile, err = os.Create(cli.Log); err != nil {
+			slog.ErrorContext(ctx, "Failed opening logfile", "path", cli.Log, "error", err)
+			os.Exit(1)
+		}
+		defer logfile.Close()
+	}
+
+	// createProfile(cli.Profile)
+	// defer pprof.StopCPUProfile()
+
+	switch kongctx.Command() {
 	case "client":
-		clientCmd.Parse(os.Args[2:])
-		if *clientIP == "" {
-			fmt.Println("expected -ip")
+		if cli.IP == "0.0.0.0" || cli.IP == "" {
+			fmt.Println("Expected server --ip")
 			os.Exit(1)
 		}
 
-		if *clientPort == 0 {
-			fmt.Println("expected -port")
+		if cli.Port == 0 {
+			fmt.Println("expected --port")
 			os.Exit(1)
 		}
 
-		if *clientRounds == 0 {
-			*clientRounds = math.MaxUint
+		if cli.Client.Rounds == 0 {
+			cli.Client.Rounds = math.MaxUint
 		}
 
-		createProfile(*clientProfile)
-		defer pprof.StopCPUProfile()
-
-		params, err := parseParams(*clientParams)
+		params, err := parseParams(cli.Client.Params)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed parsing params", "error", err)
 			os.Exit(1)
@@ -81,45 +76,21 @@ func main() {
 			ctxCancel()
 		}()
 
-		var logfile *os.File
-		if *clientLog != "" {
-			var err error
-			if logfile, err = os.Create(*clientLog); err != nil {
-				slog.ErrorContext(ctx, "Failed opening client logfile", "path", *clientLog, "error", err)
-				os.Exit(1)
-			}
-			defer logfile.Close()
-		}
-
 		client := Client{
-			IP:        *clientIP,
-			Port:      *clientPort,
-			Results:   *clientResults,
-			Rounds:    *clientRounds,
-			Procedure: *clientProcedure,
+			IP:        cli.IP,
+			Port:      cli.Port,
+			Results:   cli.Client.Results,
+			Rounds:    cli.Client.Rounds,
+			Procedure: cli.Client.Procedure,
 			Params:    params,
 			Logfile:   logfile,
 		}
 		client.Run(ctx)
 
 	case "server":
-		serverCmd.Parse(os.Args[2:])
-
-		var logfile *os.File
-		if *serverLog != "" {
-			var err error
-			if logfile, err = os.Create(*serverLog); err != nil {
-				slog.ErrorContext(ctx, "Failed opening server logfile", "path", *serverLog, "error", err)
-				os.Exit(1)
-			}
-			defer logfile.Close()
-		}
 		slogCh := pkg.SetupSlogMulti(true, logfile)
 
-		createProfile(*serverProfile)
-		defer pprof.StopCPUProfile()
-
-		s := pkg.RunServer(ctx, *serverIP, *serverPort, slogCh)
+		s := pkg.RunServer(ctx, cli.IP, cli.Port, slogCh)
 
 		sig := <-signalC
 		slog.InfoContext(ctx, "Stopping server", "signal", sig)
@@ -146,8 +117,7 @@ func main() {
 		fmt.Print(b.String())
 
 	default:
-		fmt.Println("expected 'client', 'server', or 'procedures' subcommand")
-		os.Exit(1)
+		panic(kongctx.Command())
 	}
 }
 
