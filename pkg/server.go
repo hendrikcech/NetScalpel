@@ -145,6 +145,15 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 		laddr = ln.Addr()
 		reply.Port = uint(laddr.(*net.TCPAddr).Port)
 		go s.handleRequestServerTCP(ctx, ln, args)
+	case ICMP:
+		conn, err := listenICMP(ctx)
+		if err != nil {
+			return logErrContext(ctx, "listenICMP failed: %v", err.Error())
+		}
+		go s.handleRequestServerICMP(ctx, conn, args)
+
+	default:
+		panic("socket type not implemented")
 	}
 
 	slog.InfoContext(ctx, "RequestServer", "args", args, "reply", reply, "localAddr", laddr)
@@ -234,6 +243,46 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 		slog.ErrorContext(ctx, "RequestServerTCP: unknown mode", "mode", args.ServerMode)
 		result.Err = fmt.Errorf("RequestServerTCP: unknown mode %v", args.ServerMode)
 		return
+	}
+}
+
+func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, args RequestServerArgs) {
+	defer conn.Close()
+
+	var result Result
+
+	defer func() {
+		s.resultLock.Lock()
+		s.resultC[args.ID] <- &result
+		close(s.resultC[args.ID])
+		s.resultLock.Unlock()
+	}()
+
+	var sender Sender
+	var receiver Receiver
+	switch args.ServerMode {
+	case SendICMP:
+		sender = &ICMPSender{Params: args.Params.(ICMPParams)}
+	case ReceiveICMP:
+		receiver = &ICMPReceiver{}
+	default:
+		slog.ErrorContext(ctx, "RequestServer: unknown mode", "mode", args.ServerMode)
+		result.Err = fmt.Errorf("RequestServer: unknown mode %v", args.ServerMode)
+		return
+	}
+
+	if sender != nil {
+		// TODO: could try to wait for an ICMP probe
+		// raddr, err := waitForUDPProbe(ctx, conn)
+		// if err != nil {
+		// 	slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
+		// 	result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
+		// 	return
+		// }
+		result.Res, result.Err = handleSender(ctx, conn, args, sender, nil)
+	} else {
+		ln := NewDummyListener(conn, conn.LocalAddr())
+		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
 	}
 }
 

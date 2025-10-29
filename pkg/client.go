@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"golang.org/x/net/icmp"
 	"log/slog"
 	"net"
 	"net/rpc"
@@ -82,14 +83,11 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
 
-	if args.ServerMode.SocketType() != UDP && args.ServerMode.SocketType() != TCP {
-		panic("Unknown SocketType")
-	}
-
 	var conn net.Conn
 	var raddr net.Addr
 	var err error
-	if args.ServerMode.SocketType() == UDP {
+	switch args.ServerMode.SocketType() {
+	case UDP:
 		if raddr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
 			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 		}
@@ -97,7 +95,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		if conn, err = listenUDP(ctx); err != nil {
 			return fmt.Errorf("listenUDP failed: %v", err.Error())
 		}
-	} else if args.ServerMode.SocketType() == TCP {
+	case TCP:
 		// TCP Handshake is performed before the test starts
 		if raddr, err = net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
 			return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
@@ -105,6 +103,21 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		if conn, err = net.DialTCP("tcp", nil, raddr.(*net.TCPAddr)); err != nil {
 			return fmt.Errorf("net.DialTCP failed: %v", err.Error())
 		}
+	case ICMP:
+		// ICMP PacketConn WriteTo expects an udp address
+		if raddr, err = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%v", c.IP, "0")); err != nil {
+			return fmt.Errorf("Failed resolving provided addr for ICMP: %v", err.Error())
+		}
+
+		// Use datagram socket for ICMP packets to make it work without privileges
+		var icmpConn *icmp.PacketConn
+		if icmpConn, err = icmp.ListenPacket("udp4", c.IP); err != nil {
+			return fmt.Errorf("icmp.ListenPacket failed to create ICMP connection: %w", err)
+		}
+		conn = &ICMPMockConn{conn: icmpConn}
+		slog.Debug("Dialed IP")
+	default:
+		panic("socket type not implemented")
 	}
 	defer func() {
 		slog.DebugContext(ctx, "Closing conn")
@@ -364,7 +377,19 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		if err := writeCSV(c.Out, sndrRows); err != nil {
 			return fmt.Errorf("writeCSV failed: %v", err.Error())
 		}
+	case ICMP:
+		// TODO: change naming or merge strategy?
+		c.UDPResults = processUDP(c.UDPMsgsSent, c.UDPMsgsRcvd)
+		rows := generateUDPResultRows(c.UDPResults)
+		slog.DebugContext(ctx, "Results", "MSGSSENT", c.UDPMsgsSent, "MSGSRCVD",
+			c.UDPMsgsRcvd, "RESULTS", c.UDPResults)
+		if err := writeCSV(c.Out, rows); err != nil {
+			return fmt.Errorf("writeCSV failed: %v", err.Error())
+		}
+	default:
+		panic("Unknown SocketType")
 	}
+
 	return nil
 }
 
@@ -377,8 +402,9 @@ func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
 	num := uint64(len(sent))
 	results := make([]MsgResult, 0, num)
 	for seq := uint64(0); seq < num; seq++ {
+		// slog.Debug("STA", "seq", seq, "rcvdSeq", rcvd[resultIdx].Seq, "resultIdx", resultIdx)
 		var result MsgResult
-		if resultIdx > len(rcvd)-1 || seq != rcvd[resultIdx].Seq {
+		if resultIdx > len(rcvd)-1 || seq < rcvd[resultIdx].Seq {
 			result = MsgResult{
 				Seq:    seq,
 				TsSent: sent[seq].TsSent,
@@ -387,6 +413,14 @@ func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
 				Len:    sent[seq].Len,
 				Lost:   true,
 			}
+		} else if seq > rcvd[resultIdx].Seq {
+			for resultIdx < len(rcvd) && seq > rcvd[resultIdx].Seq {
+				slog.Warn("Received duplicate packet", "seq", rcvd[resultIdx].Seq)
+				resultIdx += 1
+				// slog.Debug("DUP", "seq", seq, "rcvdSeq", rcvd[resultIdx].Seq, "resultIdx", resultIdx)
+			}
+			seq -= 1
+			continue
 		} else if seq == rcvd[resultIdx].Seq {
 			tsSent := sent[seq].TsSent
 			result = MsgResult{
@@ -400,6 +434,11 @@ func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
 			resultIdx += 1
 		}
 		results = append(results, result)
+		// rcvdSeq := -1
+		// if resultIdx < len(rcvd) {
+		// 	rcvdSeq = int(rcvd[resultIdx].Seq)
+		// }
+		// slog.Debug("ROW", "seq", seq, "rcvdSeq", rcvdSeq, "resultIdx", resultIdx, "result", result)
 	}
 
 	return results

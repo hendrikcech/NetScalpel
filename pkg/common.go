@@ -39,6 +39,7 @@ func RegisterGob() {
 	gob.Register(tcpinfo.WindowScale(0))
 	gob.Register(tcpinfo.SACKPermitted(false))
 	gob.Register(tcpinfo.Timestamps(false))
+	gob.Register(ICMPParams{})
 }
 
 // UDP packet
@@ -93,12 +94,16 @@ func listenTCP(ctx context.Context) (*net.TCPListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("net.ResolveTCPAddr failed: %v", err.Error())
 	}
-
-	ln, err := net.ListenTCP("tcp", addr)
-
 	// TODO: set socket buffers?
+	return net.ListenTCP("tcp", addr)
+}
 
-	return ln, nil
+func listenICMP(ctx context.Context) (*net.IPConn, error) {
+	addr, err := net.ResolveIPAddr("ip4", "0.0.0.0")
+	if err != nil {
+		return nil, fmt.Errorf("net.ResolveIPAddr failed: %v", err.Error())
+	}
+	return net.ListenIP("ip4:icmp", addr)
 }
 
 func RandPath(suffix string) string {

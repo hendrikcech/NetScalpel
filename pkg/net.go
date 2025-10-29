@@ -34,6 +34,8 @@ const (
 	SendQUIC
 	ReceiveTCP
 	SendTCP
+	ReceiveICMP
+	SendICMP
 )
 
 var NetModes = []Mode{
@@ -45,6 +47,8 @@ var NetModes = []Mode{
 	SendQUIC,
 	ReceiveTCP,
 	SendTCP,
+	ReceiveICMP,
+	SendICMP,
 }
 
 func (m Mode) String() string {
@@ -65,6 +69,10 @@ func (m Mode) String() string {
 		return "receiveTCP"
 	case SendTCP:
 		return "sendTCP"
+	case ReceiveICMP:
+		return "receiveICMP"
+	case SendICMP:
+		return "sendICMP"
 	default:
 		panic(fmt.Sprintf("Unknown Mode '%d'", m))
 	}
@@ -75,6 +83,7 @@ type SocketType int
 const (
 	UDP SocketType = iota
 	TCP
+	ICMP
 )
 
 func (m Mode) SocketType() SocketType {
@@ -83,6 +92,8 @@ func (m Mode) SocketType() SocketType {
 		return UDP
 	case ReceiveTCP, SendTCP:
 		return TCP
+	case ReceiveICMP, SendICMP:
+		return ICMP
 	default:
 		panic(fmt.Sprintf("Unknown Mode '%d'", m))
 	}

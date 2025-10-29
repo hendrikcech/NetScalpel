@@ -21,6 +21,7 @@ var cli struct {
 	Port      uint   `help:"Server port." default:"8500"`
 	Direction string `help:"Direction: UL or DL." default:"ul" enum:"dl,ul,DL,UL"`
 	Log       string `help:"Write debug log to this file."`
+	LogLevel  int    `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
 	Out       string `help:"CSV file to write results to (default: stdout)."`
 
 	UDPBurst struct {
@@ -46,6 +47,11 @@ var cli struct {
 		CCA      string `help:"Use a specific congestion controller algorithm." default:"cubic"`
 	} `cmd:"" help:"Send TCP at a constant interval. Both duration and bytes can be specified."`
 
+	ICMP struct {
+		Interval uint `help:"Time between ICMP echo requests in ms." default:"100"`
+		Duration uint `help:"Duration in ms." default:"1000"`
+	} `cmd:"" help:"Send ICMP echo requests at a constant interval."`
+
 	Server struct{} `cmd:"" help:"Run in server mode."`
 }
 
@@ -67,7 +73,7 @@ func main() {
 		defer slogFile.Close()
 		pkg.SetupSlogMulti(false, slogFile)
 	} else {
-		pkg.SetupSlogBasic(slog.LevelInfo)
+		pkg.SetupSlogBasic(slog.Level(cli.LogLevel))
 	}
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
@@ -138,6 +144,11 @@ func main() {
 			Bytes:     cli.TCP.Bytes,
 			CCA:       cca,
 		}}
+	case "icmp":
+		client.Sender = &pkg.ICMPSender{Params: pkg.ICMPParams{
+			Interval:  time.Duration(cli.ICMP.Interval) * time.Millisecond,
+			Duration_: time.Duration(cli.ICMP.Duration) * time.Millisecond,
+		}}
 	default:
 		panic(kongctx.Command())
 	}
@@ -145,11 +156,11 @@ func main() {
 	rpcClient := dialRpcClient(cli.IP, cli.Port)
 	defer rpcClient.Close()
 	if err := client.Run(ctx, rpcClient); err != nil {
-		println(err)
+		fmt.Printf("Run error: %v\n", err)
 		os.Exit(1)
 	}
 	if err := client.Gather(ctx, rpcClient); err != nil {
-		println(err)
+		fmt.Printf("Gather error: %v\n", err)
 		os.Exit(1)
 	}
 

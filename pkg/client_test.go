@@ -347,6 +347,21 @@ func TestTCPDLBBR(t *testing.T) {
 	testSender(t, &client)
 }
 
+func TestICMPUL(t *testing.T) {
+	t.Skip()
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: UL,
+
+		Sender: &ICMPSender{Params: ICMPParams{
+			Duration_: time.Duration(2) * time.Second,
+			Interval:  time.Duration(400) * time.Millisecond,
+		}},
+	}
+	testSender(t, &client)
+}
+
 // ---
 
 func testSender(t *testing.T, c *SenderClient) {
@@ -414,6 +429,24 @@ func testSender(t *testing.T, c *SenderClient) {
 		if len(c.TCPMetricsRcvr) == 0 {
 			t.Errorf("c.TCPMetricsRcvr is empty")
 		}
+
+	case ICMP:
+		if len(c.UDPMsgsSent) != len(c.UDPMsgsRcvd) {
+			t.Errorf("Not all messages were received: %v != %v", len(c.UDPMsgsSent), len(c.UDPMsgsRcvd))
+		}
+
+		for i, msg := range c.UDPMsgsSent {
+			if msg.Seq != uint64(i) {
+				t.Errorf("expected seq %v, got %v in UDPMsgsSent", i, msg.Seq)
+			}
+		}
+
+		for i, msg := range c.UDPMsgsRcvd {
+			if msg.Seq != uint64(i) {
+				t.Errorf("expected seq %v, got %v in UDPMsgsRcvd", i, msg.Seq)
+			}
+		}
+
 	default:
 		panic("Unknown SocketType")
 	}
@@ -465,4 +498,112 @@ func testRunCommandTcpdump(t *testing.T, local bool) {
 	if err := client.Run(ctxC, rpcClient); err != nil {
 		t.Fatalf("RunCommand(Tcpdump) failed: %v", err)
 	}
+}
+
+// ----
+func checkProcessUDP(t *testing.T, exp []MsgResult, res []MsgResult) {
+	if len(exp) != len(res) {
+		t.Fatalf("Wrong result length")
+	}
+
+	for i := range exp {
+		if exp[i].Seq != res[i].Seq {
+			t.Fatalf("Wrong sequence number")
+		}
+		if exp[i].Lost != res[i].Lost {
+			t.Fatalf("Wrong loss status")
+		}
+	}
+}
+
+func TestProcessUDPSimple(t *testing.T) {
+	// ts := time.Now()
+	sent := []MsgSent{
+		MsgSent{Seq: 0},
+		MsgSent{Seq: 1},
+		MsgSent{Seq: 2},
+		MsgSent{Seq: 3},
+		MsgSent{Seq: 4},
+		MsgSent{Seq: 5},
+	}
+	rcvd := []MsgRcvd{
+		MsgRcvd{Seq: 0},
+		MsgRcvd{Seq: 1},
+		MsgRcvd{Seq: 2},
+		MsgRcvd{Seq: 3},
+		MsgRcvd{Seq: 4},
+		MsgRcvd{Seq: 5},
+	}
+	exp := []MsgResult{
+		MsgResult{Seq: 0},
+		MsgResult{Seq: 1},
+		MsgResult{Seq: 2},
+		MsgResult{Seq: 3},
+		MsgResult{Seq: 4},
+		MsgResult{Seq: 5},
+	}
+	res := processUDP(sent, rcvd)
+	checkProcessUDP(t, exp, res)
+}
+
+func TestProcessUDPLoss(t *testing.T) {
+	// ts := time.Now()
+	sent := []MsgSent{
+		MsgSent{Seq: 0},
+		MsgSent{Seq: 1},
+		MsgSent{Seq: 2},
+		MsgSent{Seq: 3},
+		MsgSent{Seq: 4},
+		MsgSent{Seq: 5},
+	}
+	rcvd := []MsgRcvd{
+		MsgRcvd{Seq: 0},
+		MsgRcvd{Seq: 1},
+		MsgRcvd{Seq: 3},
+		MsgRcvd{Seq: 4},
+		MsgRcvd{Seq: 5},
+	}
+	exp := []MsgResult{
+		MsgResult{Seq: 0},
+		MsgResult{Seq: 1},
+		MsgResult{Seq: 2, Lost: true},
+		MsgResult{Seq: 3},
+		MsgResult{Seq: 4},
+		MsgResult{Seq: 5},
+	}
+	res := processUDP(sent, rcvd)
+	checkProcessUDP(t, exp, res)
+}
+
+func TestProcessUDPDup(t *testing.T) {
+	// ts := time.Now()
+	sent := []MsgSent{
+		MsgSent{Seq: 0},
+		MsgSent{Seq: 1},
+		MsgSent{Seq: 2},
+		MsgSent{Seq: 3},
+		MsgSent{Seq: 4},
+		MsgSent{Seq: 5},
+	}
+	rcvd := []MsgRcvd{
+		MsgRcvd{Seq: 0},
+		MsgRcvd{Seq: 1},
+		MsgRcvd{Seq: 1},
+		MsgRcvd{Seq: 2},
+		MsgRcvd{Seq: 3},
+		MsgRcvd{Seq: 3},
+		MsgRcvd{Seq: 3},
+		MsgRcvd{Seq: 4},
+		MsgRcvd{Seq: 5},
+	}
+	exp := []MsgResult{
+		MsgResult{Seq: 0},
+		MsgResult{Seq: 1},
+		MsgResult{Seq: 2},
+		MsgResult{Seq: 3},
+		MsgResult{Seq: 4},
+		MsgResult{Seq: 5},
+	}
+	res := processUDP(sent, rcvd)
+	checkProcessUDP(t, exp, res)
 }
