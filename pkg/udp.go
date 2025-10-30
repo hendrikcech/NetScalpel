@@ -71,6 +71,7 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 	}
 
 	// conn ReadDeadline must be set, otherwise this function never returns
+	// msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
 	msgs := make([]MsgRcvd, 0, 1024)
 
 	// batch size
@@ -244,6 +245,9 @@ func (s *BurstSender) run(ctx context.Context, conn net.Conn, raddr net.Addr) ([
 				"sentN", sentN, "left", left)
 		}
 		if err != nil {
+			if e, ok := err.(net.Error); ok && e.Timeout() {
+				return msgsSent, nil
+			}
 			return nil, err
 		}
 		if n != int(numRound) {
@@ -330,6 +334,9 @@ func (r *PeriodicSender) run(ctx context.Context, conn net.Conn, raddr net.Addr)
 
 			nConn, err := udpConn.WriteTo(read, raddr)
 			if err != nil {
+				if e, ok := err.(net.Error); ok && e.Timeout() {
+					return msgsSent, nil
+				}
 				return nil, err
 			}
 			if nConn != len(read) {
@@ -519,6 +526,9 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 
 		n, err := conn.SendMsgs(r.tx[:packetsRound], 0)
 		if err != nil {
+			if e, ok := err.(net.Error); ok && e.Timeout() {
+				return sent, nil
+			}
 			return sent, err
 		}
 		if n < 0 {
