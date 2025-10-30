@@ -86,6 +86,7 @@ func (r *ICMPReceiver) receive(ctx context.Context, conn net.Conn) ([]MsgRcvd, e
 			continue
 		}
 
+		// slog.DebugContext(ctx, "rcvd echo", "echoID", body.ID, "dataEchoID", echoID, "punch", punch)
 		if punch {
 			// slog.DebugContext(ctx, "Received ICMP hole punch packet")
 			continue
@@ -95,8 +96,6 @@ func (r *ICMPReceiver) receive(ctx context.Context, conn net.Conn) ([]MsgRcvd, e
 			slog.WarnContext(ctx, "Received ICMP Echo with wrong ID in data", "exp", r.ClientEchoID, "id", body.ID)
 			continue
 		}
-
-		// slog.DebugContext(ctx, "rcvd echo", "msg", msg, "body", body)
 
 		// Track how many were received since we last increased baseSeq. Once we
 		// have received more than half of the ICMP seqnum space, we will
@@ -211,7 +210,7 @@ func (s *ICMPSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, se
 		}
 		return msgSent, fmt.Errorf("failed to send ICMP message: %w", err)
 	}
-	// slog.DebugContext(ctx, "sent echo", "msg", msg, "body", msg.Body, "echoID", s.Params.SenderEchoID, "dataEchoID", s.Params.ClientEchoID)
+	// slog.DebugContext(ctx, "sent echo", "echoID", s.Params.SenderEchoID, "dataEchoID", s.Params.ClientEchoID, "punch", s.Params.punch)
 	return msgSent, nil
 }
 

@@ -276,7 +276,6 @@ func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, 
 		}
 		icmpParams.SenderEchoID = echoID
 		args.Params = icmpParams
-		slog.DebugContext(ctx, "Staring ICMPSender", "params", args.Params)
 		sender := &ICMPSender{
 			Params: args.Params.(ICMPParams),
 		}
@@ -312,6 +311,7 @@ func handleSender(ctx context.Context, conn net.Conn, args RequestServerArgs, se
 
 	sendCtx, sendCancel := context.WithTimeout(ctx, args.Params.GetDuration())
 	defer sendCancel()
+	slog.DebugContext(ctx, "Calling sender.Run")
 	res, err := sender.Run(sendCtx, conn, raddr)
 	slog.DebugContext(ctx, "Finished handleSender", "remoteAddr", raddr)
 	return res, err

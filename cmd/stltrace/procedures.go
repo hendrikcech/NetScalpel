@@ -287,7 +287,7 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 				os.Exit(1)
 			}
 		} else {
-			ratesMbps = []uint{70}
+			ratesMbps = []uint{10, 70}
 		}
 	} else {
 		if _, ok := params["ratesDL"]; ok {
@@ -297,7 +297,7 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 				os.Exit(1)
 			}
 		} else {
-			ratesMbps = []uint{700}
+			ratesMbps = []uint{50, 700}
 		}
 	}
 
@@ -315,6 +315,29 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 			Duration:    duration,
 			PayloadSize: 1400,
 		}}},
+	})
+	e.RunClient(&pkg.SenderClient{
+		IP: e.IP,
+		Out: filepath.Join(resultPath, fmt.Sprintf("owd-icmp_%v_%03d_%04d.csv",
+			direction.StringLower(), rateMbps, durationMs)),
+		Direction: direction,
+		StartAt:   start,
+		Sender: &pkg.ICMPSender{Params: pkg.ICMPParams{
+			Interval:  time.Millisecond,
+			Duration_: duration,
+		}},
+	})
+	e.RunClient(&pkg.SenderClient{
+		IP: e.IP,
+		Out: filepath.Join(resultPath, fmt.Sprintf("owd-udp_%v_%03d_%04d.csv",
+			direction.StringLower(), rateMbps, durationMs)),
+		Direction: direction,
+		StartAt:   start,
+		Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+			Interval: time.Millisecond,
+			Duration: duration,
+			Pad:      0,
+		}},
 	})
 
 	e.tcpdump(resultPath, start.Add(-time.Second), 5*time.Second)
@@ -1055,21 +1078,33 @@ func MeasOWD(e *Executor, ts time.Time, resultPath string, params ParamMap) erro
 		duration = time.Duration(value) * time.Millisecond
 	}
 
+	interval := 1 * time.Millisecond
+
 	for _, direction := range directions {
 		e.RunClient(&pkg.SenderClient{
 			IP:        e.IP,
-			Out:       filepath.Join(resultPath, fmt.Sprintf("owd_%v.csv", direction.StringLower())),
+			Out:       filepath.Join(resultPath, fmt.Sprintf("owd-udp_%v.csv", direction.StringLower())),
 			Direction: direction,
 			StartAt:   start,
 			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
-				Interval: 1 * time.Millisecond,
+				Interval: interval,
 				Duration: duration,
 				Pad:      0,
 			}},
 		})
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("owd-icmp_%v.csv", direction.StringLower())),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.ICMPSender{Params: pkg.ICMPParams{
+				Interval:  interval,
+				Duration_: duration,
+			}},
+		})
 	}
 
-	// e.tcpdump(resultPath, ts, duration+time.Second)
+	e.tcpdump(resultPath, ts, 5*time.Second+duration+2*time.Second)
 
 	return nil
 }
@@ -1110,6 +1145,27 @@ func MeasRate(e *Executor, ts time.Time, resultPath string, params ParamMap) err
 				Duration:    duration,
 				PayloadSize: 1400,
 			}}},
+		})
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("owd-icmp_%v.csv", direction.StringLower())),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.ICMPSender{Params: pkg.ICMPParams{
+				Interval:  time.Millisecond,
+				Duration_: duration,
+			}},
+		})
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("owd-udp_%v.csv", direction.StringLower())),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+				Interval: time.Millisecond,
+				Duration: duration,
+				Pad:      0,
+			}},
 		})
 	}
 

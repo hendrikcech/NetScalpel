@@ -26,7 +26,7 @@ func main() {
 
 	pkg.RegisterGob()
 
-	pkg.SetupSlogBasic(slog.LevelInfo)
+	pkg.SetupSlogBasic(slog.Level(cli.LogLevel))
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
@@ -83,12 +83,13 @@ func main() {
 			Rounds:    cli.Client.Rounds,
 			Procedure: cli.Client.Procedure,
 			Params:    params,
+			LogLevel:  slog.Level(cli.LogLevel),
 			Logfile:   logfile,
 		}
 		client.Run(ctx)
 
 	case "server":
-		slogCh := pkg.SetupSlogMulti(true, logfile)
+		slogCh := pkg.SetupSlogMulti(slog.Level(cli.LogLevel), true, logfile)
 
 		s := pkg.RunServer(ctx, cli.IP, cli.Port, slogCh)
 

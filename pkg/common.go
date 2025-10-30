@@ -262,7 +262,7 @@ func SetupSlogBasic(level slog.Level) {
 	slog.SetDefault(log)
 }
 
-func SetupSlogMulti(createChan bool, fs ...*os.File) *chan *slog.Record {
+func SetupSlogMulti(stdoutLevel slog.Level, createChan bool, fs ...*os.File) *chan *slog.Record {
 	var handlers []slog.Handler
 
 	for i := range fs {
@@ -281,7 +281,7 @@ func SetupSlogMulti(createChan bool, fs ...*os.File) *chan *slog.Record {
 
 	stdHandler := SlogContextHandler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		AddSource: false,
-		Level:     slog.LevelInfo,
+		Level:     stdoutLevel,
 	}), []any{
 		SlogIDKey{},
 	}}

@@ -22,6 +22,7 @@ type Client struct {
 	Procedure string
 	Params    map[string]any
 
+	LogLevel slog.Level
 	// Permanent log file supplied by the caller. Needs to be closed by the caller.
 	Logfile *os.File
 
@@ -140,7 +141,7 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) {
 		}
 	}
 
-	pkg.SetupSlogMulti(false, c.slogFile, c.Logfile)
+	pkg.SetupSlogMulti(c.LogLevel, false, c.slogFile, c.Logfile)
 }
 
 func (c *Client) WriteServerLog(path string, rpcClient *rpc.Client) error {

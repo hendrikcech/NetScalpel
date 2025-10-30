@@ -71,7 +71,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer slogFile.Close()
-		pkg.SetupSlogMulti(false, slogFile)
+		pkg.SetupSlogMulti(slog.Level(cli.LogLevel), false, slogFile)
 	} else {
 		pkg.SetupSlogBasic(slog.Level(cli.LogLevel))
 	}

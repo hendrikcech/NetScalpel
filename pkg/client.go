@@ -297,13 +297,11 @@ func (c *SenderClient) runDLICMP(ctx context.Context, echoID uint16, timeout tim
 	}
 	receiver.Init()
 
-	if err := waitUntil(ctx, c.StartAt); err != nil {
-		return err
-	}
-
+	slog.DebugContext(ctx, "Start ICMP puncher")
 	// Send one ICMP request per second to keep the NAT hole open
+	// Must start before the test will start to keep NAT open!
 	puncher := ICMPSender{Params: ICMPParams{
-		Duration_:    timeout,
+		Duration_:    time.Until(c.StartAt) + timeout,
 		Interval:     1 * time.Second,
 		ClientEchoID: echoID,
 		SenderEchoID: echoID,
@@ -315,6 +313,10 @@ func (c *SenderClient) runDLICMP(ctx context.Context, echoID uint16, timeout tim
 			slog.ErrorContext(ctx, "ICMP puncher failed", "error", err)
 		}
 	}()
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
+	}
 
 	ln := NewDummyListener(conn, conn.LocalAddr())
 	recvCtx, recvCancel := context.WithTimeout(ctx, timeout)
