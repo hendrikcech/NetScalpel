@@ -87,7 +87,7 @@ func (r *ICMPReceiver) receive(ctx context.Context, conn net.Conn) ([]MsgRcvd, e
 		}
 
 		if punch {
-			slog.DebugContext(ctx, "Received ICMP hole punch packet")
+			// slog.DebugContext(ctx, "Received ICMP hole punch packet")
 			continue
 		}
 
@@ -96,7 +96,7 @@ func (r *ICMPReceiver) receive(ctx context.Context, conn net.Conn) ([]MsgRcvd, e
 			continue
 		}
 
-		slog.DebugContext(ctx, "rcvd echo", "msg", msg, "body", body)
+		// slog.DebugContext(ctx, "rcvd echo", "msg", msg, "body", body)
 
 		// Track how many were received since we last increased baseSeq. Once we
 		// have received more than half of the ICMP seqnum space, we will
@@ -127,7 +127,9 @@ type ICMPParams struct {
 	// Set by client: Must be set to: UL -> ICMPTypeEcho, DL -> ipv4.ICMPTypeEchoReply
 	// By default ICMPTypeEchoReply (value 0), i.e., suitable for the server
 	ICMPType ipv4.ICMPType
-	ICMPData []byte
+
+	// Set if packets are for NAT hole punching
+	punch bool
 }
 
 var _ SenderParams = (*ICMPParams)(nil)
@@ -153,12 +155,6 @@ func (s *ICMPSender) GetParams() SenderParams {
 		s.Params.SenderEchoID = s.Params.ClientEchoID
 		slog.Debug("Generated ICMP ClientEchoID", "echoID", s.Params.ClientEchoID)
 	}
-	// TODO: what to do here?
-	// Default ICMPType 0 is ICMPTypeEchoReply -> Correct if server is sending
-	// if !s.icmpTypeSet {
-	// 	s.ICMPType = ipv4.ICMPTypeEcho
-	// 	s.icmpTypeSet = true
-	// }
 	return s.Params
 }
 
@@ -170,7 +166,6 @@ func (s *ICMPSender) ReceiverMode() Mode {
 	return ReceiveICMP
 }
 
-// Runs until ctx is cancelled
 func (s *ICMPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
 	var msgsSent []MsgSent
 
@@ -202,7 +197,7 @@ func (s *ICMPSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, se
 		Body: &icmp.Echo{
 			ID:   int(s.Params.SenderEchoID),
 			Seq:  int(seq % (1 << 16)),
-			Data: makeICMPData(s.Params.ClientEchoID, false),
+			Data: makeICMPData(s.Params.ClientEchoID, s.Params.punch),
 		},
 	}
 	buf, err := msg.Marshal(nil)
@@ -211,24 +206,14 @@ func (s *ICMPSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, se
 		return msgSent, fmt.Errorf("failed to marshal ICMP message: %w", err)
 	}
 	if _, err := conn.(net.PacketConn).WriteTo(buf, raddr); err != nil {
+		if e, ok := err.(net.Error); ok && e.Timeout() {
+			return msgSent, nil
+		}
 		return msgSent, fmt.Errorf("failed to send ICMP message: %w", err)
 	}
-	slog.DebugContext(ctx, "sent echo", "msg", msg, "body", msg.Body, "echoID", s.Params.SenderEchoID, "dataEchoID", s.Params.ClientEchoID)
+	// slog.DebugContext(ctx, "sent echo", "msg", msg, "body", msg.Body, "echoID", s.Params.SenderEchoID, "dataEchoID", s.Params.ClientEchoID)
 	return msgSent, nil
 }
-
-// func sendSingleICMP(ctx context.Context, conn net.Conn, raddr net.Addr, msg icmp.Message) (MsgSent, error) {
-// 	buf, err := msg.Marshal(nil)
-// 	msgSent := MsgSent{Seq: msg.Body.(*icmp.Echo).Seq, TsSent: time.Now(), Len: uint(len(buf))}
-// 	if err != nil {
-// 		return msgSent, fmt.Errorf("failed to marshal ICMP message: %w", err)
-// 	}
-// 	if _, err := conn.(net.PacketConn).WriteTo(buf, raddr); err != nil {
-// 		return msgSent, fmt.Errorf("failed to send ICMP message: %w", err)
-// 	}
-// 	slog.DebugContext(ctx, "sent echo", "msg", echoReq, "body", echoReq.Body)
-// 	return msgSent, nil
-// }
 
 type ICMPMockConn struct {
 	conn *icmp.PacketConn

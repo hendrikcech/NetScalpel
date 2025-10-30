@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/rpc"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -394,6 +395,10 @@ func testSender(t *testing.T, c *SenderClient) {
 	}
 	start := time.Now()
 	if err := c.Run(ctxC, rpcClient); err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			// ICMP server only runs with root
+			t.Skip("Required privileges not available")
+		}
 		t.Fatalf("client.Run failed: %v", err.Error())
 	}
 	if err := c.Gather(ctxC, rpcClient); err != nil {

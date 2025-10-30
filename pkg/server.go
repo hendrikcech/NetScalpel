@@ -275,9 +275,10 @@ func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, 
 			return
 		}
 		icmpParams.SenderEchoID = echoID
-		slog.DebugContext(ctx, "Staring ICMPSender", "params", icmpParams)
+		args.Params = icmpParams
+		slog.DebugContext(ctx, "Staring ICMPSender", "params", args.Params)
 		sender := &ICMPSender{
-			Params: icmpParams,
+			Params: args.Params.(ICMPParams),
 		}
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, raddr)
 	case ReceiveICMP:
