@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 	"log/slog"
 	"net"
 	"net/rpc"
@@ -91,7 +92,6 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		if raddr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
 			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
 		}
-
 		if conn, err = listenUDP(ctx); err != nil {
 			return fmt.Errorf("listenUDP failed: %v", err.Error())
 		}
@@ -104,18 +104,12 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 			return fmt.Errorf("net.DialTCP failed: %v", err.Error())
 		}
 	case ICMP:
-		// ICMP PacketConn WriteTo expects an udp address
-		if raddr, err = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%v", c.IP, "0")); err != nil {
-			return fmt.Errorf("Failed resolving provided addr for ICMP: %v", err.Error())
+		conn, raddr, err = listenICMPClient(ctx, c.IP)
+		if err != nil {
+			return err
 		}
-
-		// Use datagram socket for ICMP packets to make it work without privileges
-		var icmpConn *icmp.PacketConn
-		if icmpConn, err = icmp.ListenPacket("udp4", c.IP); err != nil {
-			return fmt.Errorf("icmp.ListenPacket failed to create ICMP connection: %w", err)
-		}
-		conn = &ICMPMockConn{conn: icmpConn}
-		slog.Debug("Dialed IP")
+		// Code smell. How else could this be solved?
+		c.Sender.(*ICMPSender).Params.ICMPType = ipv4.ICMPTypeEcho
 	default:
 		panic("socket type not implemented")
 	}
@@ -173,6 +167,8 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		return c.runDLUDP(ctx, reply.Port, args.Timeout)
 	case TCP:
 		return c.runDLTCP(ctx, reply.Port, args.Timeout)
+	case ICMP:
+		return c.runDLICMP(ctx, c.Sender.GetParams().(ICMPParams).SenderEchoID, args.Timeout)
 	default:
 		panic("Unknown SocketType")
 	}
@@ -191,7 +187,7 @@ func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Du
 	defer conn.Close()
 	// laddr := conn.LocalAddr().(*net.UDPAddr)
 
-	if err := c.probeUDP(ctx, conn, raddr); err != nil {
+	if err := c.punchUDPHole(ctx, conn, raddr); err != nil {
 		return fmt.Errorf("Return due to failed UDP probing: %v", err.Error())
 	}
 
@@ -256,7 +252,6 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 	defer conn.Close()
 
 	ln := NewDummyListener(conn, conn.LocalAddr())
-
 	if err := waitUntil(ctx, c.StartAt); err != nil {
 		return err
 	}
@@ -280,7 +275,88 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 	return nil
 }
 
-func (c *SenderClient) probeUDP(ctx context.Context, conn *net.UDPConn, raddr net.Addr) error {
+func (c *SenderClient) runDLICMP(ctx context.Context, echoID uint16, timeout time.Duration) error {
+	conn, raddr, err := listenICMPClient(ctx, c.IP)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := c.punchICMPHole(ctx, conn.(net.PacketConn), raddr, echoID); err != nil {
+		return fmt.Errorf("Return due to failed UDP probing: %v", err.Error())
+	}
+
+	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
+	if c.Sender.ReceiverMode() != ReceiveICMP {
+		panic("Unknown ServerMode")
+	}
+
+	receiver := &ICMPReceiver{
+		ClientEchoID: echoID,
+		ICMPType:     ipv4.ICMPTypeEchoReply,
+	}
+	receiver.Init()
+
+	if err := waitUntil(ctx, c.StartAt); err != nil {
+		return err
+	}
+
+	// Send one ICMP request per second to keep the NAT hole open
+	// puncher := ICMPSender{Params: ICMPParams{
+	// 	Duration_: timeout,
+	// 	Interval:  1 * time.Second,
+	// 	EchoID:    echoID,
+	// 	ICMPType:  ipv4.ICMPTypeEcho,
+	// 	ICMPData:  ICMPProbePayload,
+	// }}
+	// go func() {
+	// 	if _, err := puncher.Run(ctx, conn, raddr); err != nil {
+	// 		slog.ErrorContext(ctx, "ICMP puncher failed", "error", err)
+	// 	}
+	// }()
+
+	ln := NewDummyListener(conn, conn.LocalAddr())
+	recvCtx, recvCancel := context.WithTimeout(ctx, timeout)
+	defer recvCancel()
+	res, err := receiver.Run(recvCtx, ln)
+	if err != nil {
+		return fmt.Errorf("Failed ReceiveFrom: %v", err)
+	}
+
+	switch res.(type) {
+	case []MsgRcvd:
+		c.UDPMsgsRcvd = res.([]MsgRcvd)
+	default:
+		panic("Unhandled result type in runDL")
+	}
+
+	slog.InfoContext(ctx, "Finished Run", "packets", len(c.UDPMsgsRcvd))
+
+	return nil
+}
+
+func (c *SenderClient) punchUDPHole(ctx context.Context, conn *net.UDPConn, raddr net.Addr) error {
+	return c.punchHole(ctx, conn, raddr, []byte{})
+}
+
+func (c *SenderClient) punchICMPHole(ctx context.Context, conn net.PacketConn, raddr net.Addr, echoID uint16) error {
+	echoReq := icmp.Message{
+		Type: ipv4.ICMPTypeEcho,
+		Code: 0,
+		Body: &icmp.Echo{
+			ID:   int(echoID),
+			Seq:  0,
+			Data: makeICMPData(echoID, true),
+		},
+	}
+	buf, err := echoReq.Marshal(nil)
+	if err != nil {
+		return fmt.Errorf("Failed to marshal ICMP message: %w", err)
+	}
+	return c.punchHole(ctx, conn, raddr, buf)
+}
+
+func (c *SenderClient) punchHole(ctx context.Context, conn net.PacketConn, raddr net.Addr, payload []byte) error {
 	probeReplyReceived := false
 	maxTry := 5
 	for try := range maxTry {
@@ -290,7 +366,7 @@ func (c *SenderClient) probeUDP(ctx context.Context, conn *net.UDPConn, raddr ne
 			slog.DebugContext(ctx, "Sending NAT probe", "try", try+1, "maxTry", maxTry,
 				"remoteAddr", raddr)
 		}
-		if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
+		if _, err := conn.WriteTo(payload, raddr); err != nil {
 			return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
 		}
 
@@ -358,7 +434,6 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 			c.TCPMetricsSndr = m
 		}
 	default:
-		// panic("Unhandled result type in runUL")
 		slog.ErrorContext(ctx, "Unhandled result type in Gather", "result", res)
 	}
 
@@ -381,8 +456,7 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		// TODO: change naming or merge strategy?
 		c.UDPResults = processUDP(c.UDPMsgsSent, c.UDPMsgsRcvd)
 		rows := generateUDPResultRows(c.UDPResults)
-		slog.DebugContext(ctx, "Results", "MSGSSENT", c.UDPMsgsSent, "MSGSRCVD",
-			c.UDPMsgsRcvd, "RESULTS", c.UDPResults)
+		// slog.DebugContext(ctx, "Results", "MSGSSENT", c.UDPMsgsSent, "MSGSRCVD", c.UDPMsgsRcvd) //, "RESULTS", c.UDPResults)
 		if err := writeCSV(c.Out, rows); err != nil {
 			return fmt.Errorf("writeCSV failed: %v", err.Error())
 		}
@@ -786,4 +860,42 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 
 func (c *CommandClient) Summary() string {
 	return ""
+}
+
+// First try setting up a datagram socket for ICMP packets. This works
+// without root and without additional capabilities if sysctl
+// net.ipv4.ping_group_range != '1 0' (and if it includes the user's
+// group ID). sudo and capabilities don't help if the sysctl setting is
+// wrong.
+//
+// If this fails, we try setting up an ipv4 ICMP socket. This works if
+// the user is root or if the binary is run with the CAP_NET_RAW capability.
+func listenICMPClient(ctx context.Context, ip string) (conn net.Conn, raddr net.Addr, err error) {
+	// ICMP PacketConn WriteTo expects an udp address
+	if raddr, err = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%v", ip, "0")); err != nil {
+		err = fmt.Errorf("Failed resolving provided addr for ICMP: %v", err.Error())
+		return
+	}
+	var icmpConn *icmp.PacketConn
+	if icmpConn, err = icmp.ListenPacket("udp4", "0.0.0.0"); err != nil {
+		slog.DebugContext(ctx, "icmp.ListenPacket failed to create dgram ICMP connecti", "error", err)
+
+		if raddr, err = net.ResolveIPAddr("ip4", ip); err != nil {
+			err = fmt.Errorf("Failed resolving ip4 addr for ICMP: %v", err.Error())
+			return
+		}
+		var laddr *net.IPAddr
+		laddr, err = net.ResolveIPAddr("ip4", "0.0.0.0")
+		if err != nil {
+			err = fmt.Errorf("Failed resolving catch-all ip4 addr for ICMP: %v", err.Error())
+			return
+		}
+		if conn, err = net.ListenIP("ip4:icmp", laddr); err != nil {
+			err = fmt.Errorf("net.ListenIP failed to create raw ICMP connection: %w. Configure net.ipv4.ping_group_range != '1 0', run as root, or with CAP_NET_RAW capability.", err)
+			return
+		}
+	} else {
+		conn = &ICMPMockConn{conn: icmpConn}
+	}
+	return
 }

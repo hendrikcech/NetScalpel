@@ -13,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 )
 
 func logErrContext(ctx context.Context, fmtStr string, args ...interface{}) error {
@@ -258,31 +261,36 @@ func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, 
 		s.resultLock.Unlock()
 	}()
 
-	var sender Sender
-	var receiver Receiver
 	switch args.ServerMode {
 	case SendICMP:
-		sender = &ICMPSender{Params: args.Params.(ICMPParams)}
+		raddr, echoID, err := waitForICMPProbe(ctx, conn, args.Params.(ICMPParams).ClientEchoID)
+		if err != nil {
+			slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
+			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
+			return
+		}
+		icmpParams, ok := args.Params.(ICMPParams)
+		if !ok {
+			result.Err = fmt.Errorf("RequestServer: wrong params for ICMP")
+			return
+		}
+		icmpParams.SenderEchoID = echoID
+		slog.DebugContext(ctx, "Staring ICMPSender", "params", icmpParams)
+		sender := &ICMPSender{
+			Params: icmpParams,
+		}
+		result.Res, result.Err = handleSender(ctx, conn, args, sender, raddr)
 	case ReceiveICMP:
-		receiver = &ICMPReceiver{}
+		receiver := &ICMPReceiver{
+			ClientEchoID: args.Params.(ICMPParams).ClientEchoID,
+			ICMPType:     ipv4.ICMPTypeEcho,
+		}
+		ln := NewDummyListener(conn, conn.LocalAddr())
+		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
 	default:
 		slog.ErrorContext(ctx, "RequestServer: unknown mode", "mode", args.ServerMode)
 		result.Err = fmt.Errorf("RequestServer: unknown mode %v", args.ServerMode)
 		return
-	}
-
-	if sender != nil {
-		// TODO: could try to wait for an ICMP probe
-		// raddr, err := waitForUDPProbe(ctx, conn)
-		// if err != nil {
-		// 	slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
-		// 	result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
-		// 	return
-		// }
-		result.Res, result.Err = handleSender(ctx, conn, args, sender, nil)
-	} else {
-		ln := NewDummyListener(conn, conn.LocalAddr())
-		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
 	}
 }
 
@@ -291,14 +299,20 @@ func handleSender(ctx context.Context, conn net.Conn, args RequestServerArgs, se
 		return nil, err
 	}
 
-	// TODO: Why was the read ddeadline set here?
-	// conn.SetReadDeadline(time.Now().Add(args.Timeout))
+	// TODO: is this working as expected?
+	deadline := args.Params.GetDuration() * 2
+	minDeadline := 60 * time.Second
+	if deadline < 60*time.Second {
+		deadline = minDeadline
+	}
+	if err := conn.SetDeadline(time.Now().Add(minDeadline)); err != nil {
+		return nil, err
+	}
 
 	sendCtx, sendCancel := context.WithTimeout(ctx, args.Params.GetDuration())
 	defer sendCancel()
 	res, err := sender.Run(sendCtx, conn, raddr)
 	slog.DebugContext(ctx, "Finished handleSender", "remoteAddr", raddr)
-	// "packets", len(result.Res),
 	return res, err
 }
 
@@ -318,7 +332,7 @@ func handleReceiver(ctx context.Context, ln net.Listener, args RequestServerArgs
 	return res, err
 }
 
-func waitForUDPProbe(ctx context.Context, conn *net.UDPConn) (net.Addr, error) {
+func waitForUDPProbe(ctx context.Context, conn net.PacketConn) (net.Addr, error) {
 	// Wait for single UDP packet from receiving client UDP socket that opens
 	// the client NAT.
 	var buf [1500]byte
@@ -330,15 +344,65 @@ func waitForUDPProbe(ctx context.Context, conn *net.UDPConn) (net.Addr, error) {
 		}
 		return nil, nil // TODO: return error?
 	}
-
-	// Reply to NAT UDP packet
 	if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
 		return nil, fmt.Errorf("handleSender: WriteTo: %v", err.Error())
 	}
-
 	slog.DebugContext(ctx, "Received kick-off msg", "remoteAddr", raddr)
-
 	return raddr, nil
+}
+
+// Wait for ICMP echo request from receiving client
+// Only terminates on conn deadline, i.e., after 10 seconds
+func waitForICMPProbe(ctx context.Context, conn net.PacketConn, echoID uint16) (net.Addr, uint16, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return nil, 0, err
+	}
+
+	var buf [1500]byte
+	for {
+		n, raddr, err := conn.ReadFrom(buf[0:])
+		if err != nil {
+			if e, ok := err.(net.Error); ok && e.Timeout() {
+				return nil, 0, fmt.Errorf("Did not receive ICMP probe in time: %v", err.Error())
+			}
+			return nil, 0, fmt.Errorf("waitForICMPProbe ReadFrom error: %v", err.Error())
+		}
+
+		msg, err := icmp.ParseMessage(1, buf[:n])
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to parse ICMP message", "error", err)
+			continue
+		}
+		if msg.Type != ipv4.ICMPTypeEcho {
+			slog.WarnContext(ctx, "Unexpected ICMP probe type", "type", msg.Type)
+			continue
+		}
+
+		body, ok := msg.Body.(*icmp.Echo)
+		if !ok {
+			slog.WarnContext(ctx, "Unexpected msg body")
+			continue
+		}
+		echoIDData, punch, err := parseICMPData(body.Data)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed parsing ICMP body", "error", err)
+			continue
+		}
+
+		if !punch {
+			slog.WarnContext(ctx, "Expected punch packet", "msg", msg, "body", body)
+			continue
+		}
+
+		if echoIDData != echoID {
+			slog.WarnContext(ctx, "Unexpected ICMP echoID in ICMP data", "expID", echoID, "data", body.Data)
+			continue
+		}
+
+		natEchoID := body.ID
+		slog.DebugContext(ctx, "Received ICMP echo request probe", "remoteAddr", raddr, "echoID", natEchoID)
+		return raddr, uint16(natEchoID), nil
+	}
 }
 
 type RequestServerResultArgs struct {

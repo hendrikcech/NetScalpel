@@ -348,11 +348,24 @@ func TestTCPDLBBR(t *testing.T) {
 }
 
 func TestICMPUL(t *testing.T) {
-	t.Skip()
 	client := SenderClient{
 		IP:        ip,
 		Out:       "",
 		Direction: UL,
+
+		Sender: &ICMPSender{Params: ICMPParams{
+			Duration_: time.Duration(2) * time.Second,
+			Interval:  time.Duration(400) * time.Millisecond,
+		}},
+	}
+	testSender(t, &client)
+}
+
+func TestICMPDL(t *testing.T) {
+	client := SenderClient{
+		IP:        ip,
+		Out:       "",
+		Direction: DL,
 
 		Sender: &ICMPSender{Params: ICMPParams{
 			Duration_: time.Duration(2) * time.Second,
