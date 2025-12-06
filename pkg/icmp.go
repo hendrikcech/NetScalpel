@@ -93,7 +93,7 @@ func (r *ICMPReceiver) receive(ctx context.Context, conn net.Conn) ([]MsgRcvd, e
 		}
 
 		if echoID != r.ClientEchoID {
-			slog.WarnContext(ctx, "Received ICMP Echo with wrong ID in data", "exp", r.ClientEchoID, "id", body.ID)
+			// slog.DebugContext(ctx, "Received ICMP Echo with wrong ID in data", "exp", r.ClientEchoID, "id", body.ID)
 			continue
 		}
 

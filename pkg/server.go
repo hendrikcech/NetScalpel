@@ -396,7 +396,7 @@ func waitForICMPProbe(ctx context.Context, conn net.PacketConn, echoID uint16) (
 		}
 
 		if echoIDData != echoID {
-			slog.WarnContext(ctx, "Unexpected ICMP echoID in ICMP data", "expID", echoID, "data", body.Data)
+			// slog.DebugContext(ctx, "Unexpected ICMP echoID in ICMP data", "expID", echoID, "data", body.Data)
 			continue
 		}
 
