@@ -53,6 +53,8 @@ type SenderClient struct {
 	TCPMetricsRcvr []TCPMetric
 
 	ID string
+
+	port uint // Remote port, returned by server through RequestServerReply
 }
 
 func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
@@ -83,6 +85,8 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	if err := client.Call("Server.RequestServer", args, &reply); err != nil {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
+
+	c.port = reply.Port
 
 	var conn net.Conn
 	var raddr net.Addr
@@ -161,6 +165,8 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 	if err := client.Call("Server.RequestServer", args, &reply); err != nil {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
+
+	c.port = reply.Port
 
 	switch args.ServerMode.SocketType() {
 	case UDP:
@@ -718,15 +724,40 @@ func writeCSV(out string, rows [][]string) error {
 func (c *SenderClient) Summary() string {
 	var b strings.Builder
 
+	b.WriteString(c.Sender.SenderMode().String())
+	b.WriteString("\t")
+	b.WriteString(c.Direction.String())
+	b.WriteString("\t")
+	b.WriteString(fmt.Sprintf("%+v", c.Sender.GetParams()))
+	b.WriteString("\t")
+	b.WriteString(fmt.Sprintf("%v:%v", c.IP, c.port))
+	b.WriteString("\t")
+	b.WriteString(c.Out)
+	b.WriteString("\t")
+
+	switch c.Sender.SenderMode().SocketType() {
+	case UDP:
+		c.summaryUDP(&b)
+	case TCP:
+		c.summaryTCP(&b)
+	case ICMP:
+		c.summaryUDP(&b)
+	default:
+		panic("Unknown SocketType")
+	}
+
+	return b.String()
+}
+
+func (c *SenderClient) summaryUDP(b *strings.Builder) {
 	sort.Slice(c.UDPMsgsRcvd, func(i, j int) bool {
 		return c.UDPMsgsRcvd[i].Seq < c.UDPMsgsRcvd[j].Seq
 	})
 
 	numSent := uint64(len(c.UDPMsgsSent))
 	numRcvd := len(c.UDPMsgsRcvd)
-	duration := c.Sender.GetParams().GetDuration()
-	b.WriteString(fmt.Sprintf("%.3fs\t%v packets sent, %v rcvd (%.2f%% lost)",
-		duration.Seconds(), numSent, numRcvd, 100.0-float64(numRcvd)/float64(numSent)*100))
+	b.WriteString(fmt.Sprintf("%v/%v packets (%.2f%% lost)",
+		numSent, numRcvd, 100.0-float64(numRcvd)/float64(numSent)*100))
 
 	bytesRcvd := uint(0)
 	for i := range c.UDPMsgsRcvd {
@@ -741,8 +772,9 @@ func (c *SenderClient) Summary() string {
 	if !c.StartAt.IsZero() {
 		b.WriteString(fmt.Sprintf("\t%v", c.StartAt))
 	}
+}
 
-	return b.String()
+func (c *SenderClient) summaryTCP(b *strings.Builder) {
 }
 
 type CommandClient struct {

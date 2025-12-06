@@ -164,10 +164,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: implement sensible output for TCP mode
-	if kongctx.Command() != "tcp" {
-		fmt.Println(client.Summary())
-	}
+	fmt.Println(client.Summary())
 }
 
 func dialRpcClient(ip string, port uint) *rpc.Client {
