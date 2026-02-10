@@ -14,22 +14,23 @@ import (
 )
 
 var proceduresUlDl = map[string]ProcedureFunc{
-	"burst":            Burst,
-	"multiburst":       MultiBurst,
-	"prograte":         ProgressiveRate,
-	"cddf":             CoolDownDifferentFlow,
-	"cdsf":             CoolDownSameFlow,
-	"multiflow":        MultiFlow,
-	"switchflow":       SwitchFlow,
-	"mouseeleph":       MouseElephantFlows,
-	"progdurmultirate": ProgressiveDurationMultiRate,
-	"simplequic":       QUIC,
-	"progdurquic":      ProgressiveDurationQUIC,
-	"durationtcp":      DurationTCP,
-	"tcpri":            DurationTCPRI,
-	"rateri":           RateRI,
-	"owd":              MeasOWD,
-	"rate":             MeasRate,
+	"burst":        Burst,
+	"multiburst":   MultiBurst,
+	"prograte":     ProgressiveRate,
+	"cddf":         CoolDownDifferentFlow,
+	"cdsf":         CoolDownSameFlow,
+	"multiflow":    MultiFlow,
+	"switchflow":   SwitchFlow,
+	"mouseeleph":   MouseElephantFlows,
+	"multidurrate": MultiDurationRate, // previously "progdurmultirate": ProgressiveDurationMultiRate,
+	"simplequic":   QUIC,
+	"progdurquic":  ProgressiveDurationQUIC,
+	"durationtcp":  DurationTCP,
+	"tcpri":        DurationTCPRI,
+	"rateri":       RateRI,
+	"owd":          MeasOWD,
+	"rate":         MeasRate,
+	"packetdur":    PacketsDuration,
 }
 
 // Only called once per round
@@ -41,9 +42,9 @@ var proceduresBidir = map[string]ProcedureFunc{
 
 func PPS(direction pkg.Direction) uint {
 	if direction == pkg.UL {
-		return 70 * 1e6 / 8 / 1400
+		return 200 * 1000000 / 8 / 1400
 	} else if direction == pkg.DL {
-		return 700 * 1e6 / 8 / 1400
+		return 500 * 1000000 / 8 / 1400
 	} else {
 		panic("Unknown direction")
 	}
@@ -179,7 +180,8 @@ func ProgressiveRate(e *Executor, ts time.Time, resultPath string, params ParamM
 	return nil
 }
 
-func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+// Previously named prograte / ProgressiveDurationMultiRate
+func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
@@ -189,9 +191,7 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
-	// durationsMs := []uint{100, 300, 500, 700}
-	durationsMs := []uint{1000, 1500, 2000}
+	durationsMs := []uint{1000,4000}
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
@@ -209,9 +209,7 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 				os.Exit(1)
 			}
 		} else {
-			// ratesMbps = []uint{70, 35, 10, 5, 1}
-			// ratesMbps = []uint{50, 35, 25, 20}
-			ratesMbps = []uint{70}
+			ratesMbps = []uint{140}
 		}
 	} else {
 		if _, ok := params["ratesDL"]; ok {
@@ -221,11 +219,7 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 				os.Exit(1)
 			}
 		} else {
-			// ratesMbps = []uint{700, 350, 100, 5, 1}
-			// ratesMbps = []uint{500, 250, 200}
-			// ratesMbps = []uint{175, 150, 125}
-			// ratesMbps = []uint{700, 600, 500}
-			ratesMbps = []uint{700}
+			ratesMbps = []uint{500}
 		}
 	}
 
@@ -241,8 +235,9 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 			}
 
 			e.RunClient(&pkg.SenderClient{
-				IP:        e.IP,
-				Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%03d_%04d.csv", direction.StringLower(), rateMbps, durationMs)),
+				IP: e.IP,
+				Out: filepath.Join(resultPath, fmt.Sprintf("rate_%v_%03d_%04d.csv",
+					direction.StringLower(), rateMbps, durationMs)),
 				Direction: direction,
 				StartAt:   start,
 				Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
@@ -251,6 +246,29 @@ func ProgressiveDurationMultiRate(e *Executor, ts time.Time, resultPath string, 
 					Duration:    duration,
 					PayloadSize: 1400,
 				}}},
+			})
+			e.RunClient(&pkg.SenderClient{
+				IP: e.IP,
+				Out: filepath.Join(resultPath, fmt.Sprintf("owd-icmp_%v_%03d_%04d.csv",
+					direction.StringLower(), rateMbps, durationMs)),
+				Direction: direction,
+				StartAt:   start,
+				Sender: &pkg.ICMPSender{Params: pkg.ICMPParams{
+					Interval:  time.Millisecond,
+					Duration_: duration,
+				}},
+			})
+			e.RunClient(&pkg.SenderClient{
+				IP: e.IP,
+				Out: filepath.Join(resultPath, fmt.Sprintf("owd-udp_%v_%03d_%04d.csv",
+					direction.StringLower(), rateMbps, durationMs)),
+				Direction: direction,
+				StartAt:   start,
+				Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+					Interval: time.Millisecond,
+					Duration: duration,
+					Pad:      0,
+				}},
 			})
 
 			start = start.Add(duration).Add(gap)
@@ -367,9 +385,10 @@ func _MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap, 
 	pad := []uint{0, 700, 1400}
 	var nums []uint
 	if direction == pkg.UL {
-		nums = []uint{1000, 3000, 6000, 10000}
+		// nums = []uint{1000, 3000, 6000, 10000}
+		nums = []uint{10000}
 	} else {
-		nums = []uint{1000, 3000, 6000, 10000}
+		nums = []uint{3000}
 	}
 	args := cartesian.Product(nums, pad)
 
@@ -513,20 +532,42 @@ func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params Param
 	spacing := time.Duration(2000) * time.Millisecond
 	deadline := nextRi(ts).Add(-time.Second)
 
-	var pps uint
+	var rate uint
 	if direction == pkg.UL {
-		pps = 70 * 1e6 / 8 / 1400
+		// pps = 70 * 1e6 / 8 / 1400
+		var err error
+		rate = 140
+		if _, ok := params["rateUL"]; ok {
+			if rate, err = params.Uint("rateUL"); err != nil {
+				return err
+			}
+		}
 	} else {
-		pps = 700 * 1e6 / 8 / 1400
+		var err error
+		rate = 500
+		if _, ok := params["rateDL"]; ok {
+			if rate, err = params.Uint("rateDL"); err != nil {
+				return err
+			}
+		}
 	}
+	pps := rate * 1000000 / 8 / 1400
 
 	// coolDowns := []int{0, 5, 10, 25, 50, 100, 500, 1000}
 	// for _, idx := range rand.Perm(len(coolDowns)) {
-	var coolDowns []int64
+	var coolDowns []int64 // Populated with cooldowns that will be tested in this round
 outer:
 	for {
 		// coolDownMs := coolDowns[idx]
-		coolDownMs := int64(rand.Intn(600)) / 10 * 10 // Limit to multiples of 10
+		var step uint = 50 // Limit to multiples of X // tested with step=25
+		if _, ok := params["step"]; ok {
+			var err error
+			if step, err = params.Uint("step"); err != nil {
+				slog.Error("parse step", "error", err)
+				os.Exit(1)
+			}
+		}
+		coolDownMs := int64(rand.Intn(600)) / int64(step) * int64(step)
 
 		for _, v := range coolDowns {
 			if coolDownMs == v {
@@ -583,7 +624,7 @@ outer:
 		start = start.Add(spacing)
 	}
 
-	slog.Info(fmt.Sprintf("Scheduled with cooldowns: %v", coolDowns))
+	slog.Info(fmt.Sprintf("Scheduled %s with cooldowns: %v", direction, coolDowns))
 
 	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
 
@@ -738,17 +779,33 @@ func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params Par
 
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
-	duration := time.Duration(800) * time.Millisecond
-	spacing := time.Duration(2000) * time.Millisecond
+	duration := time.Duration(4000) * time.Millisecond
+	spacing := time.Duration(3000) * time.Millisecond
 
 	var elephMbps uint
 	var miceMbps []uint
 	if direction == pkg.UL {
-		elephMbps = 70
-		miceMbps = []uint{1, 5, 10, 15, 30, 70}
+		elephMbps = 140
+		miceMbps = []uint{1, 5, 10, 20, 35, 70, elephMbps}
+		if _, ok := params["miceUL"]; ok {
+			var err error
+			if miceMbps, err = params.Uints("miceUL"); err != nil {
+				slog.Error("parse miceUL", "error", err)
+				os.Exit(1)
+			}
+		}
 	} else {
-		elephMbps = 700
-		miceMbps = []uint{1, 5, 15, 30, 700}
+		// elephMbps = 500
+		// miceMbps = []uint{1, 50, 100, 150, 250, elephMbps}
+		elephMbps = 250
+		miceMbps = []uint{1, 50, 100, 150, 250}
+		if _, ok := params["miceDL"]; ok {
+			var err error
+			if miceMbps, err = params.Uints("miceDL"); err != nil {
+				slog.Error("parse miceDL", "error", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	offsets := []time.Duration{
@@ -813,10 +870,10 @@ outer:
 			}}},
 		})
 
-		start = start.Add(2 * duration).Add(spacing)
+		start = start.Add(durationMouse).Add(spacing)
 
 		// Check if another test still fits into the current RI
-		if start.Add(2 * duration).Add(spacing).After(deadline) {
+		if start.Add(durationMouse).After(deadline) {
 			break outer
 		}
 	}
@@ -934,13 +991,13 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 		}
 	}
 
-	gap := 1000 * time.Millisecond
+	gap := 2000 * time.Millisecond
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
 	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
 	// durationsMs := []uint{100, 400, 1000, 3000}
-	durationsMs := []uint{3000}
+	durationsMs := []uint{4000}
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
@@ -964,14 +1021,38 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 		}
 
 		e.RunClient(&pkg.SenderClient{
-			IP:        e.IP,
-			Out:       filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv", direction.StringLower(), cca.String(), durationMs)),
+			IP: e.IP,
+			Out: filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv",
+				direction.StringLower(), cca.String(), durationMs)),
 			Direction: direction,
 			StartAt:   start,
 			Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
 				Duration_: duration,
 				Bytes:     0,
 				CCA:       cca,
+			}},
+		})
+		e.RunClient(&pkg.SenderClient{
+			IP: e.IP,
+			Out: filepath.Join(resultPath, fmt.Sprintf("owd-icmp_%v_%v_%04d.csv",
+				direction.StringLower(), cca.String(), durationMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.ICMPSender{Params: pkg.ICMPParams{
+				Interval:  time.Millisecond,
+				Duration_: duration,
+			}},
+		})
+		e.RunClient(&pkg.SenderClient{
+			IP: e.IP,
+			Out: filepath.Join(resultPath, fmt.Sprintf("owd-udp_%v_%v_%04d.csv",
+				direction.StringLower(), cca.String(), durationMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+				Interval: time.Millisecond,
+				Duration: duration,
+				Pad:      0,
 			}},
 		})
 
@@ -1003,27 +1084,28 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 		}
 	}
 
-	durationMs := 6000
+	durationMs := 12000
 	duration := time.Duration(durationMs) * time.Millisecond
 	start := ts.Add(-duration / 2)
 	if time.Until(start) < 2*time.Second {
 		start = start.Add(15 * time.Second)
 	}
 
-	maxIdx := len(pkg.TCPCCAS) + 1
+	var nameSuffix string
+	maxIdx := len(ccas) + 1
 	idx := rand.Intn(maxIdx)
 	if idx == maxIdx-1 {
 		// Perform UDP rate test
 		var rateMbps uint
 		if direction == pkg.UL {
-			rateMbps = 70
+			rateMbps = 200
 		} else {
-			rateMbps = 700
+			rateMbps = 500
 		}
+		nameSuffix = fmt.Sprintf("%v_%03d_%04d.csv", direction.StringLower(), rateMbps, durationMs)
 		e.RunClient(&pkg.SenderClient{
-			IP: e.IP,
-			Out: filepath.Join(resultPath, fmt.Sprintf("udp_%v_%03d_%04d.csv",
-				direction.StringLower(), rateMbps, durationMs)),
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("udp_%s", nameSuffix)),
 			Direction: direction,
 			StartAt:   start,
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
@@ -1035,10 +1117,10 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 		})
 	} else {
 		cca := ccas[idx]
+		nameSuffix = fmt.Sprintf("%v_%v_%04d.csv", direction.StringLower(), cca.String(), durationMs)
 		e.RunClient(&pkg.SenderClient{
-			IP: e.IP,
-			Out: filepath.Join(resultPath, fmt.Sprintf("tcp_%v_%v_%04d.csv",
-				direction.StringLower(), cca.String(), durationMs)),
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("tcp_%s", nameSuffix)),
 			Direction: direction,
 			StartAt:   start,
 			Sender: &pkg.TCPSender{Params: pkg.TCPSenderParams{
@@ -1048,6 +1130,28 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 			}},
 		})
 	}
+
+	e.RunClient(&pkg.SenderClient{
+		IP:        e.IP,
+		Out:       filepath.Join(resultPath, fmt.Sprintf("owd-icmp_%s", nameSuffix)),
+		Direction: direction,
+		StartAt:   start,
+		Sender: &pkg.ICMPSender{Params: pkg.ICMPParams{
+			Interval:  time.Millisecond,
+			Duration_: duration,
+		}},
+	})
+	e.RunClient(&pkg.SenderClient{
+		IP:        e.IP,
+		Out:       filepath.Join(resultPath, fmt.Sprintf("owd-udp_%s", nameSuffix)),
+		Direction: direction,
+		StartAt:   start,
+		Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+			Interval: time.Millisecond,
+			Duration: duration,
+			Pad:      0,
+		}},
+	})
 
 	e.tcpdump(resultPath, start.Add(-time.Second), duration+2*time.Second)
 
@@ -1171,6 +1275,96 @@ func MeasRate(e *Executor, ts time.Time, resultPath string, params ParamMap) err
 
 	// Don't run tcpdump due to large pcaps
 	// e.tcpdump(resultPath, ts, duration+time.Second)
+
+	return nil
+}
+
+func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	// durationsMs := []uint{10, 20, 30, 40, 50, 60, 70, 80, 90, 100}
+	// durationsMs := []uint{30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 400}
+	durationsMs := []uint{10, 15, 20, 30, 35, 40, 50, 60, 70, 80, 100, 150, 200, 400}
+
+	if _, ok := params["durations"]; ok {
+		var err error
+		if durationsMs, err = params.Uints("durations"); err != nil {
+			slog.Error("parse duration", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	// numPackets := []uint{500}
+	// numPackets := []uint{2500}
+	numPackets := []uint{1400}
+	if _, ok := params["packets"]; ok {
+		var err error
+		if numPackets, err = params.Uints("packets"); err != nil {
+			slog.Error("parse packets", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	// packets=500; [f"{packets} P {duration} ms: {packets * (1000/duration) * 1400 * 8 / 1e6:.0f} Mbps" for duration in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]]
+
+	start := ts.Add(1 * time.Second)
+	spacing := time.Duration(2000) * time.Millisecond
+	deadline := nextRi(ts).Add(-time.Second)
+
+	args := cartesian.Product(durationsMs, numPackets)
+	for _, idx := range rand.Perm(len(args)) {
+		durationMs := args[idx][0]
+		duration := time.Duration(durationMs) * time.Millisecond
+		packets := args[idx][1]
+
+		pps := uint(packets * (1000 / durationMs))
+		slog.Debug(fmt.Sprintf("%v packets over %v ms -> %v pps", packets, durationMs, pps))
+		e.RunClient(&pkg.SenderClient{
+			IP: e.IP,
+			Out: filepath.Join(resultPath, fmt.Sprintf("packets_%v_%04d_%04d.csv",
+				direction.StringLower(), packets, durationMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         pps,
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
+		})
+
+		// ppns := float64(packets) / float64(durationMs * 1e6)
+		// if ppns > 1 {
+		// 	panic(fmt.Sprintf("ppns should be < 1 but it's %v", ppns))
+		// }
+		// packetOnceEveryNs := uint(1 / ppns)
+		// interval := time.Duration(packetOnceEveryNs) * time.Nanosecond
+		// slog.Debug(fmt.Sprintf("%v packets over %v ms -> one packet every %v ns", packets, durationMs, packetOnceEveryNs))
+		// e.RunClient(&pkg.SenderClient{
+		// 	IP:        e.IP,
+		// 	Out:       filepath.Join(resultPath, fmt.Sprintf("packets_%v_%04d_%04d.csv",
+		// 		direction.StringLower(), packets, durationMs)),
+		// 	Direction: direction,
+		// 	StartAt:   start,
+		// 	Sender: &pkg.PeriodicSender{Params: pkg.PeriodicParams{
+		// 		Interval: interval,
+		// 		Duration: duration,
+		// 		Pad:      1400,
+		// 	}},
+		// })
+
+		start = start.Add(duration).Add(spacing)
+
+		if start.Add(duration).After(deadline) {
+			// Next test would take too long
+			break
+		}
+	}
+
+	e.tcpdump(resultPath, ts, 15*time.Second)
 
 	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -101,10 +102,33 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		}
 	case TCP:
 		// TCP Handshake is performed before the test starts
-		if raddr, err = net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
-			return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
+		addrStr := fmt.Sprintf("%s:%v", c.IP, reply.Port)
+		// if raddr, err = net.ResolveTCPAddr("tcp", addrStr); err != nil {
+		// 	return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
+		// }
+		dialer := net.Dialer{}
+		// We need to make space for the added TCP option with LeoCC
+		if c.Sender.GetParams().(TCPSenderParams).CCA == LEOCC {
+			dialer.Control = func(network, address string, c syscall.RawConn) error {
+				return c.Control(func(fd uintptr) {
+					mss := 1350
+					if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG, 1400); err != nil {
+						slog.ErrorContext(ctx, "Failed setting TCP MSS on LeoCC UL socket", "mss", mss)
+						return
+					}
+					var newMSS int
+					newMSS, err := syscall.GetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG)
+					if err != nil || mss != newMSS {
+						slog.ErrorContext(ctx, "Unexpected new TCP MSS on LeoCC UL", "mss_requested", mss, "mss_set", newMSS, "error", err)
+					} else {
+						slog.DebugContext(ctx, "Successfully limited TCP MSS on LeoCC UL", "mss", mss)
+					}
+				})
+			}
 		}
-		if conn, err = net.DialTCP("tcp", nil, raddr.(*net.TCPAddr)); err != nil {
+
+		if conn, err = dialer.Dial("tcp", addrStr); err != nil {
+			// if conn, err = net.DialTCP("tcp", nil, raddr.(*net.TCPAddr)); err != nil {
 			return fmt.Errorf("net.DialTCP failed: %v", err.Error())
 		}
 	case ICMP:
@@ -256,6 +280,14 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 		return fmt.Errorf("net.DialTCP failed: %v", err.Error())
 	}
 	defer conn.Close()
+
+	// Also set the CCA on the receiving socket
+	cca := c.Sender.GetParams().(TCPSenderParams).CCA
+	if err := applyTCPCCA(ctx, conn, cca); err != nil {
+		slog.WarnContext(ctx, "Failed to set CCA on the receiving socket", "cca", cca)
+	} else {
+		slog.DebugContext(ctx, "Set CCA on the receiving socket", "cca", cca)
+	}
 
 	ln := NewDummyListener(conn, conn.LocalAddr())
 	if err := waitUntil(ctx, c.StartAt); err != nil {
@@ -757,7 +789,7 @@ func (c *SenderClient) summaryUDP(b *strings.Builder) {
 	numSent := uint64(len(c.UDPMsgsSent))
 	numRcvd := len(c.UDPMsgsRcvd)
 	b.WriteString(fmt.Sprintf("%v/%v packets (%.2f%% lost)",
-		numSent, numRcvd, 100.0-float64(numRcvd)/float64(numSent)*100))
+		numRcvd, numSent, 100.0-float64(numRcvd)/float64(numSent)*100))
 
 	bytesRcvd := uint(0)
 	for i := range c.UDPMsgsRcvd {

@@ -449,12 +449,12 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 	// }
 	slog.DebugContext(ctx, "Disabled pacing (manually)")
 
-	start := time.Now() // must appear before ticker is started
+	start := time.Now()                     // must appear before ticker is started
 	duration := time.After(params.Duration) // TODO: remove duration time.after since this function will be cancelled by context
 
 	maxPacketPerBurst := float64(5)
-	calcInterval := time.Duration((1 / (float64(params.Pps) / maxPacketPerBurst)) * 1e9) * time.Nanosecond
-	interval := min(calcInterval, 1 * time.Millisecond)
+	calcInterval := time.Duration((1/(float64(params.Pps)/maxPacketPerBurst))*1e9) * time.Nanosecond
+	interval := min(calcInterval, 1*time.Millisecond)
 	slog.DebugContext(ctx, "Dynamic interval calculation", "interval", interval.String(), "calculatedInterval", calcInterval.String())
 	ticker := time.Tick(interval)
 
@@ -465,14 +465,14 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 		return fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
 	}
 
-	lastTickStart := time.Now()
-	lastTickEnd := time.Now()
+	// lastTickStart := time.Now()
+	// lastTickEnd := time.Now()
 	for {
 		select {
 		case now := <-ticker:
-			lastTickEndElapsed := time.Now().Sub(lastTickEnd)
-			lastTickStartElapsed := time.Now().Sub(lastTickStart)
-			lastTickStart = now
+			// lastTickEndElapsed := time.Now().Sub(lastTickEnd)
+			// lastTickStartElapsed := time.Now().Sub(lastTickStart)
+			// lastTickStart = now
 			elapsed := now.Sub(start).Seconds()
 			numPacketsGoal := uint(elapsed * float64(params.Pps))
 			if elapsed < 0 {
@@ -505,8 +505,8 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 				return err
 			}
 			numPacketsSent += n
-			slog.DebugContext(ctx, "sendRound", "goal", numPackets, "since_prev_start", lastTickStartElapsed, "since_prev_end", lastTickEndElapsed)
-			lastTickEnd = time.Now()
+			// slog.DebugContext(ctx, "sendRound", "goal", numPackets, "since_prev_start", lastTickStartElapsed, "since_prev_end", lastTickEndElapsed)
+			// lastTickEnd = time.Now()
 		case <-duration:
 			return nil
 		case <-ctx.Done():
@@ -539,7 +539,7 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 			r.msgs = append(r.msgs, MsgSent{Seq: b.Seq, TsSent: tsSent, Len: 8 + payloadSize})
 		}
 
-		syscallStart := time.Now()
+		// syscallStart := time.Now()
 		n, err := conn.SendMsgs(r.tx[:packetsRound], 0)
 		if err != nil {
 			if e, ok := err.(net.Error); ok && e.Timeout() {
@@ -547,7 +547,7 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 			}
 			return sent, err
 		}
-		slog.DebugContext(ctx, "SendMsgs", "elapsed", time.Now().Sub(syscallStart))
+		// slog.DebugContext(ctx, "SendMsgs", "elapsed", time.Now().Sub(syscallStart))
 		if n < 0 {
 			panic(fmt.Sprintf("SendMsgs returned n < 0, n=%v", n))
 		}

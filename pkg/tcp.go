@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mikioh/tcp"
@@ -232,7 +233,8 @@ func (r *TCPReceiver) run(ctx context.Context, conn net.Conn) error {
 	slog.DebugContext(ctx, "Reading from TCP conn")
 	n, err := io.Copy(droppingWriter{}, conn)
 	slog.DebugContext(ctx, "TCPReceiver: io.Copy returned", "n", n)
-	if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+	if err != nil && !(errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, syscall.ECONNRESET)) {
+		// ECONNRESET expected since the server closes the connection with Linger 0
 		return fmt.Errorf("Unexpected TCPReceiver error: %v", err)
 	}
 	return nil
@@ -249,48 +251,60 @@ const (
 	BBR1
 	BBR3
 	ILLINOIS
+	LEOCC
 )
 
-var TCPCCAS []TCPCCA = []TCPCCA{CUBIC, CUBIC_NO_HYSTART, CUBIC_HYSTARTPP, CUBIC_SEARCH, CUBIC_SUSS, BBR1, BBR3, ILLINOIS}
+var TCPCCAS []TCPCCA = []TCPCCA{CUBIC, CUBIC_NO_HYSTART, CUBIC_HYSTARTPP, CUBIC_SEARCH, CUBIC_SUSS, BBR1, BBR3, ILLINOIS, LEOCC}
 
-// Used to set CCA with sysctl
-func (c TCPCCA) KernelName() string {
+// Used to set CCA with sysctl.
+// Returns an error if BBRv3 is likely not available.
+// Does not check if the others are available since they may be loaded when trying to be used.
+func (c TCPCCA) KernelName() (string, error) {
 	if c == BBR1 || c == BBR3 {
-		ccas, err := readAvailableKernelCCAs()
-		if err != nil {
-			panic(fmt.Sprintf("Failed to fetch kernel CCAs: %v", err))
-		}
-
-		if strings.Contains(ccas, "bbr1") {
-			// The kernel is compiled with BBRv3 and a BBRv1 is "bbr1"
-			if c == BBR1 {
-				return "bbr1"
+		bbr3Av := c.bbr3Available()
+		if c == BBR1 {
+			if bbr3Av {
+				return "bbr1", nil
 			} else {
-				return "bbr"
+				return "bbr", nil
 			}
 		} else {
-			// Assume that it's a BBRv1 kernel
-			if c == BBR3 {
-				slog.Warn("Assuming that a BBRv1 kernel is running")
+			if bbr3Av {
+				return "bbr", nil
+			} else {
+				return "", fmt.Errorf("BBRv3 is not available")
 			}
-			return "bbr"
 		}
 	}
 
 	switch c {
 	case CUBIC, CUBIC_NO_HYSTART:
-		return "cubic"
+		return "cubic", nil
 	case CUBIC_HYSTARTPP:
-		return "cubic_hystartpp"
+		return "cubic_hystartpp", nil
 	case CUBIC_SEARCH:
-		return "cubic_search"
+		return "cubic_search", nil
 	case CUBIC_SUSS:
-		return "cubic_suss"
+		return "cubic_suss", nil
 	case ILLINOIS:
-		return "illinois"
+		return "illinois", nil
+	case LEOCC:
+		return "leocc", nil
 	default:
 		panic("Unknown TCPCC")
 	}
+}
+
+func (c TCPCCA) bbr3Available() bool {
+	ccas, err := readAvailableKernelCCAs()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to fetch kernel CCAs: %v", err))
+	}
+
+	// If true: the kernel is compiled with BBRv3 and, BBRv1 is "bbr1", and BBRv3 is "bbr"
+	// If false: either it's not a BBRv3 kernel (and BBRv1 is "bbr") or (false positive)
+	// "bbr1" is not loaded.
+	return strings.Contains(ccas, "bbr1")
 }
 
 // Human-facing string
@@ -312,6 +326,8 @@ func (c TCPCCA) String() string {
 		return "bbr3"
 	case ILLINOIS:
 		return "illinois"
+	case LEOCC:
+		return "leocc"
 	default:
 		panic("Unknown TCPCC")
 	}
@@ -336,6 +352,8 @@ func ParseTCPCCA(cca string) (TCPCCA, error) {
 		return BBR3, nil
 	case "illinois":
 		return ILLINOIS, nil
+	case "leocc":
+		return LEOCC, nil
 	default:
 		return 999, fmt.Errorf("Unknown TCPCCA value '%s'", cca)
 	}
@@ -379,9 +397,13 @@ func (s *TCPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any
 		return nil, err
 	}
 
-	// if err := setTCPLingerOff(conn.(*net.TCPConn)); err != nil {
-	// 	return nil, err
-	// }
+	// https://ndeepak.com/posts/2016-10-21-tcprst/
+	// Discard all queued data and close connection immediately. We use this to actually
+	// stop sending after Duration_.
+	// The client will receive a ECONNRESET error.
+	if err := conn.(*net.TCPConn).SetLinger(0); err != nil {
+		return nil, err
+	}
 
 	// If the sender stops because Duration has been reached, TCP Monitor will
 	// not for wait the send queue to drain but stop abruptly.

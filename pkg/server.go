@@ -214,7 +214,10 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 }
 
 func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener, args RequestServerArgs) {
-	defer ln.Close()
+	defer func() {
+		slog.DebugContext(ctx, "Closing TCP listener")
+		ln.Close()
+	}()
 
 	var result Result
 
@@ -237,7 +240,10 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 			result.Err = fmt.Errorf("Failed AcceptTCP: %v", err.Error())
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			slog.DebugContext(ctx, "Closing TCP connection")
+			conn.Close()
+		}()
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, conn.RemoteAddr())
 		if result.Err != nil {
 			slog.ErrorContext(ctx, "handleSender failed", "error", err)
@@ -245,7 +251,6 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 	default:
 		slog.ErrorContext(ctx, "RequestServerTCP: unknown mode", "mode", args.ServerMode)
 		result.Err = fmt.Errorf("RequestServerTCP: unknown mode %v", args.ServerMode)
-		return
 	}
 }
 

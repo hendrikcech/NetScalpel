@@ -140,34 +140,14 @@ func enableRxTimestamping(conn syscall.Conn) error {
 	return err
 }
 
-// https://ndeepak.com/posts/2016-10-21-tcprst/
-// Discard all queued data and close connection immediately
-func setTCPLingerOff(conn *net.TCPConn) error {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	var syscallErr error
-	err = rawConn.Control(func(fd uintptr) {
-		linger := syscall.Linger{
-			Onoff:  1,
-			Linger: 0,
-		}
-
-		syscallErr = syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &linger)
-	})
-
-	if syscallErr != nil {
-		return syscallErr
-	}
-	return err
-}
-
 // Used by the application
 func applyTCPCCA(ctx context.Context, conn syscall.Conn, cca TCPCCA) error {
-	if err := setTCPCC(ctx, conn, cca.KernelName()); err != nil {
-		return fmt.Errorf("Failed setting TCPCCA %v (%v): %v", cca.String(), cca.KernelName(), err.Error())
+	kernelName, err := cca.KernelName()
+	if err != nil {
+		return fmt.Errorf("Failed setting TCPCCA %v (%v): %v", cca.String(), kernelName, err.Error())
+	}
+	if err := setTCPCC(ctx, conn, kernelName); err != nil {
+		return fmt.Errorf("Failed setting TCPCCA %v (%v): %v", cca.String(), kernelName, err.Error())
 	}
 
 	if cca == CUBIC || cca == CUBIC_NO_HYSTART {
@@ -186,6 +166,12 @@ func applyTCPCCA(ctx context.Context, conn syscall.Conn, cca TCPCCA) error {
 			}
 		}
 	}
+
+	// if cca == LEOCC {
+	// 	if err := limitTCPMSS(ctx, conn); err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	return nil
 }
@@ -226,6 +212,39 @@ func setTCPCC(ctx context.Context, conn syscall.Conn, cc string) error {
 	}
 
 	return nil
+}
+
+func limitTCPMSS(ctx context.Context, conn syscall.Conn) error {
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+
+	var cbErr error
+	err = rawConn.Control(func(fd uintptr) {
+		mss := 1350
+		cbErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG, mss)
+		if cbErr != nil {
+			return
+		}
+
+		var newMSS int
+		newMSS, cbErr = syscall.GetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG)
+		if cbErr != nil {
+			return
+		}
+
+		if mss == newMSS {
+			slog.DebugContext(ctx, "Successfully limited TCP MSS", "mss", mss)
+		} else {
+			slog.ErrorContext(ctx, "Unexpected new TCP MSS", "mss", newMSS)
+		}
+	})
+
+	if err != nil {
+		return err
+	}
+	return cbErr
 }
 
 // syscall.GetsockoptString emulation
