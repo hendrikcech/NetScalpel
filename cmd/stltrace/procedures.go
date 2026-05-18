@@ -31,6 +31,7 @@ var proceduresUlDl = map[string]ProcedureFunc{
 	"owd":          MeasOWD,
 	"rate":         MeasRate,
 	"packetdur":    PacketsDuration,
+	"rampupprobe":  RampUpProbe,
 }
 
 // Only called once per round
@@ -191,7 +192,7 @@ func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params Para
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	durationsMs := []uint{1000,4000}
+	durationsMs := []uint{1000, 4000}
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
@@ -532,26 +533,31 @@ func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params Param
 	spacing := time.Duration(2000) * time.Millisecond
 	deadline := nextRi(ts).Add(-time.Second)
 
-	var rate uint
+	var ratesMbps []uint
 	if direction == pkg.UL {
-		// pps = 70 * 1e6 / 8 / 1400
-		var err error
-		rate = 140
-		if _, ok := params["rateUL"]; ok {
-			if rate, err = params.Uint("rateUL"); err != nil {
-				return err
+		if _, ok := params["ratesUL"]; ok {
+			var err error
+			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
+				slog.Error("parse ratesUL", "error", err)
+				os.Exit(1)
 			}
+		} else {
+			ratesMbps = []uint{140}
 		}
 	} else {
-		var err error
-		rate = 500
-		if _, ok := params["rateDL"]; ok {
-			if rate, err = params.Uint("rateDL"); err != nil {
-				return err
+		if _, ok := params["ratesDL"]; ok {
+			var err error
+			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
+				slog.Error("parse ratesDL", "error", err)
+				os.Exit(1)
 			}
+		} else {
+			ratesMbps = []uint{500}
 		}
 	}
-	pps := rate * 1000000 / 8 / 1400
+	rateIdx := rand.Intn(len(ratesMbps))
+	rateMbps := ratesMbps[rateIdx]
+	pps := rateMbps * 1000000 / 8 / 1400
 
 	// coolDowns := []int{0, 5, 10, 25, 50, 100, 500, 1000}
 	// for _, idx := range rand.Perm(len(coolDowns)) {
@@ -567,7 +573,17 @@ outer:
 				os.Exit(1)
 			}
 		}
-		coolDownMs := int64(rand.Intn(600)) / int64(step) * int64(step)
+
+		var maxBreak uint = 600
+		if _, ok := params["max"]; ok {
+			var err error
+			if maxBreak, err = params.Uint("max"); err != nil {
+				slog.Error("parse max (maxBreak)", "error", err)
+				os.Exit(1)
+			}
+		}
+
+		coolDownMs := int64(rand.Intn(int(maxBreak))) / int64(step) * int64(step)
 
 		for _, v := range coolDowns {
 			if coolDownMs == v {
@@ -594,8 +610,10 @@ outer:
 		coolDowns = append(coolDowns, coolDownMs)
 
 		e.RunClient(&pkg.SenderClient{
-			IP:        e.IP,
-			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
+			IP: e.IP,
+			Out: filepath.Join(resultPath, fmt.Sprintf("cdrate_%v_%03d_%04d.csv",
+				direction.StringLower(), rateMbps, coolDownMs)),
+			// earlier filename: fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), coolDownMs)),
 			Direction: direction,
 			StartAt:   start,
 			Sender: &pkg.RateSender{Params: []pkg.RateParams{
@@ -1362,6 +1380,67 @@ func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamM
 			// Next test would take too long
 			break
 		}
+	}
+
+	e.tcpdump(resultPath, ts, 15*time.Second)
+
+	return nil
+}
+
+func RampUpProbe(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
+	direction, err := params.Direction()
+	if err != nil {
+		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+	}
+
+	smallGap := 500 * time.Millisecond
+	largeGap := 1500 * time.Millisecond
+	start := ts.Add(1 * time.Second)
+	deadline := nextRi(ts).Add(-time.Second)
+
+	durationsMs := []uint{400}
+	if _, ok := params["durations"]; ok {
+		var err error
+		if durationsMs, err = params.Uints("durations"); err != nil {
+			slog.Error("parse duration", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	// Execute the bursts in random order
+	for _, idx := range rand.Perm(len(durationsMs)) {
+		durationMs := durationsMs[idx]
+		duration := time.Duration(durationMs) * time.Millisecond
+		var gap time.Duration
+		if durationMs < 1000 {
+			gap = smallGap
+		} else {
+			gap = largeGap
+		}
+		var pps uint
+		if direction == pkg.UL {
+			pps = 70 * 1e6 / 8 / 1400
+		} else {
+			pps = 700 * 1e6 / 8 / 1400
+		}
+		e.RunClient(&pkg.SenderClient{
+			IP:        e.IP,
+			Out:       filepath.Join(resultPath, fmt.Sprintf("rate_%v_%04d.csv", direction.StringLower(), durationMs)),
+			Direction: direction,
+			StartAt:   start,
+			Sender: &pkg.RateSender{Params: []pkg.RateParams{pkg.RateParams{
+				Pps:         pps,
+				Interval:    time.Millisecond,
+				Duration:    duration,
+				PayloadSize: 1400,
+			}}},
+		})
+
+		start = start.Add(duration).Add(gap)
+	}
+
+	if start.After(deadline) {
+		panic(fmt.Sprintf("Too many tests: %v > %v", start, deadline))
 	}
 
 	e.tcpdump(resultPath, ts, 15*time.Second)
