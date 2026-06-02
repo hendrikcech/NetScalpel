@@ -252,9 +252,10 @@ const (
 	BBR3
 	ILLINOIS
 	LEOCC
+	SATPIPE
 )
 
-var TCPCCAS []TCPCCA = []TCPCCA{CUBIC, CUBIC_NO_HYSTART, CUBIC_HYSTARTPP, CUBIC_SEARCH, CUBIC_SUSS, BBR1, BBR3, ILLINOIS, LEOCC}
+var TCPCCAS []TCPCCA = []TCPCCA{CUBIC, CUBIC_NO_HYSTART, CUBIC_HYSTARTPP, CUBIC_SEARCH, CUBIC_SUSS, BBR1, BBR3, ILLINOIS, LEOCC, SATPIPE}
 
 // Used to set CCA with sysctl.
 // Returns an error if BBRv3 is likely not available.
@@ -290,6 +291,8 @@ func (c TCPCCA) KernelName() (string, error) {
 		return "illinois", nil
 	case LEOCC:
 		return "leocc", nil
+	case SATPIPE:
+		return "satpipe", nil
 	default:
 		panic("Unknown TCPCC")
 	}
@@ -328,6 +331,8 @@ func (c TCPCCA) String() string {
 		return "illinois"
 	case LEOCC:
 		return "leocc"
+	case SATPIPE:
+		return "satpipe"
 	default:
 		panic("Unknown TCPCC")
 	}
@@ -354,6 +359,8 @@ func ParseTCPCCA(cca string) (TCPCCA, error) {
 		return ILLINOIS, nil
 	case "leocc":
 		return LEOCC, nil
+	case "satpipe":
+		return SATPIPE, nil
 	default:
 		return 999, fmt.Errorf("Unknown TCPCCA value '%s'", cca)
 	}
