@@ -415,7 +415,7 @@ func _MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap, 
 				Direction: direction,
 				StartAt:   start,
 				Sender: &pkg.BurstSender{Params: pkg.BurstParams{
-					Timeout: 4 * time.Second,
+					Timeout: gap,
 					Num:     num,
 					Pad:     pad,
 				}},
@@ -1183,8 +1183,7 @@ func MeasOWD(e *Executor, ts time.Time, resultPath string, params ParamMap) erro
 		var err error
 		direction, err := params.Direction()
 		if err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return err
 		}
 		directions = []pkg.Direction{direction}
 	}
