@@ -14,7 +14,7 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
+	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 func main() {

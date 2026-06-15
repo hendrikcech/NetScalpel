@@ -1,5 +1,5 @@
 {
-  description = "netmeas and stltrace go applications";
+  description = "NetScalpel: scalpel-run and scalpel-exp go applications";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -17,20 +17,21 @@
           vendorHash = "sha256-a7x4WkuuNfgKxeb35wQIP9kp0hRUWErXsElywzStMNU=";
         };
 
-        netmeas = pkgs.buildGoModule (common // {
-          pname = "netmeas";
-          subPackages = [ "cmd/netmeas" ];
+        scalpelRun = pkgs.buildGoModule (common // {
+          pname = "scalpel-run";
+          subPackages = [ "cmd/scalpel-run" ];
         });
 
-        stltrace = pkgs.buildGoModule (common // {
-          pname = "stltrace";
-          subPackages = [ "cmd/stltrace" ];
+        scalpelExp = pkgs.buildGoModule (common // {
+          pname = "scalpel-exp";
+          subPackages = [ "cmd/scalpel-exp" ];
         });
       in
       {
         packages = {
-          inherit netmeas stltrace;
-          default = netmeas;
+          "scalpel-run" = scalpelRun;
+          "scalpel-exp" = scalpelExp;
+          default = scalpelRun;
         };
       }
     );

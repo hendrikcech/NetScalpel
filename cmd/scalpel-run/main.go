@@ -13,7 +13,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/uuid"
 
-	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
+	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 var cli struct {

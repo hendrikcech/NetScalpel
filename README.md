@@ -1,11 +1,11 @@
-netmeas
+NetScalpel
 ----
 Run different network tests. Only works on Linux as it used TX and RX kernel timestamps. Requires go (golang) to be built.
 
 The client fetches all information from the server and prints csv data after a test completes.
 
 ``` sh
-Usage: netmeas <command> [flags]
+Usage: scalpel-run <command> [flags]
 
 Flags:
   -h, --help              Show context-sensitive help.
@@ -31,21 +31,21 @@ Commands:
   server [flags]
     Run in server mode.
 
-Run "netmeas <command> --help" for more information on a command.
+Run "scalpel-run <command> --help" for more information on a command.
 ```
 
 
 ## Example
 ``` sh
-# Build netmeas
-go build ./cmd/netmeas
+# Build scalpel-run
+go build ./cmd/scalpel-run
 
 # Start the server
-$ ./netmeas server
+$ ./scalpel-run server
 time=2025-08-12T23:07:53.194+02:00 level=INFO msg="Listening on TCP for RPC calls" addr=0.0.0.0:8500
 
 # In a different shell, start the client to send UDP packets for 1 s with a gap of 200 ms
-$ ./netmeas udp-periodic --ip 127.0.0.1 --interval=200 --duration=1000
+$ ./scalpel-run udp-periodic --ip 127.0.0.1 --interval=200 --duration=1000
 time=2025-08-12T23:13:00.830+02:00 level=INFO msg="Call Client.Run (UL)" type=*pkg.PeriodicSender params="{Interval:200ms Duration:1s Pad:0}" remoteAddr=127.0.0.1:41715
 seq,ts_sent,ts_rcvd,owd_ms,size,lost
 0,2025-08-12T23:13:01.031176846+02:00,2025-08-12T23:13:01.031180953+02:00,0.004107,8,false
@@ -86,7 +86,7 @@ Please note that *writing* to the TCP connection stops after `--duration`.
 The sender waits until all written data is flushed and all data is ACKed before returning.
 
 ```
-$ ./netmeas tcp --ip 127.0.0.1 --bytes 100000
+$ ./scalpel-run tcp --ip 127.0.0.1 --bytes 100000
 
 Time,State,SenderMSS,ReceiverMSS,RTT,RTTVar,RTO,ATO,LastDataSent,LastDataReceived,LastAckReceived,ReceiverWindow,SenderSSThreshold,ReceiverSSThreshold,SenderWindowBytes,SenderWindowSegs,PathMTU,CAState,Retransmissions,Backoffs,WindowOrKeepAliveProbes,UnackedSegs,SackedSegs,LostSegs,RetransSegs,ForwardAckSegs,ReorderedSegs,ReceiverRTT,TotalRetransSegs,PacingRate,ThruBytesAcked,ThruBytesReceived,SegsOut,SegsIn,NotSentBytes,MinRTT,DataSegsOut,DataSegsIn,BBRMaxBW,BBRMinRTT,BBRPacingGain,BBRCongWindowGain
 2025-09-24T14:09:22.809948975+02:00,established,1400,536,15.601,7.8,250,0,4,4,4,14480,2147483647,64088,0,10,1500,open,0,0,0,0,0,0,0,0,3,0,0,1794756,1,0,2,1,0,15.601,0,0,,,,

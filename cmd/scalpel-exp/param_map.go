@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
+	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 type ParamMap map[string]any

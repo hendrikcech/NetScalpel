@@ -6,9 +6,9 @@ ADD cmd ./cmd
 ADD pkg ./pkg
 ADD go.mod go.sum .
 
-RUN go build ./cmd/netmeas
-RUN go build ./cmd/stltrace
-RUN go build -o stltrace_noserver -tags=noserver -ldflags="-w -s" ./cmd/stltrace
+RUN go build ./cmd/scalpel-run
+RUN go build ./cmd/scalpel-exp
+RUN go build -o scalpel-exp_noserver -tags=noserver -ldflags="-w -s" ./cmd/scalpel-exp
 
 FROM golang:1.24
-COPY --from=builder /root/netmeas /root/stltrace /root/stltrace_noserver /usr/local/bin
+COPY --from=builder /root/scalpel-run /root/scalpel-exp /root/scalpel-exp_noserver /usr/local/bin

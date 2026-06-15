@@ -1,4 +1,4 @@
-module gitlab.lrz.de/cm/starlink/netmeas
+module github.com/hendrikcech/netscalpel
 
 go 1.24.1
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
+	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 type Client struct {
@@ -133,7 +133,7 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) {
 	}
 
 	if resultPath != "" {
-		path := filepath.Join(resultPath, "stltrace_client.log")
+		path := filepath.Join(resultPath, "scalpel_client.log")
 		var err error
 		c.slogFile, err = os.Create(path)
 		if err != nil {
@@ -154,7 +154,7 @@ func (c *Client) WriteServerLog(path string, rpcClient *rpc.Client) error {
 		return nil
 	}
 
-	logPath := filepath.Join(path, "stltrace_server.log")
+	logPath := filepath.Join(path, "scalpel_server.log")
 	if err := os.WriteFile(logPath, []byte(result.Log), 0644); err != nil {
 		return fmt.Errorf("Failed writing to %v: %v", logPath, err.Error())
 	}

@@ -10,7 +10,7 @@ import (
 
 	"github.com/alistanis/cartesian"
 
-	"gitlab.lrz.de/cm/starlink/netmeas/pkg"
+	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 var proceduresUlDl = map[string]ProcedureFunc{
