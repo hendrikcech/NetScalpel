@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/rpc"
 	"os"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -416,15 +417,33 @@ func testSender(t *testing.T, c *SenderClient) {
 			t.Errorf("Not all messages were received: %v != %v", len(c.UDPMsgsSent), len(c.UDPMsgsRcvd))
 		}
 
-		for i, msg := range c.UDPMsgsSent {
-			if msg.Seq != uint64(i) {
-				t.Errorf("expected seq %v, got %v in UDPMsgsSent", i, msg.Seq)
+		if c.Sender.SenderMode() == SendQUIC {
+			// The seqs are QUIC packet numbers, which quic-go deliberately
+			// skips at random intervals (optimistic-ACK defense): require
+			// strictly increasing, not dense.
+			for i := 1; i < len(c.UDPMsgsSent); i++ {
+				if c.UDPMsgsSent[i].Seq <= c.UDPMsgsSent[i-1].Seq {
+					t.Errorf("seqs not increasing in UDPMsgsSent: %v after %v",
+						c.UDPMsgsSent[i].Seq, c.UDPMsgsSent[i-1].Seq)
+				}
 			}
-		}
+			for i := 1; i < len(c.UDPMsgsRcvd); i++ {
+				if c.UDPMsgsRcvd[i].Seq <= c.UDPMsgsRcvd[i-1].Seq {
+					t.Errorf("seqs not increasing in UDPMsgsRcvd: %v after %v",
+						c.UDPMsgsRcvd[i].Seq, c.UDPMsgsRcvd[i-1].Seq)
+				}
+			}
+		} else {
+			for i, msg := range c.UDPMsgsSent {
+				if msg.Seq != uint64(i) {
+					t.Errorf("expected seq %v, got %v in UDPMsgsSent", i, msg.Seq)
+				}
+			}
 
-		for i, msg := range c.UDPMsgsRcvd {
-			if msg.Seq != uint64(i) {
-				t.Errorf("expected seq %v, got %v in UDPMsgsRcvd", i, msg.Seq)
+			for i, msg := range c.UDPMsgsRcvd {
+				if msg.Seq != uint64(i) {
+					t.Errorf("expected seq %v, got %v in UDPMsgsRcvd", i, msg.Seq)
+				}
 			}
 		}
 
@@ -482,6 +501,13 @@ func TestRunCommandTcpdumpRemote(t *testing.T) {
 
 func testRunCommandTcpdump(t *testing.T, local bool) {
 	t.Parallel()
+
+	// TcpdumpCommand runs "sudo tcpdump"; without a cached sudo credential
+	// there is no tty to prompt on and the command exits immediately. Skip
+	// instead of failing, like the ICMP tests do for missing privileges.
+	if err := exec.Command("sudo", "-n", "tcpdump", "--version").Run(); err != nil {
+		t.Skipf("sudo tcpdump not available without a password: %v", err)
+	}
 
 	RegisterGob()
 

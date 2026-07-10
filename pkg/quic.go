@@ -91,9 +91,19 @@ func (r *QUICReceiver) listen(ctx context.Context, listener *quic.Listener) erro
 	if err != nil {
 		return err
 	}
+	// Deliberately no conn.CloseWithError here: the sender closes the
+	// connection, and a receiver-side close races with the sender's final
+	// CONNECTION_CLOSE packet, making the tracers' sent/received packet
+	// counts diverge. The caller closing the UDP socket tears everything
+	// down in the end.
 
 	stream, err := conn.AcceptStream(ctx)
 	if err != nil {
+		if quicClosedCleanly(err) {
+			// The sender already finished and closed the connection before we
+			// got to accept the stream; the tracer has the packet counts
+			return nil
+		}
 		return err
 	}
 	defer stream.Close()
@@ -112,11 +122,8 @@ func (r *QUICReceiver) listen(ctx context.Context, listener *quic.Listener) erro
 			// The ctx wakeup above: test over, the data received so far counts
 			return nil
 		}
-		var appErr *quic.ApplicationError
-		if errors.As(err, &appErr) {
-			if appErr.ErrorCode == 0 {
-				return nil
-			}
+		if quicClosedCleanly(err) {
+			return nil
 		}
 		return fmt.Errorf("Unexpected QUIC error: %v", err)
 	}
@@ -212,9 +219,26 @@ func (s *QUICSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, tr
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return nil
 		}
+		if quicClosedCleanly(err) {
+			// The receiver closed the connection (e.g. after an abort on its
+			// side); the packets sent until then are the result
+			return nil
+		}
 		return err
 	}
 	return nil
+}
+
+// quicClosedCleanly reports whether err is the peer closing the connection
+// with application error code 0, i.e. a clean shutdown. Teardown is not
+// synchronized with the data exchange: the CONNECTION_CLOSE can overtake
+// stream delivery and surface as an error from AcceptStream or a stream
+// read/write instead of a clean EOF (flaky TestQUICDL). The tracers count
+// wire packets independently of the application-level stream, so results
+// are complete despite the error.
+func quicClosedCleanly(err error) bool {
+	var appErr *quic.ApplicationError
+	return errors.As(err, &appErr) && appErr.ErrorCode == 0
 }
 
 // The channels are never closed: quic-go emits tracer callbacks from the
@@ -239,13 +263,21 @@ func (t *QUICTracer) NewSendTracer(ctx context.Context, pers logging.Perspective
 	return &logging.ConnectionTracer{
 		SentShortHeaderPacket: func(hdr *logging.ShortHeader, size logging.ByteCount, ecn logging.ECN, ack *logging.AckFrame, frames []logging.Frame) {
 			// slog.DebugContext(ctx, "Sent", "dcid", hdr.DestConnectionID, "pn", hdr.PacketNumber)
-			select {
-			case t.sentC <- MsgSent{
+			msg := MsgSent{
 				Seq:    uint64(hdr.PacketNumber),
 				TsSent: time.Now(),
 				Len:    uint(size),
-			}:
-			case <-t.quit:
+			}
+			// Prefer the buffered send: a select over both a ready channel
+			// and the closed quit picks randomly and would drop packets that
+			// race with quit (the drain in ChanReader.Read still counts them)
+			select {
+			case t.sentC <- msg:
+			default:
+				select {
+				case t.sentC <- msg:
+				case <-t.quit:
+				}
 			}
 		},
 	}
@@ -254,13 +286,19 @@ func (t *QUICTracer) NewSendTracer(ctx context.Context, pers logging.Perspective
 func (t *QUICTracer) NewReceiveTracer(ctx context.Context, pers logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
 	return &logging.ConnectionTracer{
 		ReceivedShortHeaderPacket: func(hdr *logging.ShortHeader, size logging.ByteCount, ecn logging.ECN, frames []logging.Frame) {
-			select {
-			case t.rcvdC <- MsgRcvd{
+			msg := MsgRcvd{
 				Seq:    uint64(hdr.PacketNumber),
 				TsRcvd: time.Now(),
 				Len:    uint(size),
-			}:
-			case <-t.quit:
+			}
+			// See NewSendTracer: prefer the buffered send over quit
+			select {
+			case t.rcvdC <- msg:
+			default:
+				select {
+				case t.rcvdC <- msg:
+				case <-t.quit:
+				}
 			}
 		},
 	}
