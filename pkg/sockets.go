@@ -214,15 +214,17 @@ func setTCPCC(ctx context.Context, conn syscall.Conn, cc string) error {
 	return nil
 }
 
-func limitTCPMSS(ctx context.Context, conn syscall.Conn) error {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
+// MSS used for LeoCC connections: makes space for the TCP option that the
+// LeoCC kernel module adds.
+const LeoCCMSS = 1400
 
+// LimitTCPMSS clamps the TCP MSS of a not-yet-connected socket via
+// TCP_MAXSEG and verifies the kernel accepted the value. Must run before
+// connect (e.g. from a net.Dialer.Control); afterwards the kernel reports
+// the negotiated MSS, which is smaller by the TCP option space.
+func LimitTCPMSS(rawConn syscall.RawConn, mss int) error {
 	var cbErr error
-	err = rawConn.Control(func(fd uintptr) {
-		mss := 1350
+	err := rawConn.Control(func(fd uintptr) {
 		cbErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG, mss)
 		if cbErr != nil {
 			return
@@ -234,10 +236,8 @@ func limitTCPMSS(ctx context.Context, conn syscall.Conn) error {
 			return
 		}
 
-		if mss == newMSS {
-			slog.DebugContext(ctx, "Successfully limited TCP MSS", "mss", mss)
-		} else {
-			slog.ErrorContext(ctx, "Unexpected new TCP MSS", "mss", newMSS)
+		if newMSS != mss {
+			cbErr = fmt.Errorf("Unexpected TCP MSS after setting: %v != %v", newMSS, mss)
 		}
 	})
 

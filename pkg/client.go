@@ -128,21 +128,11 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		dialer := net.Dialer{}
 		// We need to make space for the added TCP option with LeoCC
 		if c.Sender.GetParams().(TCPSenderParams).CCA == LEOCC {
-			dialer.Control = func(network, address string, c syscall.RawConn) error {
-				return c.Control(func(fd uintptr) {
-					mss := 1350
-					if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG, 1400); err != nil {
-						slog.ErrorContext(ctx, "Failed setting TCP MSS on LeoCC UL socket", "mss", mss)
-						return
-					}
-					var newMSS int
-					newMSS, err := syscall.GetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG)
-					if err != nil || mss != newMSS {
-						slog.ErrorContext(ctx, "Unexpected new TCP MSS on LeoCC UL", "mss_requested", mss, "mss_set", newMSS, "error", err)
-					} else {
-						slog.DebugContext(ctx, "Successfully limited TCP MSS on LeoCC UL", "mss", mss)
-					}
-				})
+			dialer.Control = func(network, address string, rc syscall.RawConn) error {
+				if err := LimitTCPMSS(rc, LeoCCMSS); err != nil {
+					slog.ErrorContext(ctx, "Failed limiting TCP MSS on LeoCC UL socket", "mss", LeoCCMSS, "error", err)
+				}
+				return nil
 			}
 		}
 
