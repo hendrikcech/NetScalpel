@@ -394,6 +394,13 @@ func testSender(t *testing.T, c *SenderClient) {
 	if err != nil {
 		t.Fatalf("%v", err.Error())
 	}
+
+	// Every sender runs against a scheduled start so
+	// that waitUntil and the probe-deadline capping are exercised in the
+	// full matrix, and the recorded timestamps can be checked against the
+	// scheduled window below.
+	c.StartAt = time.Now().Add(500 * time.Millisecond)
+
 	start := time.Now()
 	if err := c.Run(ctxC, rpcClient); err != nil {
 		if strings.Contains(err.Error(), "operation not permitted") {
@@ -410,6 +417,8 @@ func testSender(t *testing.T, c *SenderClient) {
 	rpcClient.Close()
 
 	server.Stop()
+
+	assertClientTiming(t, c)
 
 	switch c.Sender.SenderMode().SocketType() {
 	case UDP:
