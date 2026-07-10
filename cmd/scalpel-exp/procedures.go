@@ -933,7 +933,10 @@ func QUIC(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 		}},
 	})
 
-	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
+	// The second flow ends at start+7s+5s; the capture must cover both flows
+	// (start was previously never advanced, capturing only [ts, ts+2s]).
+	end := start.Add(7 * time.Second).Add(5 * time.Second)
+	e.tcpdump(resultPath, ts, end.Sub(ts)+time.Second)
 
 	return nil
 }
