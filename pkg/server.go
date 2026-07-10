@@ -344,7 +344,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 		}()
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, conn.RemoteAddr())
 		if result.Err != nil {
-			slog.ErrorContext(ctx, "handleSender failed", "error", err)
+			slog.ErrorContext(ctx, "handleSender failed", "error", result.Err)
 		}
 	default:
 		slog.ErrorContext(ctx, "RequestServerTCP: unknown mode", "mode", args.ServerMode)
