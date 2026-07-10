@@ -8,9 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hendrikcech/netscalpel/internal/testutil"
 )
 
 func init() {
@@ -24,7 +25,7 @@ func init() {
 
 var ip string = "127.0.0.1"
 
-var port atomic.Uint32
+var ports = testutil.NewPortCounter(15000)
 
 func approxEqual[T int | uint](exp T, act T, margin T) error {
 	if act < exp-margin || act > exp+margin {
@@ -34,8 +35,7 @@ func approxEqual[T int | uint](exp T, act T, margin T) error {
 }
 
 func serverPort() uint {
-	port.CompareAndSwap(0, 15000)
-	return uint(port.Add(1))
+	return ports.Next()
 }
 
 func dialRpcClient(ip string, port uint) (*rpc.Client, error) {

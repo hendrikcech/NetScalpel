@@ -19,34 +19,18 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+
+	"github.com/hendrikcech/netscalpel/internal/testutil"
 )
 
-// returnsWithin runs fn and fails the test if it does not return within d.
+// Aliases for the shared helpers (internal/testutil); kept as local names so
+// the many call sites in this file and timing_test.go stay short.
+var cancelAfter = testutil.CancelAfter
+var localAddrOf = testutil.LocalAddrOf
+
 func returnsWithin(t *testing.T, d time.Duration, name string, fn func()) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() { defer close(done); fn() }()
-	select {
-	case <-done:
-	case <-time.After(d):
-		t.Fatalf("%s did not return within %v", name, d)
-	}
-}
-
-// cancelAfter returns a context that is cancelled after d (context.Canceled,
-// i.e. a user abort, as opposed to a deadline expiry).
-func cancelAfter(d time.Duration) context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(d)
-		cancel()
-	}()
-	return ctx
-}
-
-// localAddrOf returns a dialable loopback address for a wildcard-bound UDP socket.
-func localAddrOf(conn *net.UDPConn) *net.UDPAddr {
-	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: conn.LocalAddr().(*net.UDPAddr).Port}
+	testutil.ReturnsWithin(t, d, name, fn)
 }
 
 // --- PeriodicSender ignores context cancellation (pkg/udp.go run loop) ---

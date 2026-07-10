@@ -12,33 +12,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/hendrikcech/netscalpel/internal/testutil"
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 const testIP = "127.0.0.1"
 
-var testPort atomic.Uint32
+var testPorts = testutil.NewPortCounter(16100)
 
 func termServerPort() uint {
-	testPort.CompareAndSwap(0, 16100)
-	return uint(testPort.Add(1))
+	return testPorts.Next()
 }
 
-// returnsWithin runs fn and fails the test if it does not return within d.
 func returnsWithin(t *testing.T, d time.Duration, name string, fn func()) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() { defer close(done); fn() }()
-	select {
-	case <-done:
-	case <-time.After(d):
-		t.Fatalf("%s did not return within %v", name, d)
-	}
+	testutil.ReturnsWithin(t, d, name, fn)
 }
 
 // --- runRound performs blocking Gather RPCs after cancellation ---
