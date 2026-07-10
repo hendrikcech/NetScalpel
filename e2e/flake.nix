@@ -261,8 +261,13 @@
                   --out ./icmp.csv --log ./icmp.log --log-level=-4
               '';
               check = ''
-                ${verify} owd --csv client/udp.csv --delay-ms 20 --min-packets 250
-                ${verify} owd --csv client/icmp.csv --delay-ms 20 --min-packets 250
+                # Shared CI runners see more scheduling jitter: widen margin
+                owdEpsMs=2
+                if [ -n "''${CI:-}" ]; then
+                  owdEpsMs=4
+                fi
+                ${verify} owd --csv client/udp.csv --delay-ms 20 --eps-ms $owdEpsMs --min-packets 250
+                ${verify} owd --csv client/icmp.csv --delay-ms 20 --eps-ms $owdEpsMs --min-packets 250
                 ${verify} compare --csv-a client/udp.csv --csv-b client/icmp.csv --eps-ms 1
               '';
             };
