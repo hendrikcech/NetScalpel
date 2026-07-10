@@ -666,3 +666,14 @@ func TestProcessUDPDup(t *testing.T) {
 	res := processUDP(sent, rcvd)
 	checkProcessUDP(t, exp, res)
 }
+
+// A round that sent nothing (e.g. aborted) must not report a NaN% loss in
+// info.txt.
+func TestSummaryUDPNoPacketsSent(t *testing.T) {
+	c := &SenderClient{}
+	var b strings.Builder
+	c.summaryUDP(&b)
+	if strings.Contains(b.String(), "NaN") {
+		t.Errorf("summary contains NaN: %q", b.String())
+	}
+}

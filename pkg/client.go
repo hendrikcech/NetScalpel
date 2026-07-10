@@ -810,8 +810,12 @@ func (c *SenderClient) summaryUDP(b *strings.Builder) {
 
 	numSent := uint64(len(c.UDPMsgsSent))
 	numRcvd := len(c.UDPMsgsRcvd)
+	lossPct := 0.0
+	if numSent > 0 {
+		lossPct = 100.0 - float64(numRcvd)/float64(numSent)*100
+	}
 	b.WriteString(fmt.Sprintf("%v/%v packets (%.2f%% lost)",
-		numRcvd, numSent, 100.0-float64(numRcvd)/float64(numSent)*100))
+		numRcvd, numSent, lossPct))
 
 	bytesRcvd := uint(0)
 	for i := range c.UDPMsgsRcvd {
