@@ -555,10 +555,18 @@ func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *Reques
 	s.resultLock.Unlock()
 
 	if !ok {
-		return logErrContext(ctx, "No test with id %v started\n", args.ID)
+		return logErrContext(ctx, "No test with id %v: never started or result already retrieved", args.ID)
 	}
 
-	if err := handleChanResult(ctx, c, args.ID, reply); err != nil {
+	received, err := handleChanResult(ctx, c, args.ID, reply)
+	if received {
+		// The server runs indefinitely (--rounds 0); drop the entry so the
+		// map does not grow by one test forever.
+		s.resultLock.Lock()
+		delete(s.resultC, args.ID)
+		s.resultLock.Unlock()
+	}
+	if err != nil {
 		return logErrContext(ctx, "Receive from resultC: %v", err)
 	}
 
@@ -567,7 +575,10 @@ func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *Reques
 	return nil
 }
 
-func handleChanResult(ctx context.Context, c chan *Result, id string, reply *RequestServerResultReply) error {
+// The first return value reports whether the test delivered its result (or
+// the channel was found closed), i.e. whether the caller can release the
+// per-test state; it is false only when ctx ended before a result arrived.
+func handleChanResult(ctx context.Context, c chan *Result, id string, reply *RequestServerResultReply) (bool, error) {
 	var (
 		result *Result
 		ok     bool
@@ -578,16 +589,16 @@ func handleChanResult(ctx context.Context, c chan *Result, id string, reply *Req
 		slog.DebugContext(ctx, "Received on chan result")
 	case <-ctx.Done():
 		slog.DebugContext(ctx, "ctx.Done() while waiting on chan result")
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 	if !ok {
-		return fmt.Errorf("Result %v was already retrieved", id)
+		return true, fmt.Errorf("Result %v was already retrieved", id)
 	}
 	if result.Err != nil {
-		return fmt.Errorf("handleChanResult: %v", result.Err.Error())
+		return true, fmt.Errorf("handleChanResult: %v", result.Err.Error())
 	}
 	reply.Result = result.Res
-	return nil
+	return true, nil
 }
 
 type RunCommandArgs struct {
@@ -687,7 +698,7 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 	s.resultLock.Unlock()
 
 	if !ok {
-		return logErrContext(ctx, "No command with that ID started")
+		return logErrContext(ctx, "No command with id %v: never started or result already retrieved", args.ID)
 	}
 
 	var result *Result
@@ -696,6 +707,10 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 	case <-s.ctx.Done():
 		return logErrContext(ctx, "Server shutting down while waiting for command result")
 	}
+	// See RequestServerResult: the map must not grow forever on long runs.
+	s.resultLock.Lock()
+	delete(s.resultC, args.ID)
+	s.resultLock.Unlock()
 	if result == nil {
 		return logErrContext(ctx, "Command result %v was already retrieved", args.ID)
 	}

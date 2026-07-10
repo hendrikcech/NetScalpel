@@ -66,8 +66,8 @@ func (c *Client) Run(ctx context.Context) {
 		if err != nil {
 			return
 		}
-		defer rpcClient.Close()
 		if ctx.Err() != nil {
+			rpcClient.Close()
 			return
 		}
 
