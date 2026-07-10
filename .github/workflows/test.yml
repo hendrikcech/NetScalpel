@@ -32,7 +32,7 @@ jobs:
       # here even though they skip on typical dev machines.
       - name: go test
         run: >
-          go run gotest.tools/gotestsum@v1.12.1
+          go run gotest.tools/gotestsum@v1.13.0
           --format testname
           --rerun-fails=2
           --packages=./...
