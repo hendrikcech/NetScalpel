@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -142,8 +141,7 @@ func ProgressiveRate(e *Executor, ts time.Time, resultPath string, params ParamM
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse duration: %v", err)
 		}
 	}
 
@@ -203,8 +201,7 @@ func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params Para
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse duration: %v", err)
 		}
 	}
 
@@ -213,8 +210,7 @@ func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params Para
 		if _, ok := params["ratesUL"]; ok {
 			var err error
 			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
-				slog.Error("parse ratesUL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse ratesUL: %v", err)
 			}
 		} else {
 			ratesMbps = []uint{140}
@@ -223,8 +219,7 @@ func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params Para
 		if _, ok := params["ratesDL"]; ok {
 			var err error
 			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
-				slog.Error("parse ratesDL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse ratesDL: %v", err)
 			}
 		} else {
 			ratesMbps = []uint{500}
@@ -309,8 +304,7 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 		if _, ok := params["ratesUL"]; ok {
 			var err error
 			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
-				slog.Error("parse ratesUL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse ratesUL: %v", err)
 			}
 		} else {
 			ratesMbps = []uint{10, 70}
@@ -319,8 +313,7 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 		if _, ok := params["ratesDL"]; ok {
 			var err error
 			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
-				slog.Error("parse ratesDL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse ratesDL: %v", err)
 			}
 		} else {
 			ratesMbps = []uint{50, 700}
@@ -545,8 +538,7 @@ func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params Param
 		if _, ok := params["ratesUL"]; ok {
 			var err error
 			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
-				slog.Error("parse ratesUL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse ratesUL: %v", err)
 			}
 		} else {
 			ratesMbps = []uint{140}
@@ -555,8 +547,7 @@ func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params Param
 		if _, ok := params["ratesDL"]; ok {
 			var err error
 			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
-				slog.Error("parse ratesDL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse ratesDL: %v", err)
 			}
 		} else {
 			ratesMbps = []uint{500}
@@ -576,8 +567,7 @@ outer:
 		if _, ok := params["step"]; ok {
 			var err error
 			if step, err = params.Uint("step"); err != nil {
-				slog.Error("parse step", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse step: %v", err)
 			}
 		}
 
@@ -585,8 +575,7 @@ outer:
 		if _, ok := params["max"]; ok {
 			var err error
 			if maxBreak, err = params.Uint("max"); err != nil {
-				slog.Error("parse max (maxBreak)", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse max (maxBreak): %v", err)
 			}
 		}
 
@@ -815,8 +804,7 @@ func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params Par
 		if _, ok := params["miceUL"]; ok {
 			var err error
 			if miceMbps, err = params.Uints("miceUL"); err != nil {
-				slog.Error("parse miceUL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse miceUL: %v", err)
 			}
 		}
 	} else {
@@ -827,8 +815,7 @@ func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params Par
 		if _, ok := params["miceDL"]; ok {
 			var err error
 			if miceMbps, err = params.Uints("miceDL"); err != nil {
-				slog.Error("parse miceDL", "error", err)
-				os.Exit(1)
+				return fmt.Errorf("parse miceDL: %v", err)
 			}
 		}
 	}
@@ -963,8 +950,7 @@ func ProgressiveDurationQUIC(e *Executor, ts time.Time, resultPath string, param
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse duration: %v", err)
 		}
 	}
 
@@ -1014,8 +1000,7 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 		var err error
 		ccas, err = params.TCPCCAs("ccas")
 		if err != nil {
-			slog.Error("parse tcpccas", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse tcpccas: %v", err)
 		}
 	}
 
@@ -1029,8 +1014,7 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse duration: %v", err)
 		}
 	}
 
@@ -1107,8 +1091,7 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 		var err error
 		ccas, err = params.TCPCCAs("ccas")
 		if err != nil {
-			slog.Error("parse tcpccas", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse tcpccas: %v", err)
 		}
 	}
 
@@ -1247,8 +1230,7 @@ func MeasRate(e *Executor, ts time.Time, resultPath string, params ParamMap) err
 		var err error
 		direction, err := params.Direction()
 		if err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse duration: %v", err)
 		}
 		directions = []pkg.Direction{direction}
 	}
@@ -1319,8 +1301,7 @@ func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamM
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse duration: %v", err)
 		}
 	}
 
@@ -1330,8 +1311,7 @@ func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamM
 	if _, ok := params["packets"]; ok {
 		var err error
 		if numPackets, err = params.Uints("packets"); err != nil {
-			slog.Error("parse packets", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse packets: %v", err)
 		}
 	}
 
@@ -1411,8 +1391,7 @@ func RampUpProbe(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	if _, ok := params["durations"]; ok {
 		var err error
 		if durationsMs, err = params.Uints("durations"); err != nil {
-			slog.Error("parse duration", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("parse duration: %v", err)
 		}
 	}
 
