@@ -164,6 +164,41 @@ func TestStuckProbeProducesErrorResult(t *testing.T) {
 	}
 }
 
+// A RequestServer whose listen setup fails (e.g. ICMP without CAP_NET_RAW)
+// must feed the error into resultC so that a later RequestServerResult
+// returns it instead of blocking forever on a channel nothing writes to.
+func TestListenFailureProducesErrorResult(t *testing.T) {
+	if conn, err := listenICMP(context.Background()); err == nil {
+		conn.Close()
+		t.Skip("running with ICMP privileges; cannot trigger the listen failure")
+	}
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	s := NewServer(srvCtx, nil)
+
+	args := RequestServerArgs{
+		ID:         "b3",
+		Timeout:    500 * time.Millisecond,
+		StartAt:    time.Now().Add(200 * time.Millisecond),
+		ServerMode: SendICMP,
+		Params:     ICMPParams{Duration_: 300 * time.Millisecond, Interval: time.Millisecond},
+	}
+	var reply RequestServerReply
+	if err := s.RequestServer(args, &reply); err == nil {
+		t.Fatal("expected RequestServer to fail without ICMP privileges")
+	}
+
+	var resErr error
+	returnsWithin(t, 3*time.Second, "RequestServerResult", func() {
+		var res RequestServerResultReply
+		resErr = s.RequestServerResult(RequestServerResultArgs{ID: "b3"}, &res)
+	})
+	if resErr == nil {
+		t.Errorf("expected an error result for a test whose listen setup failed")
+	}
+}
+
 // --- TCP Accept is not cancellable (pkg/tcp.go, pkg/server.go SendTCP) ---
 
 func TestTCPReceiverAcceptCancellable(t *testing.T) {

@@ -167,8 +167,7 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case UDP:
 		conn, err := listenUDP(ctx)
 		if err != nil {
-			s.finishTest(args.ID)
-			return logErrContext(ctx, "listenUDP failed: %v", err.Error())
+			return s.failTest(ctx, args.ID, "listenUDP failed: %v", err.Error())
 		}
 		laddr = conn.LocalAddr()
 		reply.Port = uint(laddr.(*net.UDPAddr).Port)
@@ -176,8 +175,7 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case TCP:
 		ln, err := listenTCP(ctx)
 		if err != nil {
-			s.finishTest(args.ID)
-			return logErrContext(ctx, "listenTCP failed: %v", err.Error())
+			return s.failTest(ctx, args.ID, "listenTCP failed: %v", err.Error())
 		}
 		laddr = ln.Addr()
 		reply.Port = uint(laddr.(*net.TCPAddr).Port)
@@ -185,8 +183,7 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case ICMP:
 		conn, err := listenICMP(ctx)
 		if err != nil {
-			s.finishTest(args.ID)
-			return logErrContext(ctx, "listenICMP failed: %v", err.Error())
+			return s.failTest(ctx, args.ID, "listenICMP failed: %v", err.Error())
 		}
 		go s.handleRequestServerICMP(testCtx, conn, args)
 
@@ -199,6 +196,22 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	// Note: returns no error even if requested ServerMode is invalid
 
 	return nil
+}
+
+// failTest delivers the error as the test's result before releasing the
+// per-test context. Without a result in resultC, a later RequestServerResult
+// for this ID would block forever and leave the client stuck at gathering.
+func (s *Server) failTest(ctx context.Context, id string, fmtStr string, args ...interface{}) error {
+	err := logErrContext(ctx, fmtStr, args...)
+
+	s.resultLock.RLock()
+	c := s.resultC[id]
+	s.resultLock.RUnlock()
+	c <- &Result{Err: err}
+	close(c)
+
+	s.finishTest(id)
+	return err
 }
 
 // finishTest releases the per-test context registered in RequestServer or
