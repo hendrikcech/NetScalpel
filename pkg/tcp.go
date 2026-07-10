@@ -45,11 +45,13 @@ func (t *TCPMonitor) Run(ctx context.Context, conn net.Conn, drainQueue bool) {
 	tc, err := tcp.NewConn(conn)
 	if err != nil {
 		t.Err = fmt.Errorf("Failed opening tcp info conn: %v", err.Error())
+		return
 	}
 
 	ccName, err := tcpCCName(ctx, tc)
 	if err != nil {
 		t.Err = fmt.Errorf("Failed getCCName: %v", err.Error())
+		return
 	}
 	bbrUsed := strings.HasPrefix(ccName, "bbr")
 
