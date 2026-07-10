@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/rpc"
 	"os"
 	"path/filepath"
@@ -64,6 +65,7 @@ func (c *Client) Run(ctx context.Context) {
 	for c.round = range c.Rounds {
 		rpcClient, err := dialRpcClient(ctx, c.IP, c.Port)
 		if err != nil {
+			slog.ErrorContext(ctx, "Failed dialing RPC server", "error", err)
 			return
 		}
 		if ctx.Err() != nil {
@@ -199,24 +201,10 @@ func mkResultPath(base string, ts time.Time, suffix string) (string, error) {
 }
 
 func dialRpcClient(ctx context.Context, ip string, port uint) (*rpc.Client, error) {
-	clientC := make(chan *rpc.Client, 1)
-	go func() {
-		client, err := rpc.Dial("tcp", fmt.Sprintf("%s:%v", ip, port))
-		if err != nil {
-			fmt.Printf("rpc.Dial failed: %v\n", err.Error())
-			os.Exit(1)
-		}
-		clientC <- client
-	}()
-
-	select {
-	case <-time.After(10 * time.Second):
-		fmt.Printf("rpc.Dial timed out: %s:%v\n", ip, port)
-		os.Exit(1)
-		return nil, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case client := <-clientC:
-		return client, nil
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%v", ip, port))
+	if err != nil {
+		return nil, fmt.Errorf("rpc dial %s:%v failed: %w", ip, port, err)
 	}
+	return rpc.NewClient(conn), nil
 }
