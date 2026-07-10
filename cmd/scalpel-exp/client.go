@@ -88,6 +88,17 @@ func (c *Client) runRound(ctx context.Context, e *Executor, rpcClient *rpc.Clien
 		slog.ErrorContext(ctx, fmt.Sprintf("[Round %v/%v] client.Run failed", c.round+1, c.Rounds), "error", err)
 	}
 
+	// On user abort the results are incomplete; don't block on gathering.
+	// Tell the server to cancel the still-running tests of this round so it
+	// releases its sockets and goroutines right away.
+	if ctx.Err() != nil {
+		slog.InfoContext(ctx, "Round was cancelled, aborting server-side tests and skipping result gathering")
+		if err := e.AbortServerTests(); err != nil {
+			slog.WarnContext(ctx, "Failed aborting server-side tests", "error", err.Error())
+		}
+		return
+	}
+
 	slog.InfoContext(ctx, "Gathering results ...")
 	start := time.Now()
 	if err := e.GatherResults(); err != nil {

@@ -22,11 +22,30 @@ import (
 type Client interface {
 	Run(ctx context.Context, client *rpc.Client) error
 	Gather(ctx context.Context, client *rpc.Client) error
+	// Abort tells the server to cancel this test so its goroutines end
+	// promptly after a user abort. The ctx must be a
+	// live one: the round context is already cancelled at this point.
+	Abort(ctx context.Context, client *rpc.Client) error
 	Summary() string
 }
 
 var _ Client = (*SenderClient)(nil)
 var _ Client = (*CommandClient)(nil)
+
+// callCtx invokes client.Call but returns early with the context's error if
+// ctx ends first (rpc.Client.Call itself is not context-aware and would
+// block for as long as the server takes to respond).
+// The abandoned call keeps running in the background; its reply is discarded
+// when the RPC connection is closed.
+func callCtx(ctx context.Context, client *rpc.Client, serviceMethod string, args any, reply any) error {
+	call := client.Go(serviceMethod, args, reply, make(chan *rpc.Call, 1))
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case c := <-call.Done:
+		return c.Error
+	}
+}
 
 // C: Written to CSV
 type MsgResult struct {
@@ -83,7 +102,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		Params:     c.Sender.GetParams(),
 	}
 	var reply RequestServerReply
-	if err := client.Call("Server.RequestServer", args, &reply); err != nil {
+	if err := callCtx(ctx, client, "Server.RequestServer", args, &reply); err != nil {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
 
@@ -186,7 +205,7 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 		Params:     c.Sender.GetParams(),
 	}
 	var reply RequestServerReply
-	if err := client.Call("Server.RequestServer", args, &reply); err != nil {
+	if err := callCtx(ctx, client, "Server.RequestServer", args, &reply); err != nil {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
 	}
 
@@ -444,13 +463,26 @@ func (c *SenderClient) punchHole(ctx context.Context, conn net.PacketConn, raddr
 	return nil
 }
 
+func (c *SenderClient) Abort(ctx context.Context, client *rpc.Client) error {
+	if c.ID == "" {
+		// Run never started, so no server-side test was requested
+		return nil
+	}
+	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
+	var reply AbortReply
+	if err := callCtx(ctx, client, "Server.Abort", AbortArgs{ID: c.ID}, &reply); err != nil {
+		return fmt.Errorf("Call Server.Abort failed: %v", err.Error())
+	}
+	return nil
+}
+
 func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 
 	slog.DebugContext(ctx, "Requesting results", "sender", fmt.Sprintf("%T", c.Sender))
 
 	var result RequestServerResultReply
-	if err := client.Call("Server.RequestServerResult",
+	if err := callCtx(ctx, client, "Server.RequestServerResult",
 		RequestServerResultArgs{ID: c.ID}, &result); err != nil {
 		return fmt.Errorf("Call Server.RequestServerResult failed: %v", err.Error())
 	}
@@ -857,9 +889,23 @@ func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 	} else {
 		args := RunCommandArgs{ID: c.ID, Params: c.Params, StartAt: c.StartAt}
 		var reply RunCommandReply
-		if err := client.Call("Server.RunCommand", args, &reply); err != nil {
+		if err := callCtx(ctx, client, "Server.RunCommand", args, &reply); err != nil {
 			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
 		}
+	}
+	return nil
+}
+
+func (c *CommandClient) Abort(ctx context.Context, client *rpc.Client) error {
+	if c.Local || c.ID == "" {
+		// A local command is stopped by the round context itself
+		// (MonitorCommand observes it); nothing to abort on the server.
+		return nil
+	}
+	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
+	var reply AbortReply
+	if err := callCtx(ctx, client, "Server.Abort", AbortArgs{ID: c.ID}, &reply); err != nil {
+		return fmt.Errorf("Call Server.Abort failed: %v", err.Error())
 	}
 	return nil
 }
@@ -909,7 +955,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 		slog.DebugContext(ctx, "Requesting results", "name", fmt.Sprintf("%T", c.Params))
 
 		var result RequestRunCommandResultReply
-		if err := client.Call("Server.RequestRunCommandResult", RequestRunCommandResultArgs{ID: c.ID}, &result); err != nil {
+		if err := callCtx(ctx, client, "Server.RequestRunCommandResult", RequestRunCommandResultArgs{ID: c.ID}, &result); err != nil {
 			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
 		}
 

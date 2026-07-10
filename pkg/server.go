@@ -55,10 +55,16 @@ func RunServer(ctx context.Context, ip string, port uint, slogCh *chan *slog.Rec
 				return
 			}
 			s.wg.Add(1)
+			s.connsLock.Lock()
+			s.conns[conn] = struct{}{}
+			s.connsLock.Unlock()
 			slog.InfoContext(ctx, "New RPC client", "remoteAddr", conn.RemoteAddr())
 			go func() {
 				handler.ServeConn(conn)
 				slog.InfoContext(ctx, "RPC client disconnected", "remoteAddr", conn.RemoteAddr())
+				s.connsLock.Lock()
+				delete(s.conns, conn)
+				s.connsLock.Unlock()
 				s.wg.Done()
 			}()
 		}
@@ -83,21 +89,40 @@ type Server struct {
 	ctx      context.Context
 	slogCh   *chan *slog.Record
 
-	resultC    map[string]chan *Result
+	conns     map[net.Conn]struct{}
+	connsLock sync.Mutex
+
+	resultC map[string]chan *Result
+	// Cancel functions of the per-test contexts, keyed by test ID. Called by
+	// the Abort RPC so a client that gives up on a test can end the
+	// server-side goroutines early. Entries are
+	// removed by finishTest once the test delivers its result.
+	testCancel map[string]context.CancelFunc
 	resultLock sync.RWMutex
 }
 
 func NewServer(ctx context.Context, slogCh *chan *slog.Record) *Server {
 	return &Server{
-		ctx:     ctx,
-		slogCh:  slogCh,
-		resultC: make(map[string]chan *Result),
+		ctx:        ctx,
+		slogCh:     slogCh,
+		conns:      make(map[net.Conn]struct{}),
+		resultC:    make(map[string]chan *Result),
+		testCancel: make(map[string]context.CancelFunc),
 	}
 }
 
-// TODO: replace with context.Cancel?
+// Stop closes the RPC listener and all active RPC connections, then waits
+// for their handlers to finish. Without closing the connections, Stop would
+// block until every client disconnects on its own.
+// The caller should cancel the server context first so that RPC handlers
+// blocked on pending results return.
 func (s *Server) Stop() {
 	s.listener.Close()
+	s.connsLock.Lock()
+	for conn := range s.conns {
+		conn.Close()
+	}
+	s.connsLock.Unlock()
 	s.wg.Wait()
 }
 
@@ -123,11 +148,18 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 		return logErrContext(ctx, "RequestServer: ID is empty")
 	}
 
+	// Everything the test does runs on a per-test child context so that the
+	// Abort RPC can end this one test without touching the rest of the server.
+	testCtx, testCancel := context.WithCancel(ctx)
+
 	s.resultLock.Lock()
 	if _, ok := s.resultC[args.ID]; ok {
+		s.resultLock.Unlock()
+		testCancel()
 		return logErrContext(ctx, "ID already used")
 	}
 	s.resultC[args.ID] = make(chan *Result, 1)
+	s.testCancel[args.ID] = testCancel
 	s.resultLock.Unlock()
 
 	var laddr net.Addr
@@ -135,25 +167,28 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case UDP:
 		conn, err := listenUDP(ctx)
 		if err != nil {
+			s.finishTest(args.ID)
 			return logErrContext(ctx, "listenUDP failed: %v", err.Error())
 		}
 		laddr = conn.LocalAddr()
 		reply.Port = uint(laddr.(*net.UDPAddr).Port)
-		go s.handleRequestServerUDP(ctx, conn, args)
+		go s.handleRequestServerUDP(testCtx, conn, args)
 	case TCP:
 		ln, err := listenTCP(ctx)
 		if err != nil {
+			s.finishTest(args.ID)
 			return logErrContext(ctx, "listenTCP failed: %v", err.Error())
 		}
 		laddr = ln.Addr()
 		reply.Port = uint(laddr.(*net.TCPAddr).Port)
-		go s.handleRequestServerTCP(ctx, ln, args)
+		go s.handleRequestServerTCP(testCtx, ln, args)
 	case ICMP:
 		conn, err := listenICMP(ctx)
 		if err != nil {
+			s.finishTest(args.ID)
 			return logErrContext(ctx, "listenICMP failed: %v", err.Error())
 		}
-		go s.handleRequestServerICMP(ctx, conn, args)
+		go s.handleRequestServerICMP(testCtx, conn, args)
 
 	default:
 		panic("socket type not implemented")
@@ -163,6 +198,46 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 
 	// Note: returns no error even if requested ServerMode is invalid
 
+	return nil
+}
+
+// finishTest releases the per-test context registered in RequestServer or
+// RunCommand; afterwards Abort calls for this ID are a no-op.
+func (s *Server) finishTest(id string) {
+	s.resultLock.Lock()
+	cancel := s.testCancel[id]
+	delete(s.testCancel, id)
+	s.resultLock.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+type AbortArgs struct {
+	ID string
+}
+type AbortReply struct {
+}
+
+// Abort cancels the per-test context of a running test or command so the
+// server-side goroutines end promptly once the client has given up on the
+// test, instead of running to their natural end.
+// Aborting an unknown or already finished ID is a no-op: on user abort the
+// client fires Abort for every test it scheduled.
+func (s *Server) Abort(args AbortArgs, reply *AbortReply) error {
+	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
+
+	s.resultLock.Lock()
+	cancel, ok := s.testCancel[args.ID]
+	s.resultLock.Unlock()
+
+	if !ok {
+		slog.DebugContext(ctx, "Abort: no running test with this ID")
+		return nil
+	}
+
+	slog.InfoContext(ctx, "Aborting test on client request")
+	cancel()
 	return nil
 }
 
@@ -176,6 +251,7 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 		s.resultC[args.ID] <- &result
 		close(s.resultC[args.ID])
 		s.resultLock.Unlock()
+		s.finishTest(args.ID)
 	}()
 
 	var sender Sender
@@ -200,7 +276,7 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 	}
 
 	if sender != nil {
-		raddr, err := waitForUDPProbe(ctx, conn)
+		raddr, err := waitForUDPProbe(ctx, conn, args.StartAt)
 		if err != nil {
 			slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
 			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
@@ -226,6 +302,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 		s.resultC[args.ID] <- &result
 		close(s.resultC[args.ID])
 		s.resultLock.Unlock()
+		s.finishTest(args.ID)
 	}()
 
 	switch args.ServerMode {
@@ -234,7 +311,15 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
 	case SendTCP:
 		sender := &TCPSender{Params: args.Params.(TCPSenderParams)}
+		// Bound the accept: if the client has not connected by the
+		// first-contact deadline, it never will.
+		if err := ln.SetDeadline(firstContactDeadline(args.StartAt)); err != nil {
+			result.Err = fmt.Errorf("Failed to set accept deadline: %v", err.Error())
+			return
+		}
+		stop := context.AfterFunc(ctx, func() { ln.SetDeadline(time.Now()) })
 		conn, err := ln.AcceptTCP()
+		stop()
 		if err != nil {
 			slog.ErrorContext(ctx, "RequestServerTCP: failed AcceptTCP", "error", err)
 			result.Err = fmt.Errorf("Failed AcceptTCP: %v", err.Error())
@@ -264,11 +349,12 @@ func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, 
 		s.resultC[args.ID] <- &result
 		close(s.resultC[args.ID])
 		s.resultLock.Unlock()
+		s.finishTest(args.ID)
 	}()
 
 	switch args.ServerMode {
 	case SendICMP:
-		raddr, echoID, err := waitForICMPProbe(ctx, conn, args.Params.(ICMPParams).ClientEchoID)
+		raddr, echoID, err := waitForICMPProbe(ctx, conn, args.Params.(ICMPParams).ClientEchoID, args.StartAt)
 		if err != nil {
 			slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
 			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
@@ -304,13 +390,14 @@ func handleSender(ctx context.Context, conn net.Conn, args RequestServerArgs, se
 		return nil, err
 	}
 
-	// TODO: is this working as expected?
+	// Safety net for blocked I/O: generous socket deadline covering the
+	// whole test (a fixed 60s deadline was applied before, breaking
+	// server-side send tests longer than 60s)
 	deadline := args.Params.GetDuration() * 2
-	minDeadline := 60 * time.Second
 	if deadline < 60*time.Second {
-		deadline = minDeadline
+		deadline = 60 * time.Second
 	}
-	if err := conn.SetDeadline(time.Now().Add(minDeadline)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(deadline)); err != nil {
 		return nil, err
 	}
 
@@ -338,9 +425,32 @@ func handleReceiver(ctx context.Context, ln net.Listener, args RequestServerArgs
 	return res, err
 }
 
-func waitForUDPProbe(ctx context.Context, conn net.PacketConn) (net.Addr, error) {
+// The client contacts the server (NAT probe or TCP connect) right after the
+// RequestServer RPC returns, and it gives up before StartAt. Waiting past
+// this deadline means the client is gone; the test goroutine must give up
+// and deliver an error result instead of blocking forever, which would
+// in turn deadlock the client's result-gathering RPC.
+func firstContactDeadline(startAt time.Time) time.Time {
+	if startAt.IsZero() {
+		return time.Now().Add(10 * time.Second)
+	}
+	deadline := startAt.Add(time.Second)
+	if min := time.Now().Add(2 * time.Second); deadline.Before(min) {
+		deadline = min
+	}
+	return deadline
+}
+
+func waitForUDPProbe(ctx context.Context, conn net.PacketConn, startAt time.Time) (net.Addr, error) {
 	// Wait for single UDP packet from receiving client UDP socket that opens
 	// the client NAT.
+	deadline := firstContactDeadline(startAt)
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, err
+	}
+	stop := context.AfterFunc(ctx, func() { conn.SetReadDeadline(time.Now()) })
+	defer stop()
+
 	var buf [1500]byte
 	_, raddr, err := conn.ReadFrom(buf[0:])
 	if err != nil {
@@ -348,7 +458,10 @@ func waitForUDPProbe(ctx context.Context, conn net.PacketConn) (net.Addr, error)
 			// not a timeout
 			return nil, fmt.Errorf("waitForUDPProbe ReadFrom: %v", err.Error())
 		}
-		return nil, nil // TODO: return error?
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("waitForUDPProbe: cancelled: %v", ctx.Err())
+		}
+		return nil, fmt.Errorf("waitForUDPProbe: no probe received before %v", deadline)
 	}
 	if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
 		return nil, fmt.Errorf("handleSender: WriteTo: %v", err.Error())
@@ -357,12 +470,14 @@ func waitForUDPProbe(ctx context.Context, conn net.PacketConn) (net.Addr, error)
 	return raddr, nil
 }
 
-// Wait for ICMP echo request from receiving client
-// Only terminates on conn deadline, i.e., after 10 seconds
-func waitForICMPProbe(ctx context.Context, conn net.PacketConn, echoID uint16) (net.Addr, uint16, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+// Wait for ICMP echo request from receiving client.
+// Terminates on the first-contact deadline or on ctx cancellation.
+func waitForICMPProbe(ctx context.Context, conn net.PacketConn, echoID uint16, startAt time.Time) (net.Addr, uint16, error) {
+	if err := conn.SetReadDeadline(firstContactDeadline(startAt)); err != nil {
 		return nil, 0, err
 	}
+	stop := context.AfterFunc(ctx, func() { conn.SetReadDeadline(time.Now()) })
+	defer stop()
 
 	var buf [1500]byte
 	for {
@@ -489,11 +604,18 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 
 	c := make(chan *Result, 1)
 
+	// Like in RequestServer: a per-test context so the Abort RPC can stop the
+	// command (MonitorCommand kills it once its ctx ends).
+	testCtx, testCancel := context.WithCancel(ctx)
+
 	s.resultLock.Lock()
 	if _, ok := s.resultC[args.ID]; ok {
+		s.resultLock.Unlock()
+		testCancel()
 		return logErrContext(ctx, "ID already used")
 	}
 	s.resultC[args.ID] = c
+	s.testCancel[args.ID] = testCancel
 	s.resultLock.Unlock()
 
 	var command Command
@@ -501,12 +623,14 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 	case TcpdumpParams:
 		command = &TcpdumpCommand{Params_: args.Params.(TcpdumpParams)}
 	default:
+		s.finishTest(args.ID)
 		c <- &Result{Err: fmt.Errorf("Unknown params %v", args.Params)}
 		return fmt.Errorf("Unknown params %v", args.Params)
 	}
 
 	resultDir, err := RandDir(args.Params.Name())
 	if err != nil {
+		s.finishTest(args.ID)
 		c <- &Result{Err: fmt.Errorf("RunCommand: failed RandDir: %v", err.Error())}
 		return logErrContext(ctx, "RunCommand: failed RandDir: %v", err.Error())
 	}
@@ -514,7 +638,9 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 	slog.DebugContext(ctx, "RunCommand", "name", args.Params.Name(), "resultDir", resultDir)
 
 	go func() {
-		if err := waitUntil(ctx, args.StartAt); err != nil {
+		defer s.finishTest(args.ID)
+
+		if err := waitUntil(testCtx, args.StartAt); err != nil {
 			slog.WarnContext(ctx, "WaitUntil failed", "error", err)
 			c <- &Result{Err: fmt.Errorf("WaitUntil failed: %v", err.Error())}
 			return
@@ -526,7 +652,7 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 			return
 		}
 
-		if err := MonitorCommand(ctx, cmd, args.Params.Timeout()); err != nil {
+		if err := MonitorCommand(testCtx, cmd, args.Params.Timeout()); err != nil {
 			c <- &Result{Err: fmt.Errorf("RunCommand: %v", err.Error())}
 			return
 		}
@@ -555,7 +681,15 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 		return logErrContext(ctx, "No command with that ID started")
 	}
 
-	result := <-c
+	var result *Result
+	select {
+	case result = <-c:
+	case <-s.ctx.Done():
+		return logErrContext(ctx, "Server shutting down while waiting for command result")
+	}
+	if result == nil {
+		return logErrContext(ctx, "Command result %v was already retrieved", args.ID)
+	}
 	if result.Err != nil {
 		return logErrContext(ctx, "RequestRunCommandResult returning error: %v", result.Err.Error())
 	}

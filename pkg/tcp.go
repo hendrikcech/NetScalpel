@@ -78,12 +78,13 @@ func (t *TCPMonitor) Run(ctx context.Context, conn net.Conn, drainQueue bool) {
 		return
 	}
 
-	ticker := time.Tick(5 * time.Millisecond)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
 
 outer:
 	for {
 		select {
-		case <-ticker:
+		case <-ticker.C:
 			if err := queryTCPOnce(); err != nil {
 				slog.ErrorContext(ctx, "TCPMonitor Run", "error", err)
 				t.Err = err
@@ -94,11 +95,14 @@ outer:
 				t.Err = err
 				return
 			}
-			if drainQueue {
+			// Wait for the send queue to drain only on natural test end
+			// (all bytes sent, or the duration deadline was reached); on
+			// user abort return immediately.
+			cause := context.Cause(ctx)
+			if drainQueue && (errors.Is(cause, errIODone) || errors.Is(cause, context.DeadlineExceeded)) {
 				break outer
-			} else {
-				return
 			}
+			return
 		}
 	}
 
@@ -108,7 +112,7 @@ outer:
 
 	for {
 		select {
-		case <-ticker:
+		case <-ticker.C:
 			if err := queryTCPOnce(); err != nil {
 				t.Err = err
 				return
@@ -163,10 +167,14 @@ func tcpCCName(ctx context.Context, tc *tcp.Conn) (string, error) {
 	return string(info), nil
 }
 
+// Cancellation cause used to signal TCPMonitor that the IO function finished
+// naturally (all bytes sent/received), as opposed to a user abort.
+var errIODone = errors.New("io completed")
+
 func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error), drainQueue bool) ([]TCPMetric, error) {
 	tcpMonitor := NewTCPMonitor()
-	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
-	defer monitorCtxCancel() // satisfy vet
+	monitorCtx, monitorCtxCancel := context.WithCancelCause(ctx)
+	defer monitorCtxCancel(nil) // satisfy vet
 	go tcpMonitor.Run(monitorCtx, conn, drainQueue)
 
 	ioErrC := make(chan error, 1)
@@ -179,8 +187,9 @@ func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error
 			return nil, tcpMonitor.Err
 		}
 	case ioErr := <-ioErrC:
-		// Also terminate tcpMonitor
-		monitorCtxCancel()
+		// Also terminate tcpMonitor; the cause lets it distinguish natural
+		// IO completion (drain desired) from a user abort (return now).
+		monitorCtxCancel(errIODone)
 		if ioErr != nil {
 			return nil, ioErr
 		}
@@ -207,10 +216,16 @@ type TCPReceiver struct {
 
 func (r *TCPReceiver) Init() {}
 func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
+	// Close the listener when the context ends so that a blocked Accept
+	// returns instead of waiting for a client forever.
+	stop := context.AfterFunc(ctx, func() { ln.Close() })
+	defer stop()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			// TODO: what to do here?
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("Cancelled while waiting for TCP client: %v", ctx.Err())
+			}
 			slog.DebugContext(ctx, "TCPReceiver accept", "error", err.Error())
 			return nil, err
 		}

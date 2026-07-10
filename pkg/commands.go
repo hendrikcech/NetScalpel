@@ -2,23 +2,31 @@ package pkg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"time"
 )
 
+// MonitorCommand runs cmd until timeout elapses, ctx is cancelled, or the
+// command exits on its own. In the first two cases it stops the command by
+// escalating SIGINT -> SIGTERM -> SIGKILL, moving to the next signal only if
+// the command has not exited within 2s. Signals go to the whole process group
+// so that children (e.g. tcpdump started via sudo) are reached as well; if
+// group signalling is not permitted (setuid sudo child), the process itself
+// is signalled and relays as usual. The command is always reaped via Wait.
 func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
-	// cmd.Stdin = os.DevNull
-	// cmd.Stdout = os.DevNull // os.Stdout
-	// cmd.Stderr = os.DevNull // os.Stderr
-
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("Failed to open StdinPipe: %v", err.Error())
 	}
+
+	// Own process group so signals reach children too
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("Failed to start cmd: %v", err.Error())
@@ -26,25 +34,42 @@ func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) e
 
 	stdin.Close()
 
+	waitC := make(chan error, 1)
+	go func() { waitC <- cmd.Wait() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
-	case <-time.After(timeout):
+	case <-timer.C:
 	case <-ctx.Done():
+	case err := <-waitC:
+		// Command exited before its timeout; surface a failure (e.g. tcpdump
+		// exiting immediately because sudo is not available).
+		if err != nil {
+			return fmt.Errorf("Command exited prematurely: %v", err.Error())
+		}
+		return nil
 	}
 
 	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL} {
-		if err := cmd.Process.Signal(signal); err != nil {
-			return fmt.Errorf("Failed to signal %v: %v", signal, err.Error())
+		if err := syscall.Kill(-cmd.Process.Pid, signal); err != nil {
+			// EPERM: group contains a process we may not signal (sudo child);
+			// signal the direct child instead, which relays SIGINT/SIGTERM.
+			if err := cmd.Process.Signal(signal); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				slog.DebugContext(ctx, "Failed to signal command", "signal", signal, "error", err)
+			}
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-waitC:
+			// Exit status of a signalled command is expected to be non-zero
+			slog.DebugContext(ctx, "Command terminated", "signal", signal)
+			return nil
+		case <-time.After(2 * time.Second):
+			slog.WarnContext(ctx, "Command did not exit after signal, escalating", "signal", signal)
+		}
 	}
 
-	// log.Printf("Terminating tcpdump: waiting")
-	// if err := cmd.Wait(); err != nil {
-	// 	return fmt.Errorf("Failed to wait for termination: %v", err.Error())
-	// }
-
-	slog.DebugContext(ctx, "Returning from RunCommand")
-	return nil
+	return fmt.Errorf("Command still running after SIGKILL")
 }
 
 type RunCommandMode int

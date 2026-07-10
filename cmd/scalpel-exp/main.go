@@ -30,8 +30,15 @@ func main() {
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
-	signalC := make(chan os.Signal, 1)
+	signalC := make(chan os.Signal, 2)
 	signal.Notify(signalC, syscall.SIGINT, syscall.SIGTERM)
+
+	// A second signal force-exits, in case graceful shutdown hangs
+	forceExitOnSignal := func() {
+		sig := <-signalC
+		slog.Warn("Forcing exit on second signal", "signal", sig)
+		os.Exit(130)
+	}
 
 	// go dumpOnSig()
 
@@ -74,6 +81,7 @@ func main() {
 			sig := <-signalC
 			slog.InfoContext(ctx, "Cancelling ctx on signal", "signal", sig)
 			ctxCancel()
+			forceExitOnSignal()
 		}()
 
 		client := Client{
@@ -96,6 +104,7 @@ func main() {
 		sig := <-signalC
 		slog.InfoContext(ctx, "Stopping server", "signal", sig)
 		ctxCancel()
+		go forceExitOnSignal()
 		s.Stop()
 
 	case "procedures":

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,8 +19,9 @@ import (
 // Dummy type to unify UDP and TCP receiver interfaces. Is constructed with a conn
 // and simply returns that conn on the first call to Accept().
 type DummyListener struct {
-	c     chan net.Conn
-	laddr net.Addr
+	c         chan net.Conn
+	laddr     net.Addr
+	closeOnce sync.Once
 }
 
 func NewDummyListener(conn net.Conn, laddr net.Addr) *DummyListener {
@@ -36,10 +39,10 @@ func (l *DummyListener) Accept() (net.Conn, error) {
 	return conn, nil
 }
 
-// Close closes the listener.
+// Close closes the listener. Safe to call multiple times.
 // Any blocked Accept operations will be unblocked and return errors.
 func (l *DummyListener) Close() error {
-	close(l.c)
+	l.closeOnce.Do(func() { close(l.c) })
 	return nil
 }
 
@@ -106,8 +109,10 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 				conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
 				continue
 			}
-			if time.Since(tsRcvd) < 250*time.Millisecond {
-				msg := "Wanted to stop but previous packet was received very recently; trying again in 100 ms"
+			// Grace period to collect in-flight packets, but only on natural
+			// test end (duration deadline); on user abort return right away.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) && time.Since(tsRcvd) < 250*time.Millisecond {
+				msg := "Wanted to stop but previous packet was received very recently; trying again in 250 ms"
 				slog.WarnContext(ctx, msg, "msSinceLastPacket", time.Since(tsRcvd).Milliseconds())
 				conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
 				continue
@@ -227,8 +232,15 @@ func (s *BurstSender) run(ctx context.Context, conn net.Conn, raddr net.Addr) ([
 		return nil, fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
 	}
 
+	// Same wakeup as in RateSender.Run: unblock SendMsgs when the test ends
+	stopWake := context.AfterFunc(ctx, func() { conn.SetWriteDeadline(time.Now()) })
+	defer stopWake()
+
 	sentN := uint(0)
 	for sentN < s.Params.Num {
+		if ctx.Err() != nil {
+			return msgsSent[:sentN], nil
+		}
 		left := s.Params.Num - sentN
 		numRound := min(1024, left)
 
@@ -245,18 +257,22 @@ func (s *BurstSender) run(ctx context.Context, conn net.Conn, raddr net.Addr) ([
 				"sentN", sentN, "left", left)
 		}
 		if err != nil {
+			if n > 0 {
+				sentN += uint(n)
+			}
 			if e, ok := err.(net.Error); ok && e.Timeout() {
-				return msgsSent, nil
+				// Test over (write deadline wakeup); report what went out
+				return msgsSent[:sentN], nil
 			}
 			return nil, err
 		}
+		sentN += uint(n)
 		if n != int(numRound) {
 			break
 		}
-		sentN += uint(n)
 	}
 
-	return msgsSent, nil
+	return msgsSent[:sentN], nil
 }
 
 var _ SenderParams = (*PeriodicParams)(nil)
@@ -312,12 +328,16 @@ func (r *PeriodicSender) run(ctx context.Context, conn net.Conn, raddr net.Addr)
 	msgsSent := make([]MsgSent, 0, r.Params.NumPackets())
 
 	ticker := time.NewTicker(r.Params.Interval)
+	defer ticker.Stop()
 	duration := time.After(r.Params.Duration)
 	buf := make([]byte, 1500)
 
-	// TODO: close socket on ctx.Done?
-
 	udpConn := conn.(*net.UDPConn)
+
+	// Unblock a WriteTo stuck on a full socket buffer when the test ends;
+	// the timeout error below is treated as a clean stop
+	stopWake := context.AfterFunc(ctx, func() { udpConn.SetWriteDeadline(time.Now()) })
+	defer stopWake()
 
 	seq := 0
 	for {
@@ -334,6 +354,8 @@ func (r *PeriodicSender) run(ctx context.Context, conn net.Conn, raddr net.Addr)
 
 			nConn, err := udpConn.WriteTo(read, raddr)
 			if err != nil {
+				// The message appended above was not sent
+				msgsSent = msgsSent[:len(msgsSent)-1]
 				if e, ok := err.(net.Error); ok && e.Timeout() {
 					return msgsSent, nil
 				}
@@ -345,6 +367,8 @@ func (r *PeriodicSender) run(ctx context.Context, conn net.Conn, raddr net.Addr)
 
 			seq += 1
 		case <-duration:
+			return msgsSent, nil
+		case <-ctx.Done():
 			return msgsSent, nil
 		}
 	}
@@ -423,9 +447,22 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn))
 	defer tsReaderCancel()
 
+	// Wake a SendMsgs blocked on a full socket buffer when the test ends;
+	// the send loops treat the timeout error as a clean stop.
+	stopWake := context.AfterFunc(ctx, func() { conn.SetWriteDeadline(time.Now()) })
+	defer stopWake()
+
 	for i := range r.Params {
-		if err := r.runParams(ctx, conn, raddr, r.Params[i], tsReader != nil); err != nil {
+		// Segment duration is owned by a per-segment child context; the
+		// caller's ctx carries the total duration and user cancellation.
+		segCtx, segCancel := context.WithTimeout(ctx, r.Params[i].Duration)
+		err := r.runParams(segCtx, conn, raddr, r.Params[i], tsReader != nil)
+		segCancel()
+		if err != nil {
 			return nil, err
+		}
+		if ctx.Err() != nil {
+			break
 		}
 	}
 
@@ -449,14 +486,22 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 	// }
 	slog.DebugContext(ctx, "Disabled pacing (manually)")
 
-	start := time.Now()                     // must appear before ticker is started
-	duration := time.After(params.Duration) // TODO: remove duration time.after since this function will be cancelled by context
+	if params.Pps == 0 {
+		// Cooldown segment: send nothing until the segment duration is
+		// reached or the caller aborts. (Also avoids the interval formula
+		// below dividing by zero.)
+		<-ctx.Done()
+		return nil
+	}
+
+	start := time.Now() // must appear before ticker is started
 
 	maxPacketPerBurst := float64(5)
 	calcInterval := time.Duration((1/(float64(params.Pps)/maxPacketPerBurst))*1e9) * time.Nanosecond
 	interval := min(calcInterval, 1*time.Millisecond)
 	slog.DebugContext(ctx, "Dynamic interval calculation", "interval", interval.String(), "calculatedInterval", calcInterval.String())
-	ticker := time.Tick(interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
 	numPacketsSent := uint(0)
 
@@ -469,7 +514,7 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 	// lastTickEnd := time.Now()
 	for {
 		select {
-		case now := <-ticker:
+		case now := <-ticker.C:
 			// lastTickEndElapsed := time.Now().Sub(lastTickEnd)
 			// lastTickStartElapsed := time.Now().Sub(lastTickStart)
 			// lastTickStart = now
@@ -507,9 +552,8 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 			numPacketsSent += n
 			// slog.DebugContext(ctx, "sendRound", "goal", numPackets, "since_prev_start", lastTickStartElapsed, "since_prev_end", lastTickEndElapsed)
 			// lastTickEnd = time.Now()
-		case <-duration:
-			return nil
 		case <-ctx.Done():
+			// Segment duration reached (per-segment deadline) or user abort
 			return nil
 		}
 	}
@@ -519,6 +563,11 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 	packetsLeft := packets
 	sent := uint(0)
 	for packetsLeft > 0 {
+		// A single round can span many 1024-packet batches; observe the test
+		// end between them
+		if ctx.Err() != nil {
+			return sent, nil
+		}
 		tsSent := time.Now()
 		packetsRound := packetsLeft
 		if packetsRound > 1024 {
@@ -542,6 +591,9 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 		// syscallStart := time.Now()
 		n, err := conn.SendMsgs(r.tx[:packetsRound], 0)
 		if err != nil {
+			// Nothing of this round went out (sendmmsg reports a count, not
+			// an error, if it sent anything); drop the messages appended above
+			r.msgs = r.msgs[:len(r.msgs)-int(packetsRound)]
 			if e, ok := err.(net.Error); ok && e.Timeout() {
 				return sent, nil
 			}

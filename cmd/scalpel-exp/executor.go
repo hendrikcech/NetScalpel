@@ -37,6 +37,23 @@ func (e *Executor) RunClient(client pkg.Client) {
 	e.G.Go(func() error { return client.Run(e.ctx, e.RpcClient) })
 }
 
+// AbortServerTests asks the server to cancel every test this executor
+// scheduled, so server-side goroutines end promptly after a user abort
+// instead of running to their natural end. It is
+// called once the round context is cancelled, so the RPCs run on a short
+// fresh context.
+func (e *Executor) AbortServerTests() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	g := new(errgroup.Group)
+	for _, client := range e.Clients {
+		g.Go(func() error {
+			return client.Abort(ctx, e.RpcClient)
+		})
+	}
+	return g.Wait()
+}
+
 func (e *Executor) GatherResults() error {
 	g := new(errgroup.Group)
 	for _, client := range e.Clients {

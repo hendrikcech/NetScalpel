@@ -10,12 +10,15 @@ package pkg
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go"
 )
 
 // returnsWithin runs fn and fails the test if it does not return within d.
@@ -135,7 +138,7 @@ func TestWaitForUDPProbeCancellable(t *testing.T) {
 
 	var probeErr error
 	returnsWithin(t, 2*time.Second, "waitForUDPProbe", func() {
-		_, probeErr = waitForUDPProbe(ctx, conn)
+		_, probeErr = waitForUDPProbe(ctx, conn, time.Time{})
 	})
 	if probeErr == nil {
 		t.Errorf("expected an error from an aborted probe wait")
@@ -430,6 +433,199 @@ func TestUDPReceiverGraceOnDeadline(t *testing.T) {
 	}
 	if len(msgs) < numSent-3 {
 		t.Errorf("grace period lost packets: received %v of %v sent", len(msgs), numSent)
+	}
+}
+
+// --- Server.Abort(ID) RPC ---
+
+// A server-side sender blocked in its probe wait must deliver an error result
+// promptly once the client aborts the test, instead of waiting out the
+// first-contact deadline.
+func TestAbortRPCEndsServerSenderEarly(t *testing.T) {
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	s := NewServer(srvCtx, nil)
+
+	// StartAt far enough away that the probe wait (bounded at StartAt+1s)
+	// only ends early through the Abort below.
+	args := RequestServerArgs{
+		ID:         "abort-snd",
+		Timeout:    20 * time.Second,
+		StartAt:    time.Now().Add(9 * time.Second),
+		ServerMode: SendRate,
+		Params: RateParamsW{{
+			Pps:         10,
+			Duration:    300 * time.Millisecond,
+			PayloadSize: 100,
+		}},
+	}
+	var reply RequestServerReply
+	if err := s.RequestServer(args, &reply); err != nil {
+		t.Fatalf("RequestServer failed: %v", err)
+	}
+
+	// Let the test goroutine reach the probe wait, then abort.
+	time.Sleep(100 * time.Millisecond)
+	var abortReply AbortReply
+	if err := s.Abort(AbortArgs{ID: "abort-snd"}, &abortReply); err != nil {
+		t.Fatalf("Abort failed: %v", err)
+	}
+
+	var resErr error
+	returnsWithin(t, 2*time.Second, "RequestServerResult", func() {
+		var res RequestServerResultReply
+		resErr = s.RequestServerResult(RequestServerResultArgs{ID: "abort-snd"}, &res)
+	})
+	if resErr == nil {
+		t.Errorf("expected an error result from an aborted sender test")
+	}
+
+	// Aborting a finished or unknown ID is a no-op, not an error: the client
+	// fires Abort for every test it scheduled, finished or not.
+	if err := s.Abort(AbortArgs{ID: "abort-snd"}, &abortReply); err != nil {
+		t.Errorf("Abort of a finished test should be a no-op, got: %v", err)
+	}
+	if err := s.Abort(AbortArgs{ID: "unknown"}, &abortReply); err != nil {
+		t.Errorf("Abort of an unknown ID should be a no-op, got: %v", err)
+	}
+}
+
+// A server-side receiver aborts with the packets received so far (no error:
+// partial data from an aborted round is still delivered if asked for).
+func TestAbortRPCEndsServerReceiverEarly(t *testing.T) {
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	s := NewServer(srvCtx, nil)
+
+	args := RequestServerArgs{
+		ID:         "abort-rcv",
+		Timeout:    20 * time.Second,
+		ServerMode: ReceiveUDP,
+		Params:     PeriodicParams{Interval: 10 * time.Millisecond, Duration: 20 * time.Second},
+	}
+	var reply RequestServerReply
+	if err := s.RequestServer(args, &reply); err != nil {
+		t.Fatalf("RequestServer failed: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	var abortReply AbortReply
+	if err := s.Abort(AbortArgs{ID: "abort-rcv"}, &abortReply); err != nil {
+		t.Fatalf("Abort failed: %v", err)
+	}
+
+	var resErr error
+	returnsWithin(t, 2*time.Second, "RequestServerResult", func() {
+		var res RequestServerResultReply
+		resErr = s.RequestServerResult(RequestServerResultArgs{ID: "abort-rcv"}, &res)
+	})
+	if resErr != nil {
+		t.Errorf("expected the partial result of an aborted receiver, got error: %v", resErr)
+	}
+}
+
+// --- QUIC receive relies on the ~30s idle timeout (pkg/quic.go) ---
+
+// The QUIC receiver's stream read must be woken by ctx cancellation even
+// while the peer connection stays open (a vanished/stalled sender otherwise
+// keeps it blocked until quic-go's idle timeout).
+func TestQUICReceiverReturnsOnCancel(t *testing.T) {
+	recvConn, err := listenUDP(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recvConn.Close()
+	sendConn, err := listenUDP(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sendConn.Close()
+
+	r := &QUICReceiver{}
+	r.Init()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	var res any
+	var runErr error
+	go func() {
+		defer close(done)
+		res, runErr = r.Run(ctx, NewDummyListener(recvConn, recvConn.LocalAddr()))
+	}()
+
+	// A sender that connects, writes some data, and then stalls without
+	// closing the stream or the connection.
+	tr := &quic.Transport{Conn: sendConn}
+	defer tr.Close()
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	quicConn, err := tr.Dial(dialCtx, localAddrOf(recvConn),
+		&tls.Config{InsecureSkipVerify: true, NextProtos: []string{quicProto}}, nil)
+	if err != nil {
+		t.Fatalf("QUIC dial failed: %v", err)
+	}
+	defer quicConn.CloseWithError(0, "")
+	stream, err := quicConn.OpenStreamSync(dialCtx)
+	if err != nil {
+		t.Fatalf("OpenStreamSync failed: %v", err)
+	}
+	if _, err := stream.Write(make([]byte, 1024)); err != nil {
+		t.Fatalf("stream.Write failed: %v", err)
+	}
+
+	// Give the receiver time to accept the stream and read the data, then
+	// simulate the user abort.
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("QUICReceiver.Run did not return within 2s of cancellation (blocked until the QUIC idle timeout)")
+	}
+	if runErr != nil {
+		t.Fatalf("expected the partial result of an aborted QUIC receiver, got error: %v", runErr)
+	}
+	if msgs, ok := res.([]MsgRcvd); !ok || len(msgs) == 0 {
+		t.Errorf("expected the packets received before the abort, got %T with %v", res, res)
+	}
+}
+
+// --- RateSender cancelled mid-segment returns promptly ---
+
+func TestRateSenderCancelMidSegment(t *testing.T) {
+	conn, err := listenUDP(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	peer, err := listenUDP(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+
+	s := &RateSender{Params: RateParamsW{
+		{Pps: 50, Duration: 400 * time.Millisecond, PayloadSize: 100},
+		{Pps: 50, Duration: 400 * time.Millisecond, PayloadSize: 100},
+		{Pps: 50, Duration: 400 * time.Millisecond, PayloadSize: 100},
+	}}
+
+	// Cancel during segment 2 of 3.
+	ctx := cancelAfter(600 * time.Millisecond)
+
+	var res any
+	var runErr error
+	returnsWithin(t, 2*time.Second, "RateSender.Run", func() {
+		res, runErr = s.Run(ctx, conn, localAddrOf(peer))
+	})
+	if runErr != nil {
+		t.Fatalf("expected nil error from a cancelled RateSender, got: %v", runErr)
+	}
+	if msgs, ok := res.([]MsgSent); !ok || len(msgs) == 0 {
+		t.Errorf("expected partial results from a cancelled RateSender, got %T with %v", res, res)
 	}
 }
 

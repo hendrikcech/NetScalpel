@@ -52,9 +52,9 @@ func generateTLSConfig() *tls.Config {
 }
 
 func (r *QUICReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
-	tracer := &QUICTracer{rcvdC: make(chan MsgRcvd, 1000)}
+	tracer := NewQUICTracer()
 	cr := NewChanReader[MsgRcvd]()
-	go cr.Read(tracer.rcvdC)
+	go cr.Read(tracer.rcvdC, tracer.quit)
 
 	// DummyListener used
 	conn, err := ln.Accept()
@@ -74,11 +74,13 @@ func (r *QUICReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 	}
 	defer listener.Close()
 
-	if err := r.listen(ctx, listener); err != nil {
+	err = r.listen(ctx, listener)
+	// The QUIC connection may outlive listen (e.g. after an abort); stop the
+	// tracer via quit instead of closing rcvdC under running callbacks.
+	close(tracer.quit)
+	if err != nil {
 		return nil, err
 	}
-
-	close(tracer.rcvdC)
 	<-cr.Done
 
 	return cr.Result, nil
@@ -96,10 +98,20 @@ func (r *QUICReceiver) listen(ctx context.Context, listener *quic.Listener) erro
 	}
 	defer stream.Close()
 
+	// Wake the blocking read below when the test ends; without this it
+	// returns only once quic-go's idle timeout (~30s) fires if the sender
+	// vanishes
+	stop := context.AfterFunc(ctx, func() { stream.SetReadDeadline(time.Now()) })
+	defer stop()
+
 	slog.DebugContext(ctx, "Reading from QUIC stream")
 	n, err := io.Copy(droppingWriter{}, stream)
 	slog.DebugContext(ctx, "QUIC Server io.Copy returned", "n", n, "error", err)
 	if err != nil {
+		if e, ok := err.(net.Error); ok && e.Timeout() {
+			// The ctx wakeup above: test over, the data received so far counts
+			return nil
+		}
 		var appErr *quic.ApplicationError
 		if errors.As(err, &appErr) {
 			if appErr.ErrorCode == 0 {
@@ -150,15 +162,17 @@ func (s *QUICSender) ReceiverMode() Mode {
 
 // Runs until ctx is cancelled
 func (s *QUICSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
-	tracer := &QUICTracer{sentC: make(chan MsgSent, 1000)}
+	tracer := NewQUICTracer()
 	cr := NewChanReader[MsgSent]()
-	go cr.Read(tracer.sentC)
+	go cr.Read(tracer.sentC, tracer.quit)
 
-	if err := s.send(ctx, conn, raddr, tracer); err != nil {
+	err := s.send(ctx, conn, raddr, tracer)
+	// The connection teardown emits packets (and tracer callbacks) after send
+	// returns; stop the tracer via quit instead of closing sentC under them.
+	close(tracer.quit)
+	if err != nil {
 		return nil, err
 	}
-
-	close(tracer.sentC)
 	<-cr.Done
 
 	return cr.Result, nil
@@ -203,19 +217,35 @@ func (s *QUICSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, tr
 	return nil
 }
 
+// The channels are never closed: quic-go emits tracer callbacks from the
+// connection's run loop, which can outlive the sender/receiver Run functions
+// (teardown packets, or a peer that is still sending after an abort). Closing
+// the quit channel stops collection instead; late callbacks are discarded.
 type QUICTracer struct {
 	sentC chan MsgSent
 	rcvdC chan MsgRcvd
+	quit  chan struct{}
+}
+
+func NewQUICTracer() *QUICTracer {
+	return &QUICTracer{
+		sentC: make(chan MsgSent, 1000),
+		rcvdC: make(chan MsgRcvd, 1000),
+		quit:  make(chan struct{}),
+	}
 }
 
 func (t *QUICTracer) NewSendTracer(ctx context.Context, pers logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
 	return &logging.ConnectionTracer{
 		SentShortHeaderPacket: func(hdr *logging.ShortHeader, size logging.ByteCount, ecn logging.ECN, ack *logging.AckFrame, frames []logging.Frame) {
 			// slog.DebugContext(ctx, "Sent", "dcid", hdr.DestConnectionID, "pn", hdr.PacketNumber)
-			t.sentC <- MsgSent{
+			select {
+			case t.sentC <- MsgSent{
 				Seq:    uint64(hdr.PacketNumber),
 				TsSent: time.Now(),
 				Len:    uint(size),
+			}:
+			case <-t.quit:
 			}
 		},
 	}
@@ -224,10 +254,13 @@ func (t *QUICTracer) NewSendTracer(ctx context.Context, pers logging.Perspective
 func (t *QUICTracer) NewReceiveTracer(ctx context.Context, pers logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
 	return &logging.ConnectionTracer{
 		ReceivedShortHeaderPacket: func(hdr *logging.ShortHeader, size logging.ByteCount, ecn logging.ECN, frames []logging.Frame) {
-			t.rcvdC <- MsgRcvd{
+			select {
+			case t.rcvdC <- MsgRcvd{
 				Seq:    uint64(hdr.PacketNumber),
 				TsRcvd: time.Now(),
 				Len:    uint(size),
+			}:
+			case <-t.quit:
 			}
 		},
 	}
@@ -244,9 +277,23 @@ func NewChanReader[T MsgSent | MsgRcvd]() *ChanReader[T] {
 	}
 }
 
-func (r *ChanReader[T]) Read(c chan T) {
-	for e := range c {
-		r.Result = append(r.Result, e)
+// Read collects from c until quit is closed, then keeps draining briefly so
+// tracer callbacks that raced with quit are still counted.
+func (r *ChanReader[T]) Read(c chan T, quit chan struct{}) {
+	for {
+		select {
+		case e := <-c:
+			r.Result = append(r.Result, e)
+		case <-quit:
+			for {
+				select {
+				case e := <-c:
+					r.Result = append(r.Result, e)
+				case <-time.After(100 * time.Millisecond):
+					r.Done <- true
+					return
+				}
+			}
+		}
 	}
-	r.Done <- true
 }

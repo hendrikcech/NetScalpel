@@ -79,7 +79,7 @@ func main() {
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	if kongctx.Command() == "server" {
-		sigs := make(chan os.Signal, 1)
+		sigs := make(chan os.Signal, 2)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 		s := pkg.RunServer(ctx, cli.IP, cli.Port, nil)
@@ -87,6 +87,12 @@ func main() {
 		sig := <-sigs
 		fmt.Printf("Stopping server on %v\n", sig)
 		ctxCancel()
+		// A second signal force-exits, in case graceful shutdown hangs
+		go func() {
+			sig := <-sigs
+			fmt.Printf("Forcing exit on second signal %v\n", sig)
+			os.Exit(130)
+		}()
 		s.Stop()
 		os.Exit(0)
 	}

@@ -5,9 +5,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/rpc"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sync/atomic"
@@ -76,7 +78,7 @@ func TestRoundFinishesQuicklyAfterCancel(t *testing.T) {
 
 	// What a procedure would schedule: one long UL test starting shortly.
 	e := NewExecutor(ctx, testIP, rpcClient)
-	e.RunClient(&pkg.SenderClient{
+	sc := &pkg.SenderClient{
 		IP:        testIP,
 		Out:       filepath.Join(resultPath, "owd.csv"),
 		Direction: pkg.UL,
@@ -85,7 +87,8 @@ func TestRoundFinishesQuicklyAfterCancel(t *testing.T) {
 			Interval: 10 * time.Millisecond,
 			Duration: 10 * time.Second,
 		}},
-	})
+	}
+	e.RunClient(sc)
 
 	// Simulated Ctrl+C half a second into the round.
 	go func() {
@@ -95,6 +98,14 @@ func TestRoundFinishesQuicklyAfterCancel(t *testing.T) {
 
 	returnsWithin(t, 2500*time.Millisecond, "runRound", func() {
 		c.runRound(ctx, e, rpcClient, resultPath)
+	})
+
+	// The cancelled round must also have aborted the
+	// server-side receiver; its (partial) result must be available promptly
+	// instead of after the full test duration + 1s receive timeout.
+	returnsWithin(t, 2*time.Second, "RequestServerResult after abort", func() {
+		var res pkg.RequestServerResultReply
+		server.RequestServerResult(pkg.RequestServerResultArgs{ID: sc.ID}, &res)
 	})
 }
 
@@ -153,7 +164,9 @@ func TestSecondSignalForcesExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if err := srv.Process.Signal(syscall.SIGINT); err != nil {
+	// Now the first signal already shuts the server down cleanly;
+	// the second signal only needs to rescue a *hanging* shutdown.
+	if err := srv.Process.Signal(syscall.SIGINT); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		t.Fatal(err)
 	}
 

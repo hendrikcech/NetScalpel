@@ -169,6 +169,7 @@ func (s *ICMPSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 	var msgsSent []MsgSent
 
 	ticker := time.NewTicker(s.Params.Interval)
+	defer ticker.Stop()
 	duration := time.After(s.Params.Duration_)
 	seq := uint64(0)
 
