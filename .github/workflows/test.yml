@@ -1,0 +1,39 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # The code is Linux-only (raw sockets, tcpinfo, sendmmsg).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Allow the BBR congestion control for unprivileged sockets
+        # Best effort: without it the BBR tests skip instead of failing.
+        run: |
+          sudo modprobe tcp_bbr || true
+          sudo sysctl -w net.ipv4.tcp_allowed_congestion_control="reno cubic bbr" || true
+
+      - run: go vet ./...
+
+      - run: go build ./...
+
+      # gotestsum reruns individual failed tests to absorb rare timing
+      # flakes on shared runners; a test that fails twice fails the build.
+      # sudo is passwordless on GitHub runners, so the tcpdump tests run
+      # here even though they skip on typical dev machines.
+      - name: go test
+        run: >
+          go run gotest.tools/gotestsum@v1.12.1
+          --format testname
+          --rerun-fails=2
+          --packages=./...
+          -- -race -timeout 300s

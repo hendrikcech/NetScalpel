@@ -407,6 +407,12 @@ func testSender(t *testing.T, c *SenderClient) {
 			// ICMP server only runs with root
 			t.Skip("Required privileges not available")
 		}
+		if strings.Contains(err.Error(), "Failed setting TCPCCA") {
+			// Setting a non-default CCA needs the module loaded and the CCA
+			// in net.ipv4.tcp_allowed_congestion_control (e.g. CI runners
+			// without tcp_bbr)
+			t.Skipf("TCP CCA not available: %v", err)
+		}
 		t.Fatalf("client.Run failed: %v", err.Error())
 	}
 	if err := c.Gather(ctxC, rpcClient); err != nil {
