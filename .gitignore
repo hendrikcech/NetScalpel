@@ -2,3 +2,6 @@ results/
 /scalpel-run
 /scalpel-exp
 plans/
+**/out/
+/out/
+__pycache__/

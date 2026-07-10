@@ -11,27 +11,16 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        common = {
-          version = "0.1";
+        scalpel = import ./scalpel.nix {
+          inherit pkgs;
           src = ./.;
-          vendorHash = "sha256-a7x4WkuuNfgKxeb35wQIP9kp0hRUWErXsElywzStMNU=";
         };
-
-        scalpelRun = pkgs.buildGoModule (common // {
-          pname = "scalpel-run";
-          subPackages = [ "cmd/scalpel-run" ];
-        });
-
-        scalpelExp = pkgs.buildGoModule (common // {
-          pname = "scalpel-exp";
-          subPackages = [ "cmd/scalpel-exp" ];
-        });
       in
       {
         packages = {
-          "scalpel-run" = scalpelRun;
-          "scalpel-exp" = scalpelExp;
-          default = scalpelRun;
+          "scalpel-run" = scalpel.scalpel-run;
+          "scalpel-exp" = scalpel.scalpel-exp;
+          default = scalpel.scalpel-run;
         };
       }
     );

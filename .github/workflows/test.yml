@@ -37,3 +37,26 @@ jobs:
           --rerun-fails=2
           --packages=./...
           -- -race -timeout 300s
+
+  # End-to-end validation: client and server across an emulated netem link,
+  # asserting that the measured OWD/loss/rate values in the produced CSVs
+  # match the configured ground truth. See e2e/README.md.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [owd, loss, rate, asym, icmp-udp, tcp]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      # Ubuntu 24.04 blocks unprivileged user namespaces by default, which
+      # nixnet needs to build the testbed without root.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Run e2e ${{ matrix.scenario }}
+        run: nix run ./e2e#${{ matrix.scenario }}
