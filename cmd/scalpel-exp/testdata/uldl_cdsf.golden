@@ -1,0 +1,7 @@
+# procedure: cdsf
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=13.3s
+command tcpdump_remote remote start=ts0s dur=13.3s
+sender  rate        UL     start=ts10.3s dur=2.05s out=cdrate_ul_140_0450.csv
+sender  rate        UL     start=ts2.65s dur=1.65s out=cdrate_ul_140_0050.csv
+sender  rate        UL     start=ts6.25s dur=1.6s out=cdrate_ul_140_0000.csv

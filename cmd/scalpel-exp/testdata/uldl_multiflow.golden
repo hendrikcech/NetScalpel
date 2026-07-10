@@ -1,0 +1,10 @@
+# procedure: multiflow
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=11.5s
+command tcpdump_remote remote start=ts0s dur=11.5s
+sender  rate        UL     start=ts1.5s dur=1.1s out=rate_ul_0500_b.csv
+sender  rate        UL     start=ts1s dur=800ms out=rate_ul_0500_a.csv
+sender  rate        UL     start=ts4.3s dur=800ms out=rate_ul_0400_a.csv
+sender  rate        UL     start=ts4.7s dur=1.2s out=rate_ul_0400_b.csv
+sender  rate        UL     start=ts7.5s dur=800ms out=rate_ul_0200_a.csv
+sender  rate        UL     start=ts7.7s dur=1.4s out=rate_ul_0200_b.csv

@@ -1,0 +1,8 @@
+# procedure: owdbidir
+# params: duration_ms=3000
+command tcpdump_local local  start=ts0s dur=10s
+command tcpdump_remote remote start=ts0s dur=10s
+sender  periodic    DL     start=ts5s dur=3s out=owd-udp_dl.csv
+sender  periodic    UL     start=ts5s dur=3s out=owd-udp_ul.csv
+sender  sendICMP    DL     start=ts5s dur=3s out=owd-icmp_dl.csv
+sender  sendICMP    UL     start=ts5s dur=3s out=owd-icmp_ul.csv

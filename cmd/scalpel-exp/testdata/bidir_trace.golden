@@ -1,0 +1,8 @@
+# procedure: trace
+# params: (none)
+command tcpdump_local local  start=ts6.5s dur=16s
+command tcpdump_remote remote start=ts6.5s dur=16s
+sender  periodic    DL     start=ts7s dur=3s out=owd_dl.csv
+sender  periodic    UL     start=ts7s dur=3s out=owd_ul.csv
+sender  rate        DL     start=ts11s dur=10s out=rate_dl.csv
+sender  rate        UL     start=ts11s dur=10s out=rate_ul.csv

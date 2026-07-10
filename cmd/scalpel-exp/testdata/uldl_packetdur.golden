@@ -1,0 +1,11 @@
+# procedure: packetdur
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=15s
+command tcpdump_remote remote start=ts0s dur=15s
+sender  rate        UL     start=ts11.755s dur=10ms out=packets_ul_1400_0010.csv
+sender  rate        UL     start=ts13.765s dur=30ms out=packets_ul_1400_0030.csv
+sender  rate        UL     start=ts1s dur=200ms out=packets_ul_1400_0200.csv
+sender  rate        UL     start=ts3.2s dur=35ms out=packets_ul_1400_0035.csv
+sender  rate        UL     start=ts5.235s dur=20ms out=packets_ul_1400_0020.csv
+sender  rate        UL     start=ts7.255s dur=400ms out=packets_ul_1400_0400.csv
+sender  rate        UL     start=ts9.655s dur=100ms out=packets_ul_1400_0100.csv

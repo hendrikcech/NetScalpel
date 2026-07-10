@@ -1,0 +1,10 @@
+# procedure: switchflow
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=12.8s
+command tcpdump_remote remote start=ts0s dur=12.8s
+sender  rate        UL     start=ts1.8s dur=800ms out=rate_ul_0020_b.csv
+sender  rate        UL     start=ts1s dur=800ms out=rate_ul_0020_a.csv
+sender  rate        UL     start=ts4.6s dur=800ms out=rate_ul_0040_a.csv
+sender  rate        UL     start=ts5.4s dur=800ms out=rate_ul_0040_b.csv
+sender  rate        UL     start=ts8.2s dur=800ms out=rate_ul_0070_a.csv
+sender  rate        UL     start=ts9s dur=800ms out=rate_ul_0070_b.csv

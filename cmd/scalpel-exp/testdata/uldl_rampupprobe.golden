@@ -1,0 +1,5 @@
+# procedure: rampupprobe
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=15s
+command tcpdump_remote remote start=ts0s dur=15s
+sender  rate        UL     start=ts1s dur=400ms out=rate_ul_0400.csv

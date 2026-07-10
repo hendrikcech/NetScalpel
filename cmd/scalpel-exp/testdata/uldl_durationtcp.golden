@@ -1,0 +1,10 @@
+# procedure: durationtcp
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=15s
+command tcpdump_remote remote start=ts0s dur=15s
+sender  periodic    UL     start=ts1s dur=4s out=owd-udp_ul_satpipe_4000.csv
+sender  periodic    UL     start=ts7s dur=4s out=owd-udp_ul_suss_4000.csv
+sender  sendICMP    UL     start=ts1s dur=4s out=owd-icmp_ul_satpipe_4000.csv
+sender  sendICMP    UL     start=ts7s dur=4s out=owd-icmp_ul_suss_4000.csv
+sender  sendTCP     UL     start=ts1s dur=4s out=tcp_ul_satpipe_4000.csv
+sender  sendTCP     UL     start=ts7s dur=4s out=tcp_ul_suss_4000.csv

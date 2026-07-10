@@ -1,0 +1,7 @@
+# procedure: tcpri
+# params: direction=ul
+command tcpdump_local local  start=ts8s dur=14s
+command tcpdump_remote remote start=ts8s dur=14s
+sender  periodic    UL     start=ts9s dur=12s out=owd-udp_ul_cubic-nohy_12000.csv
+sender  sendICMP    UL     start=ts9s dur=12s out=owd-icmp_ul_cubic-nohy_12000.csv
+sender  sendTCP     UL     start=ts9s dur=12s out=tcp_ul_cubic-nohy_12000.csv

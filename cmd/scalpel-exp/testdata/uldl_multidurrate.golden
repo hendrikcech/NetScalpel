@@ -1,0 +1,10 @@
+# procedure: multidurrate
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=15s
+command tcpdump_remote remote start=ts0s dur=15s
+sender  periodic    UL     start=ts1s dur=1s out=owd-udp_ul_140_1000.csv
+sender  periodic    UL     start=ts4s dur=4s out=owd-udp_ul_140_4000.csv
+sender  rate        UL     start=ts1s dur=1s out=rate_ul_140_1000.csv
+sender  rate        UL     start=ts4s dur=4s out=rate_ul_140_4000.csv
+sender  sendICMP    UL     start=ts1s dur=1s out=owd-icmp_ul_140_1000.csv
+sender  sendICMP    UL     start=ts4s dur=4s out=owd-icmp_ul_140_4000.csv

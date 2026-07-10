@@ -19,7 +19,10 @@ type Executor struct {
 	RpcClient *rpc.Client
 	G         *errgroup.Group
 	Clients   []pkg.Client
-	ctx       context.Context
+	// DryRun records the clients a procedure schedules without running them,
+	// so the schedule can be validated with no sockets and no sleeps.
+	DryRun bool
+	ctx    context.Context
 }
 
 func NewExecutor(ctx context.Context, ip string, rpcClient *rpc.Client) *Executor {
@@ -34,6 +37,9 @@ func NewExecutor(ctx context.Context, ip string, rpcClient *rpc.Client) *Executo
 
 func (e *Executor) RunClient(client pkg.Client) {
 	e.Clients = append(e.Clients, client)
+	if e.DryRun {
+		return
+	}
 	e.G.Go(func() error { return client.Run(e.ctx, e.RpcClient) })
 }
 

@@ -1,0 +1,8 @@
+# procedure: mouseeleph
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=16s
+command tcpdump_remote remote start=ts0s dur=16s
+sender  rate        UL     start=ts1s dur=4s out=ul_0_eleph_140.csv
+sender  rate        UL     start=ts1s dur=4s out=ul_0_mouse_070.csv
+sender  rate        UL     start=ts8s dur=4s out=ul_1_eleph_140.csv
+sender  rate        UL     start=ts8s dur=4s out=ul_1_mouse_035.csv

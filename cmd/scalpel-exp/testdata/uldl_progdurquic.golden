@@ -1,0 +1,8 @@
+# procedure: progdurquic
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=15s
+command tcpdump_remote remote start=ts0s dur=15s
+sender  sendQUIC    UL     start=ts1s dur=100ms out=quic_ul_0100.csv
+sender  sendQUIC    UL     start=ts2.1s dur=400ms out=quic_ul_0400.csv
+sender  sendQUIC    UL     start=ts3.5s dur=1s out=quic_ul_1000.csv
+sender  sendQUIC    UL     start=ts5.5s dur=5s out=quic_ul_5000.csv

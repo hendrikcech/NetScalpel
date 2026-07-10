@@ -13,6 +13,13 @@ import (
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
+// rng drives the schedule randomization (test order, cooldown values, rate
+// picks). It is a package variable so the dry-run schedule tests can swap in
+// a deterministically seeded source; seeding the global math/rand generator
+// is a no-op since Go 1.24. Procedures run one at a time, so the unlocked
+// source is fine.
+var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
 var proceduresUlDl = map[string]ProcedureFunc{
 	"burst":        Burst,
 	"multiburst":   MultiBurst,
@@ -141,7 +148,7 @@ func ProgressiveRate(e *Executor, ts time.Time, resultPath string, params ParamM
 	}
 
 	// Execute the bursts in random order
-	for _, idx := range rand.Perm(len(durationsMs)) {
+	for _, idx := range rng.Perm(len(durationsMs)) {
 		durationMs := durationsMs[idx]
 		duration := time.Duration(durationMs) * time.Millisecond
 		var gap time.Duration
@@ -224,10 +231,10 @@ func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params Para
 		}
 	}
 
-	for _, rateIdx := range rand.Perm(len(ratesMbps)) {
+	for _, rateIdx := range rng.Perm(len(ratesMbps)) {
 		rateMbps := ratesMbps[rateIdx]
 
-		for _, idx := range rand.Perm(len(durationsMs)) {
+		for _, idx := range rng.Perm(len(durationsMs)) {
 			durationMs := durationsMs[idx]
 			duration := time.Duration(durationMs) * time.Millisecond
 
@@ -320,7 +327,7 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 		}
 	}
 
-	rateMbps := ratesMbps[rand.Intn(len(ratesMbps))]
+	rateMbps := ratesMbps[rng.Intn(len(ratesMbps))]
 
 	e.RunClient(&pkg.SenderClient{
 		IP: e.IP,
@@ -394,7 +401,7 @@ func _MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap, 
 	args := cartesian.Product(nums, pad)
 
 	// Execute the bursts in random order
-	for i, idx := range rand.Perm(len(args)) {
+	for i, idx := range rng.Perm(len(args)) {
 		num := args[idx][0]
 		pad := args[idx][1]
 		if start.Add(gap).After(deadline) {
@@ -453,12 +460,12 @@ func CoolDownDifferentFlow(e *Executor, ts time.Time, resultPath string, params 
 	}
 
 	// coolDowns := []int{0, 10, 50, 100, 500, 1000, 4000}
-	// for _, idx := range rand.Perm(len(coolDowns)) {
+	// for _, idx := range rng.Perm(len(coolDowns)) {
 	var coolDowns []int64
 outer:
 	for {
 		// coolDownMs := coolDowns[idx]
-		coolDownMs := int64(rand.Intn(400)) / 10 * 10 // Limit to multiples of 10
+		coolDownMs := int64(rng.Intn(400)) / 10 * 10 // Limit to multiples of 10
 		coolDownDuration := time.Duration(coolDownMs) * time.Millisecond
 
 		for _, v := range coolDowns {
@@ -555,12 +562,12 @@ func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params Param
 			ratesMbps = []uint{500}
 		}
 	}
-	rateIdx := rand.Intn(len(ratesMbps))
+	rateIdx := rng.Intn(len(ratesMbps))
 	rateMbps := ratesMbps[rateIdx]
 	pps := rateMbps * 1000000 / 8 / 1400
 
 	// coolDowns := []int{0, 5, 10, 25, 50, 100, 500, 1000}
-	// for _, idx := range rand.Perm(len(coolDowns)) {
+	// for _, idx := range rng.Perm(len(coolDowns)) {
 	var coolDowns []int64 // Populated with cooldowns that will be tested in this round
 outer:
 	for {
@@ -583,7 +590,7 @@ outer:
 			}
 		}
 
-		coolDownMs := int64(rand.Intn(int(maxBreak))) / int64(step) * int64(step)
+		coolDownMs := int64(rng.Intn(int(maxBreak))) / int64(step) * int64(step)
 
 		for _, v := range coolDowns {
 			if coolDownMs == v {
@@ -593,7 +600,7 @@ outer:
 		}
 
 		// Exponential distribution: test small values more
-		// x := rand.ExpFloat64() / 2      // increase rate / lambda
+		// x := rng.ExpFloat64() / 2      // increase rate / lambda
 		// y := 2 / math.Pi * math.Atan(x) // map to interval [0, 1]
 		// minCoolDownMs := int64(50)
 		// maxCoolDownMs := min(deadline.Sub(start.Add(2*duration)).Milliseconds()+minCoolDownMs, 5000-int64(minCoolDownMs))
@@ -682,7 +689,7 @@ func MultiFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) er
 		700 * time.Millisecond,
 	}
 
-	for _, idx := range rand.Perm(len(offsets)) {
+	for _, idx := range rng.Perm(len(offsets)) {
 		offset := offsets[idx]
 
 		e.RunClient(&pkg.SenderClient{
@@ -746,7 +753,7 @@ func SwitchFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) e
 		rates = []uint{200, 250, 300, 700}
 	}
 
-	for _, idx := range rand.Perm(len(rates)) {
+	for _, idx := range rng.Perm(len(rates)) {
 		rate := rates[idx]
 		pps := uint(rate*1e6) / 8 / 1400
 
@@ -838,9 +845,9 @@ func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params Par
 
 outer:
 	// for i := 0; ; i++ {
-	// for _, idx := range rand.Perm(len(offsets)) {
+	// for _, idx := range rng.Perm(len(offsets)) {
 	// offset := offsets[idx]
-	for i, idx := range rand.Perm(len(miceMbps)) {
+	for i, idx := range rng.Perm(len(miceMbps)) {
 		mouseMbps := miceMbps[idx]
 
 		offset := offsets[0]
@@ -962,7 +969,7 @@ func ProgressiveDurationQUIC(e *Executor, ts time.Time, resultPath string, param
 	}
 
 	// Execute the tasks in random order
-	for _, idx := range rand.Perm(len(durationsMs)) {
+	for _, idx := range rng.Perm(len(durationsMs)) {
 		durationMs := durationsMs[idx]
 		duration := time.Duration(durationMs) * time.Millisecond
 
@@ -1030,7 +1037,7 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	ccaIdxs := makeRange(0, uint(len(ccas)))
 	args := cartesian.Product(durationsMs, ccaIdxs)
 
-	for _, idx := range rand.Perm(len(args)) {
+	for _, idx := range rng.Perm(len(args)) {
 		durationMs := args[idx][0]
 		duration := time.Duration(durationMs) * time.Millisecond
 		cca := ccas[args[idx][1]]
@@ -1114,7 +1121,7 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 
 	var nameSuffix string
 	maxIdx := len(ccas) + 1
-	idx := rand.Intn(maxIdx)
+	idx := rng.Intn(maxIdx)
 	if idx == maxIdx-1 {
 		// Perform UDP rate test
 		var rateMbps uint
@@ -1335,7 +1342,7 @@ func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamM
 	deadline := nextRi(ts).Add(-time.Second)
 
 	args := cartesian.Product(durationsMs, numPackets)
-	for _, idx := range rand.Perm(len(args)) {
+	for _, idx := range rng.Perm(len(args)) {
 		durationMs := args[idx][0]
 		duration := time.Duration(durationMs) * time.Millisecond
 		packets := args[idx][1]
@@ -1410,7 +1417,7 @@ func RampUpProbe(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	}
 
 	// Execute the bursts in random order
-	for _, idx := range rand.Perm(len(durationsMs)) {
+	for _, idx := range rng.Perm(len(durationsMs)) {
 		durationMs := durationsMs[idx]
 		duration := time.Duration(durationMs) * time.Millisecond
 		var gap time.Duration

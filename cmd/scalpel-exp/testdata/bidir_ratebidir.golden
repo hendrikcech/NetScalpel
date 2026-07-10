@@ -1,0 +1,8 @@
+# procedure: ratebidir
+# params: duration_ms=3000
+sender  periodic    DL     start=ts5s dur=3s out=owd-udp_dl.csv
+sender  periodic    UL     start=ts5s dur=3s out=owd-udp_ul.csv
+sender  rate        DL     start=ts5s dur=3s out=rate_dl.csv
+sender  rate        UL     start=ts5s dur=3s out=rate_ul.csv
+sender  sendICMP    DL     start=ts5s dur=3s out=owd-icmp_dl.csv
+sender  sendICMP    UL     start=ts5s dur=3s out=owd-icmp_ul.csv

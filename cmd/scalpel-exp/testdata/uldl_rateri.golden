@@ -1,0 +1,7 @@
+# procedure: rateri
+# params: direction=ul
+command tcpdump_local local  start=ts-2.5s dur=5s
+command tcpdump_remote remote start=ts-2.5s dur=5s
+sender  periodic    UL     start=ts-1.5s dur=3s out=owd-udp_ul_070_3000.csv
+sender  rate        UL     start=ts-1.5s dur=3s out=rateri_ul_070_3000.csv
+sender  sendICMP    UL     start=ts-1.5s dur=3s out=owd-icmp_ul_070_3000.csv

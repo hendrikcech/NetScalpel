@@ -1,0 +1,10 @@
+# procedure: multiburst
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=15s
+command tcpdump_remote remote start=ts0s dur=15s
+sender  burst       UL     start=ts1s dur=4s out=burst_ul_10000_0000_0.csv
+sender  burst       UL     start=ts1s dur=4s out=burst_ul_10000_0000_1.csv
+sender  burst       UL     start=ts5s dur=4s out=burst_ul_10000_0700_0.csv
+sender  burst       UL     start=ts5s dur=4s out=burst_ul_10000_0700_1.csv
+sender  burst       UL     start=ts9s dur=4s out=burst_ul_10000_1400_0.csv
+sender  burst       UL     start=ts9s dur=4s out=burst_ul_10000_1400_1.csv

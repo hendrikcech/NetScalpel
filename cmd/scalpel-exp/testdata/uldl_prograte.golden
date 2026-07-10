@@ -1,0 +1,11 @@
+# procedure: prograte
+# params: direction=ul
+command tcpdump_local local  start=ts0s dur=15s
+command tcpdump_remote remote start=ts0s dur=15s
+sender  rate        UL     start=ts1.95s dur=400ms out=rate_ul_0400.csv
+sender  rate        UL     start=ts1s dur=450ms out=rate_ul_0450.csv
+sender  rate        UL     start=ts2.85s dur=300ms out=rate_ul_0300.csv
+sender  rate        UL     start=ts3.65s dur=500ms out=rate_ul_0500.csv
+sender  rate        UL     start=ts4.65s dur=200ms out=rate_ul_0200.csv
+sender  rate        UL     start=ts5.35s dur=100ms out=rate_ul_0100.csv
+sender  rate        UL     start=ts5.95s dur=350ms out=rate_ul_0350.csv
