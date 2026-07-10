@@ -567,25 +567,21 @@ func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *Reques
 	return nil
 }
 
-// TODO: remove generics
 func handleChanResult(ctx context.Context, c chan *Result, id string, reply *RequestServerResultReply) error {
 	var (
 		result *Result
-		closed bool
+		ok     bool
 	)
 	slog.DebugContext(ctx, "Waiting on chan result")
 	select {
-	case result, closed = <-c:
+	case result, ok = <-c:
 		slog.DebugContext(ctx, "Received on chan result")
 	case <-ctx.Done():
 		slog.DebugContext(ctx, "ctx.Done() while waiting on chan result")
 		return ctx.Err()
 	}
-	if closed && result == nil {
+	if !ok {
 		return fmt.Errorf("Result %v was already retrieved", id)
-	}
-	if result == nil {
-		panic("result.Res == nil")
 	}
 	if result.Err != nil {
 		return fmt.Errorf("handleChanResult: %v", result.Err.Error())
