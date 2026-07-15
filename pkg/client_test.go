@@ -98,7 +98,7 @@ func TestPeriodicDL(t *testing.T) {
 	client := SenderClient{
 		IP:        ip,
 		Out:       "",
-		Direction: UL,
+		Direction: DL,
 
 		Sender: &PeriodicSender{Params: PeriodicParams{
 			Interval: 1 * time.Millisecond,
@@ -338,7 +338,7 @@ func TestTCPDLBBR(t *testing.T) {
 	client := SenderClient{
 		IP:        ip,
 		Out:       "",
-		Direction: UL,
+		Direction: DL,
 
 		Sender: &TCPSender{Params: TCPSenderParams{
 			Duration_: time.Duration(2) * time.Second,
