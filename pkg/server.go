@@ -198,19 +198,25 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	return nil
 }
 
-// failTest delivers the error as the test's result before releasing the
-// per-test context. Without a result in resultC, a later RequestServerResult
-// for this ID would block forever and leave the client stuck at gathering.
-func (s *Server) failTest(ctx context.Context, id string, fmtStr string, args ...interface{}) error {
-	err := logErrContext(ctx, fmtStr, args...)
-
+// deliverResult hands the test's result to a waiting RequestServerResult and
+// releases the per-test context. Every test goroutine must deliver exactly
+// one result; without it a later RequestServerResult for the ID would block
+// forever and leave the client stuck at gathering.
+func (s *Server) deliverResult(id string, result *Result) {
 	s.resultLock.RLock()
 	c := s.resultC[id]
 	s.resultLock.RUnlock()
-	c <- &Result{Err: err}
+	c <- result
 	close(c)
 
 	s.finishTest(id)
+}
+
+// failTest delivers the error as the test's result before releasing the
+// per-test context.
+func (s *Server) failTest(ctx context.Context, id string, fmtStr string, args ...interface{}) error {
+	err := logErrContext(ctx, fmtStr, args...)
+	s.deliverResult(id, &Result{Err: err})
 	return err
 }
 
@@ -258,14 +264,7 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 	defer conn.Close()
 
 	var result Result
-
-	defer func() {
-		s.resultLock.Lock()
-		s.resultC[args.ID] <- &result
-		close(s.resultC[args.ID])
-		s.resultLock.Unlock()
-		s.finishTest(args.ID)
-	}()
+	defer s.deliverResult(args.ID, &result)
 
 	var sender Sender
 	var receiver Receiver
@@ -309,14 +308,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 	}()
 
 	var result Result
-
-	defer func() {
-		s.resultLock.Lock()
-		s.resultC[args.ID] <- &result
-		close(s.resultC[args.ID])
-		s.resultLock.Unlock()
-		s.finishTest(args.ID)
-	}()
+	defer s.deliverResult(args.ID, &result)
 
 	switch args.ServerMode {
 	case ReceiveTCP:
@@ -356,14 +348,7 @@ func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, 
 	defer conn.Close()
 
 	var result Result
-
-	defer func() {
-		s.resultLock.Lock()
-		s.resultC[args.ID] <- &result
-		close(s.resultC[args.ID])
-		s.resultLock.Unlock()
-		s.finishTest(args.ID)
-	}()
+	defer s.deliverResult(args.ID, &result)
 
 	switch args.ServerMode {
 	case SendICMP:
