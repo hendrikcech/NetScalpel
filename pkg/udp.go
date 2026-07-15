@@ -103,10 +103,10 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 				return nil, fmt.Errorf("ReceiveFrom: ReadMsgs: %w", err)
 			}
 			if ctx.Err() == nil {
-				slog.WarnContext(ctx, "RecvMsgs returned Timeout error from unknown origin -> extending",
+				slog.WarnContext(ctx, "RecvMsgs returned Timeout error from unknown origin -> clearing deadline",
 					"error", err,
 					"ctxErr", ctx.Err())
-				conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
+				conn.SetReadDeadline(time.Time{})
 				continue
 			}
 			// Grace period to collect in-flight packets, but only on natural

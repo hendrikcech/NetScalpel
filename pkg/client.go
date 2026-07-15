@@ -443,8 +443,8 @@ func (c *SenderClient) punchHole(ctx context.Context, conn net.PacketConn, raddr
 		}
 		slog.DebugContext(ctx, "Received NAT probe", "try", try+1)
 		probeReplyReceived = true
-		// Effectively deactive ReadDeadline set for probing
-		conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
+		// Clear the ReadDeadline set for probing
+		conn.SetReadDeadline(time.Time{})
 		break
 	}
 	if !probeReplyReceived {

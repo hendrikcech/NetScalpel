@@ -73,8 +73,8 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 					slog.DebugContext(ctx, "Returning from TxTsReader due to deadline and ctx.Err()", "ctx.Err()", ctx.Err())
 					return nil
 				} else {
-					slog.DebugContext(ctx, "Extending TxTsReader conn deadline")
-					conn.SetReadDeadline(time.Now().Add(1000 * time.Hour))
+					slog.DebugContext(ctx, "Clearing TxTsReader conn deadline")
+					conn.SetReadDeadline(time.Time{})
 				}
 				continue
 			}
