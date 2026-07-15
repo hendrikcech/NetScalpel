@@ -8,6 +8,7 @@ package pkg
 import (
 	"context"
 	"net/rpc"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,6 +67,12 @@ func TestRequestServerResultTwice(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("second retrieval for the same ID succeeded; want an error")
+	}
+	// It used to fall through to panic("result.Res == nil") because
+	// handleChanResult misread the channel receive's ok value, killing the
+	// whole server on a duplicate RequestServerResult RPC.
+	if !strings.Contains(err.Error(), "already retrieved") {
+		t.Errorf("expected an 'already retrieved' error, got: %v", err)
 	}
 
 	// The server must still be fully serviceable.

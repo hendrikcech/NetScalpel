@@ -209,22 +209,9 @@ func TestStartAtInPastErrors(t *testing.T) {
 	}
 }
 
-func TestWaitUntilPastErrors(t *testing.T) {
-	if err := waitUntil(context.Background(), time.Now().Add(-time.Second)); err == nil {
-		t.Errorf("expected an error for a startAt in the past")
-	}
-}
-
-func TestWaitUntilZeroReturnsImmediately(t *testing.T) {
-	before := time.Now()
-	if err := waitUntil(context.Background(), time.Time{}); err != nil {
-		t.Errorf("expected nil error for a zero startAt, got: %v", err)
-	}
-	if elapsed := time.Since(before); elapsed > 50*time.Millisecond {
-		t.Errorf("waitUntil with zero startAt took %v", elapsed)
-	}
-}
-
+// The single real-timer canary for waitUntil; the exact-time variants
+// (past, zero, cancel, future) run under the synctest fake clock in
+// synctest_test.go.
 func TestWaitUntilFutureWakesOnTime(t *testing.T) {
 	startAt := time.Now().Add(200 * time.Millisecond)
 	if err := waitUntil(context.Background(), startAt); err != nil {
@@ -236,17 +223,6 @@ func TestWaitUntilFutureWakesOnTime(t *testing.T) {
 	}
 	if late := startAt.Add(testutil.StartTol); now.After(late) {
 		t.Errorf("waitUntil returned at %v, later than %v", now, late)
-	}
-}
-
-func TestWaitUntilCancelledDuringWait(t *testing.T) {
-	ctx := cancelAfter(100 * time.Millisecond)
-	var err error
-	returnsWithin(t, time.Second, "waitUntil", func() {
-		err = waitUntil(ctx, time.Now().Add(10*time.Second))
-	})
-	if err != context.Canceled {
-		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 }
 

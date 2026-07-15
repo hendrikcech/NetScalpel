@@ -16,6 +16,24 @@ import (
 
 // --- processUDP edge cases ---
 
+// checkProcessUDP compares the Seq and Lost fields of a processUDP result
+// against the expectation. The full struct (timestamps, OWD, Len) is pinned
+// exactly by FuzzProcessUDP's map oracle and by TestProcessUDPOwd.
+func checkProcessUDP(t *testing.T, exp []MsgResult, res []MsgResult) {
+	if len(exp) != len(res) {
+		t.Fatalf("Wrong result length")
+	}
+
+	for i := range exp {
+		if exp[i].Seq != res[i].Seq {
+			t.Fatalf("Wrong sequence number")
+		}
+		if exp[i].Lost != res[i].Lost {
+			t.Fatalf("Wrong loss status")
+		}
+	}
+}
+
 func TestProcessUDPRcvdEmpty(t *testing.T) {
 	sent := []MsgSent{{Seq: 0}, {Seq: 1}, {Seq: 2}}
 	exp := []MsgResult{
