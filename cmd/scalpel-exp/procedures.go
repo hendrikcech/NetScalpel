@@ -758,19 +758,10 @@ func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params Par
 	}
 
 	offsets := []time.Duration{
-		// -600 * time.Millisecond,
-		// -400 * time.Millisecond,
-		// -200 * time.Millisecond,
 		0 * time.Millisecond,
-		// 200 * time.Millisecond,
-		// 400 * time.Millisecond,
-		// 600 * time.Millisecond,
 	}
 
 outer:
-	// for i := 0; ; i++ {
-	// for _, idx := range rng.Perm(len(offsets)) {
-	// offset := offsets[idx]
 	for i, idx := range rng.Perm(len(miceMbps)) {
 		mouseMbps := miceMbps[idx]
 
@@ -782,7 +773,6 @@ outer:
 		if offset >= 0 {
 			startEleph = start
 			startMouse = start.Add(offset)
-			// durationMouse = duration + (duration - offset) // End at start + 2 * duration
 			durationMouse = duration
 		} else {
 			startEleph = start.Add(-offset)
@@ -826,7 +816,6 @@ outer:
 			break outer
 		}
 	}
-	// }
 
 	e.tcpdump(resultPath, ts, start.Sub(ts)+time.Second)
 

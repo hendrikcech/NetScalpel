@@ -419,7 +419,6 @@ type RateSender struct {
 	tsEnabled bool
 	msgs      []MsgSent
 	tx        []mmsg.Message
-	buf       []byte // for sendRoundSimple
 }
 
 var _ Sender = (*RateSender)(nil)
@@ -439,7 +438,6 @@ func (s *RateSender) ReceiverMode() Mode {
 func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
 	r.msgs = make([]MsgSent, 0, int(float64(r.Params.NumPackets())*1.1))
 	r.tx = make([]mmsg.Message, 1024)
-	r.buf = make([]byte, 1500)
 	for i := range r.tx {
 		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
 	}
@@ -456,7 +454,7 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 		// Segment duration is owned by a per-segment child context; the
 		// caller's ctx carries the total duration and user cancellation.
 		segCtx, segCancel := context.WithTimeout(ctx, r.Params[i].Duration)
-		err := r.runParams(segCtx, conn, raddr, r.Params[i], tsReader != nil)
+		err := r.runParams(segCtx, conn, raddr, r.Params[i])
 		segCancel()
 		if err != nil {
 			return nil, err
@@ -471,21 +469,7 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 	return r.msgs, nil
 }
 
-func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Addr, params RateParams, tsEnabled bool) error {
-	// Only enable socket pacing if we can retrieve the actual tx timestamps
-	// TODO: reenable
-	// leads to txtsreader returning a different number of packets than Run (half of it)
-	// if tsEnabled {
-	// 	// approximate 50 bytes overhead from L2, IP and UDP headers
-	// 	pacingRate := uint(params.Pps*(params.PayloadSize + 100))
-	// 	if err := setMaxPacingRate(conn.(*net.UDPConn), pacingRate); err != nil {
-	// 		slog.WarnContext(ctx, "Failed enabling pacing", "error", err)
-	// 	} else {
-	// 		slog.DebugContext(ctx, "Enabled pacing")
-	// 	}
-	// }
-	slog.DebugContext(ctx, "Disabled pacing (manually)")
-
+func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Addr, params RateParams) error {
 	if params.Pps == 0 {
 		// Cooldown segment: send nothing until the segment duration is
 		// reached or the caller aborts. (Also avoids the interval formula
@@ -510,14 +494,9 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 		return fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
 	}
 
-	// lastTickStart := time.Now()
-	// lastTickEnd := time.Now()
 	for {
 		select {
 		case now := <-ticker.C:
-			// lastTickEndElapsed := time.Now().Sub(lastTickEnd)
-			// lastTickStartElapsed := time.Now().Sub(lastTickStart)
-			// lastTickStart = now
 			elapsed := now.Sub(start).Seconds()
 			numPacketsGoal := uint(elapsed * float64(params.Pps))
 			if elapsed < 0 {
@@ -545,13 +524,10 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 				continue
 			}
 			n, err := r.sendRound(ctx, mconn, raddr, numPackets, params.PayloadSize)
-			// n, err := r.sendRoundSimple(ctx, conn.(*net.UDPConn), raddr, numPackets, params.PayloadSize)
 			if err != nil {
 				return err
 			}
 			numPacketsSent += n
-			// slog.DebugContext(ctx, "sendRound", "goal", numPackets, "since_prev_start", lastTickStartElapsed, "since_prev_end", lastTickEndElapsed)
-			// lastTickEnd = time.Now()
 		case <-ctx.Done():
 			// Segment duration reached (per-segment deadline) or user abort
 			return nil
@@ -588,7 +564,6 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 			r.msgs = append(r.msgs, MsgSent{Seq: b.Seq, TsSent: tsSent, Len: 8 + payloadSize})
 		}
 
-		// syscallStart := time.Now()
 		n, err := conn.SendMsgs(r.tx[:packetsRound], 0)
 		if err != nil {
 			// Nothing of this round went out (sendmmsg reports a count, not
@@ -599,7 +574,6 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 			}
 			return sent, err
 		}
-		// slog.DebugContext(ctx, "SendMsgs", "elapsed", time.Now().Sub(syscallStart))
 		if n < 0 {
 			panic(fmt.Sprintf("SendMsgs returned n < 0, n=%v", n))
 		}
@@ -612,37 +586,6 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 			r.seq -= uint64(packetsRound) - uint64(n)
 			break
 		}
-	}
-	return sent, nil
-}
-
-func (r *RateSender) sendRoundSimple(ctx context.Context, conn *net.UDPConn, raddr net.Addr, packets uint, payloadSize uint) (uint, error) {
-	packetsLeft := packets
-	sent := uint(0)
-	for i := 0; packetsLeft > 0; i++ {
-		b := Msg{Seq: r.seq, PadN: payloadSize}
-		n, err := b.Encode(r.buf)
-		if err != nil {
-			return sent, err
-		}
-
-		r.msgs = append(r.msgs, MsgSent{Seq: b.Seq, TsSent: time.Now(), Len: 8 + payloadSize})
-
-		// n, err := conn.SendMsgs(r.tx[:packetsRound], 0)
-		n, err = conn.WriteTo(r.buf[:n], raddr)
-		if err != nil {
-			if e, ok := err.(net.Error); ok && e.Timeout() {
-				return sent, nil
-			}
-			return sent, err
-		}
-		if n < 0 {
-			panic(fmt.Sprintf("conn.WriteTo returned n < 0, n=%v", n))
-		}
-
-		sent += uint(1)
-		r.seq += uint64(1)
-		packetsLeft -= uint(1)
 	}
 	return sent, nil
 }

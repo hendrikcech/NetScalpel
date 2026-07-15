@@ -7,7 +7,6 @@ var cli struct {
 	Port     uint   `help:"Server port." default:"8500"`
 	Log      string `help:"Write all log output to this file."`
 	LogLevel int    `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
-	// Profile string `help:"Write pprof to file"`
 
 	Client struct {
 		Results   string `help:"Path to the results folder." default:"results"`

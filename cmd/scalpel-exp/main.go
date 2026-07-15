@@ -7,8 +7,6 @@ import (
 	"math"
 	"os"
 	"os/signal"
-	"runtime"
-	"runtime/pprof"
 	"strings"
 	"syscall"
 
@@ -40,8 +38,6 @@ func main() {
 		os.Exit(130)
 	}
 
-	// go dumpOnSig()
-
 	var logfile *os.File
 	if cli.Log != "" {
 		var err error
@@ -51,9 +47,6 @@ func main() {
 		}
 		defer logfile.Close()
 	}
-
-	// createProfile(cli.Profile)
-	// defer pprof.StopCPUProfile()
 
 	switch kongctx.Command() {
 	case "client":
@@ -128,32 +121,5 @@ func main() {
 
 	default:
 		panic(kongctx.Command())
-	}
-}
-
-func createProfile(profile string) {
-	if profile == "" {
-		return
-	}
-	f, err := os.Create(profile)
-	if err != nil {
-		slog.Error("Create profile", "error", err)
-		os.Exit(1)
-	}
-	if err := pprof.StartCPUProfile(f); err != nil {
-		slog.Error("StartCPUProfile", "error", err.Error())
-		os.Exit(1)
-	}
-	slog.Info("Writing pprof profile", "path", profile)
-}
-
-func dumpOnSig() {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGQUIT)
-	buf := make([]byte, 1<<20)
-	for {
-		<-sigs
-		stacklen := runtime.Stack(buf, true)
-		fmt.Printf("=== received SIGQUIT ===\n*** goroutine dump...\n%s\n*** end\n", buf[:stacklen])
 	}
 }

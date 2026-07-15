@@ -163,27 +163,6 @@ func CompressFile(path string, w io.Writer) error {
 	return nil
 }
 
-// Decompress file
-// f, err := os.Create(path)
-// if err != nil {
-// 	return fmt.Errorf("Failed os.Create(%v): %v", path, err.Error())
-// }
-// defer f.Close()
-// fW := bufio.NewWriter(f)
-// defer fW.Flush()
-
-// encR := bytes.NewReader(bufEnc)
-// dec, err := zstd.NewReader(encR)
-// if err != nil {
-// 	return fmt.Errorf("Failed creating decoder for %v: %v", path, err.Error())
-// }
-// defer dec.Close()
-
-// nWritten, err := io.Copy(fW, dec)
-// if err != nil {
-// 	return fmt.Errorf("Failed writing returned file to %v: %v", path, err.Error())
-// }
-
 type Direction int
 
 const (
