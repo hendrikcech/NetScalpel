@@ -127,7 +127,7 @@ func (c *Client) executeProcedure(ctx context.Context, e *Executor, ts time.Time
 		name += "_" + strings.ToLower(direction.(string))
 	}
 	slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Schedule %s in %.2fs", c.round+1, c.Rounds,
-		name, ri.Sub(time.Now()).Seconds()), "start", ri, "params", params)
+		name, time.Until(ri).Seconds()), "start", ri, "params", params)
 	resultPath, err := mkResultPath(c.Results, ri, name)
 	if err != nil {
 		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())

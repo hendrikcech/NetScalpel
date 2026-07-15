@@ -38,10 +38,10 @@ func setSocketBuffers(ctx context.Context, conn *net.UDPConn) {
 
 func getSocketBuffers(conn *net.UDPConn) (int, int, error) {
 	fd, err := conn.File()
-	defer fd.Close()
 	if err != nil {
 		return -1, -1, err
 	}
+	defer fd.Close()
 	// Necessary to continue make Deadline work on conn: https://stackoverflow.com/a/74886460
 	defer syscall.SetNonblock(int(fd.Fd()), true)
 
@@ -59,10 +59,10 @@ func getSocketBuffers(conn *net.UDPConn) (int, int, error) {
 
 func forceSetSocketBuffers(conn *net.UDPConn, size int) error {
 	fd, err := conn.File()
-	defer fd.Close()
 	if err != nil {
 		return err
 	}
+	defer fd.Close()
 	// Necessary to continue make Deadline work on conn: https://stackoverflow.com/a/74886460
 	defer syscall.SetNonblock(int(fd.Fd()), true)
 
@@ -74,21 +74,6 @@ func forceSetSocketBuffers(conn *net.UDPConn, size int) error {
 	}
 
 	return nil
-}
-
-func setMaxPacingRate(conn *net.UDPConn, rate uint) error {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	err = rawConn.Control(func(fd uintptr) {
-		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_MAX_PACING_RATE, int(rate)); err != nil {
-			err = fmt.Errorf("Failed setting SO_MAX_PACING_RATE: %w", err)
-		}
-	})
-
-	return err
 }
 
 func enableTxTimestamping(conn syscall.Conn) error {
@@ -259,29 +244,6 @@ func getsockopt(fd, level, opt int, val unsafe.Pointer, vallen *uint32) (err err
 		err = os.NewSyscallError("getsockopt", e1)
 	}
 	return
-}
-
-// Check if the process has the CAP_SYS_ADMIN capability
-func hasCapSysAdmin() bool {
-	var caps unix.CapUserHeader
-	var data unix.CapUserData
-
-	caps.Version = unix.LINUX_CAPABILITY_VERSION_3
-	caps.Pid = 0 // 0 = self
-
-	err := unix.Capget(&caps, &data)
-	if err != nil {
-		slog.Error("capget failed", "error", err)
-		return false
-	}
-
-	const CAP_SYS_ADMIN = 21
-	return (data.Effective>>CAP_SYS_ADMIN)&1 == 1
-}
-
-// Return true if root or CAP_SYS_ADMIN
-func hasElevatedPrivileges() bool {
-	return os.Geteuid() == 0 || hasCapSysAdmin()
 }
 
 const hystartPath = "/sys/module/tcp_cubic/parameters/hystart"

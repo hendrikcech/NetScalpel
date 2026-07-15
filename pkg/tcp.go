@@ -135,13 +135,11 @@ outer:
 
 func queryTCPInfo(ctx context.Context, tc *tcp.Conn, b []byte) (*tcpinfo.Info, error) {
 	var o tcpinfo.Info
-	for {
-		opt, err := tc.Option(o.Level(), o.Name(), b)
-		if err != nil {
-			return nil, err
-		}
-		return opt.(*tcpinfo.Info), nil
+	opt, err := tc.Option(o.Level(), o.Name(), b)
+	if err != nil {
+		return nil, err
 	}
+	return opt.(*tcpinfo.Info), nil
 }
 
 func queryBBRInfo(ctx context.Context, tc *tcp.Conn, b []byte) (*tcpinfo.BBRInfo, error) {
@@ -222,28 +220,26 @@ func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 	// returns instead of waiting for a client forever.
 	stop := context.AfterFunc(ctx, func() { ln.Close() })
 	defer stop()
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, fmt.Errorf("Cancelled while waiting for TCP client: %w", ctx.Err())
-			}
-			slog.DebugContext(ctx, "TCPReceiver accept", "error", err.Error())
-			return nil, err
+	conn, err := ln.Accept()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("Cancelled while waiting for TCP client: %w", ctx.Err())
 		}
-
-		// TODO: introduce support for handling multiple TCP clients
-
-		recvFn := func(c chan error) {
-			defer close(c)
-			if err := r.run(ctx, conn); err != nil {
-				c <- err
-			}
-			slog.DebugContext(ctx, "TCPReceiver run returned")
-		}
-
-		return runTCPMonitorAndIO(ctx, conn, recvFn, false)
+		slog.DebugContext(ctx, "TCPReceiver accept", "error", err.Error())
+		return nil, err
 	}
+
+	// TODO: introduce support for handling multiple TCP clients
+
+	recvFn := func(c chan error) {
+		defer close(c)
+		if err := r.run(ctx, conn); err != nil {
+			c <- err
+		}
+		slog.DebugContext(ctx, "TCPReceiver run returned")
+	}
+
+	return runTCPMonitorAndIO(ctx, conn, recvFn, false)
 }
 
 func (r *TCPReceiver) run(ctx context.Context, conn net.Conn) error {

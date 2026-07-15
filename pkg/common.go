@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	randv2 "math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -64,8 +65,23 @@ func (m *Msg) Encode(buf []byte) (int, error) {
 		return 0, fmt.Errorf("Provided buffer of %v bytes too small for seq and %v padding bytes", len(buf), m.PadN)
 	}
 	binary.BigEndian.PutUint64(buf[0:], m.Seq)
-	rand.Read(buf[8 : 8+m.PadN]) // always succeeds
+	fillRandom(buf[8 : 8+m.PadN])
 	return int(8 + m.PadN), nil
+}
+
+// fillRandom fills b with non-cryptographic random padding (so links cannot
+// compress it away). math/rand/v2's global source is goroutine-safe and
+// cheap enough for the send hot path, unlike crypto/rand.
+func fillRandom(b []byte) {
+	for len(b) >= 8 {
+		binary.LittleEndian.PutUint64(b, randv2.Uint64())
+		b = b[8:]
+	}
+	if len(b) > 0 {
+		var tail [8]byte
+		binary.LittleEndian.PutUint64(tail[:], randv2.Uint64())
+		copy(b, tail[:])
+	}
 }
 
 func (m *Msg) Decode(buf []byte) {

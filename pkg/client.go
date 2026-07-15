@@ -158,13 +158,12 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 		return fmt.Errorf("UL failed: %w", err)
 	}
 
-	switch res.(type) {
+	switch res := res.(type) {
 	case []MsgSent:
-		c.UDPMsgsSent = res.([]MsgSent)
+		c.UDPMsgsSent = res
 	case []TCPMetric:
-		c.TCPMetricsSndr = res.([]TCPMetric)
+		c.TCPMetricsSndr = res
 	default:
-		// panic("Unhandled result type in runUL")
 		slog.ErrorContext(ctx, "Unhandled result type in runUL", "result", res)
 	}
 
@@ -244,9 +243,9 @@ func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Du
 		return fmt.Errorf("Failed ReceiveFrom: %w", err)
 	}
 
-	switch res.(type) {
+	switch res := res.(type) {
 	case []MsgRcvd:
-		c.UDPMsgsRcvd = res.([]MsgRcvd)
+		c.UDPMsgsRcvd = res
 	default:
 		panic("Unhandled result type in runDL")
 	}
@@ -300,9 +299,9 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 
 	slog.InfoContext(ctx, "Finished Run")
 
-	switch res.(type) {
+	switch res := res.(type) {
 	case []TCPMetric:
-		c.TCPMetricsRcvr = res.([]TCPMetric)
+		c.TCPMetricsRcvr = res
 	default:
 		panic("Unhandled result type in runDL")
 	}
@@ -361,9 +360,9 @@ func (c *SenderClient) runDLICMP(ctx context.Context, echoID uint16, timeout tim
 		return fmt.Errorf("Failed ReceiveFrom: %w", err)
 	}
 
-	switch res.(type) {
+	switch res := res.(type) {
 	case []MsgRcvd:
-		c.UDPMsgsRcvd = res.([]MsgRcvd)
+		c.UDPMsgsRcvd = res
 	default:
 		panic("Unhandled result type in runDL")
 	}
@@ -466,23 +465,22 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	}
 	res := result.Result
 
-	switch res.(type) {
+	switch res := res.(type) {
 	case []MsgRcvd:
 		if c.Direction != UL {
 			panic("Unexpected result type")
 		}
-		c.UDPMsgsRcvd = res.([]MsgRcvd)
+		c.UDPMsgsRcvd = res
 	case []MsgSent:
 		if c.Direction != DL {
 			panic("Unexpected result type")
 		}
-		c.UDPMsgsSent = res.([]MsgSent)
+		c.UDPMsgsSent = res
 	case []TCPMetric:
-		m := res.([]TCPMetric)
 		if c.Direction == UL {
-			c.TCPMetricsRcvr = m
+			c.TCPMetricsRcvr = res
 		} else {
-			c.TCPMetricsSndr = m
+			c.TCPMetricsSndr = res
 		}
 	default:
 		slog.ErrorContext(ctx, "Unhandled result type in Gather", "result", res)

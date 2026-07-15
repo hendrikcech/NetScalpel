@@ -294,7 +294,6 @@ func (p PeriodicParams) GetDuration() time.Duration {
 // Sends one packet every interval
 type PeriodicSender struct {
 	Params PeriodicParams
-	seq    uint64
 }
 
 var _ Sender = (*PeriodicSender)(nil)
@@ -414,11 +413,10 @@ func (r RateParamsW) GetDuration() time.Duration {
 
 // Generate Params.Pps many packets per second
 type RateSender struct {
-	Params    RateParamsW
-	seq       uint64
-	tsEnabled bool
-	msgs      []MsgSent
-	tx        []mmsg.Message
+	Params RateParamsW
+	seq    uint64
+	msgs   []MsgSent
+	tx     []mmsg.Message
 }
 
 var _ Sender = (*RateSender)(nil)
