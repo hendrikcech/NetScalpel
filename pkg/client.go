@@ -103,7 +103,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	}
 	var reply RequestServerReply
 	if err := callCtx(ctx, client, "Server.RequestServer", args, &reply); err != nil {
-		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
+		return fmt.Errorf("Call Server.RequestServerReply failed: %w", err)
 	}
 
 	c.port = reply.Port
@@ -114,16 +114,16 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	switch args.ServerMode.SocketType() {
 	case UDP:
 		if raddr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, reply.Port)); err != nil {
-			return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+			return fmt.Errorf("Failed resolving provided UDP addr: %w", err)
 		}
 		if conn, err = listenUDP(ctx); err != nil {
-			return fmt.Errorf("listenUDP failed: %v", err.Error())
+			return fmt.Errorf("listenUDP failed: %w", err)
 		}
 	case TCP:
 		// TCP Handshake is performed before the test starts
 		addrStr := fmt.Sprintf("%s:%v", c.IP, reply.Port)
 		// if raddr, err = net.ResolveTCPAddr("tcp", addrStr); err != nil {
-		// 	return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
+		// 	return fmt.Errorf("Failed resolving provided TCP addr: %w", err)
 		// }
 		dialer := net.Dialer{}
 		// We need to make space for the added TCP option with LeoCC
@@ -138,7 +138,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 
 		if conn, err = dialer.Dial("tcp", addrStr); err != nil {
 			// if conn, err = net.DialTCP("tcp", nil, raddr.(*net.TCPAddr)); err != nil {
-			return fmt.Errorf("net.DialTCP failed: %v", err.Error())
+			return fmt.Errorf("net.DialTCP failed: %w", err)
 		}
 	case ICMP:
 		conn, raddr, err = listenICMPClient(ctx, c.IP)
@@ -167,7 +167,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 
 	res, err := c.Sender.Run(sendCtx, conn, raddr)
 	if err != nil {
-		return fmt.Errorf("UL failed: %v\n", err)
+		return fmt.Errorf("UL failed: %w", err)
 	}
 
 	switch res.(type) {
@@ -196,7 +196,7 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 	}
 	var reply RequestServerReply
 	if err := callCtx(ctx, client, "Server.RequestServer", args, &reply); err != nil {
-		return fmt.Errorf("Call Server.RequestServerReply failed: %v", err.Error())
+		return fmt.Errorf("Call Server.RequestServerReply failed: %w", err)
 	}
 
 	c.port = reply.Port
@@ -216,18 +216,18 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Duration) error {
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%v", c.IP, rport))
 	if err != nil {
-		return fmt.Errorf("Failed resolving provided UDP addr: %v", err.Error())
+		return fmt.Errorf("Failed resolving provided UDP addr: %w", err)
 	}
 
 	conn, err := listenUDP(ctx)
 	if err != nil {
-		return fmt.Errorf("ListenUDP failed: %v", err.Error())
+		return fmt.Errorf("ListenUDP failed: %w", err)
 	}
 	defer conn.Close()
 	// laddr := conn.LocalAddr().(*net.UDPAddr)
 
 	if err := c.punchUDPHole(ctx, conn, raddr); err != nil {
-		return fmt.Errorf("Return due to failed UDP probing: %v", err.Error())
+		return fmt.Errorf("Return due to failed UDP probing: %w", err)
 	}
 
 	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
@@ -253,7 +253,7 @@ func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Du
 	defer recvCancel()
 	res, err := receiver.Run(recvCtx, ln)
 	if err != nil {
-		return fmt.Errorf("Failed ReceiveFrom: %v", err)
+		return fmt.Errorf("Failed ReceiveFrom: %w", err)
 	}
 
 	switch res.(type) {
@@ -281,12 +281,12 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 
 	raddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%v", c.IP, rport))
 	if err != nil {
-		return fmt.Errorf("Failed resolving provided TCP addr: %v", err.Error())
+		return fmt.Errorf("Failed resolving provided TCP addr: %w", err)
 	}
 
 	conn, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
-		return fmt.Errorf("net.DialTCP failed: %v", err.Error())
+		return fmt.Errorf("net.DialTCP failed: %w", err)
 	}
 	defer conn.Close()
 
@@ -307,7 +307,7 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 	defer recvCancel()
 	res, err := receiver.Run(recvCtx, ln)
 	if err != nil {
-		return fmt.Errorf("Failed ReceiveFrom: %v", err)
+		return fmt.Errorf("Failed ReceiveFrom: %w", err)
 	}
 
 	slog.InfoContext(ctx, "Finished Run")
@@ -330,7 +330,7 @@ func (c *SenderClient) runDLICMP(ctx context.Context, echoID uint16, timeout tim
 	defer conn.Close()
 
 	if err := c.punchICMPHole(ctx, conn.(net.PacketConn), raddr, echoID); err != nil {
-		return fmt.Errorf("Return due to failed UDP probing: %v", err.Error())
+		return fmt.Errorf("Return due to failed UDP probing: %w", err)
 	}
 
 	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
@@ -370,7 +370,7 @@ func (c *SenderClient) runDLICMP(ctx context.Context, echoID uint16, timeout tim
 	defer recvCancel()
 	res, err := receiver.Run(recvCtx, ln)
 	if err != nil {
-		return fmt.Errorf("Failed ReceiveFrom: %v", err)
+		return fmt.Errorf("Failed ReceiveFrom: %w", err)
 	}
 
 	switch res.(type) {
@@ -417,7 +417,7 @@ func (c *SenderClient) punchHole(ctx context.Context, conn net.PacketConn, raddr
 				"remoteAddr", raddr)
 		}
 		if _, err := conn.WriteTo(payload, raddr); err != nil {
-			return fmt.Errorf("Failed WriteTo: %v\n", err.Error())
+			return fmt.Errorf("Failed WriteTo: %w", err)
 		}
 
 		probeDeadline := time.Now().Add(time.Second)
@@ -426,7 +426,7 @@ func (c *SenderClient) punchHole(ctx context.Context, conn net.PacketConn, raddr
 		}
 		// TODO: replace this with context deadline?
 		if err := conn.SetReadDeadline(probeDeadline); err != nil {
-			return fmt.Errorf("Failed to probe deadline: %v\n", err.Error())
+			return fmt.Errorf("Failed to probe deadline: %w", err)
 		}
 
 		if !c.StartAt.IsZero() && time.Now().After(c.StartAt) {
@@ -436,7 +436,7 @@ func (c *SenderClient) punchHole(ctx context.Context, conn net.PacketConn, raddr
 		var buf [1500]byte
 		if _, _, err := conn.ReadFrom(buf[:]); err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Timeout() {
-				return fmt.Errorf("Failed ReadFrom: %v", err.Error())
+				return fmt.Errorf("Failed ReadFrom: %w", err)
 			}
 			// Timeout occured, send another probe
 			continue
@@ -461,7 +461,7 @@ func (c *SenderClient) Abort(ctx context.Context, client *rpc.Client) error {
 	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 	var reply AbortReply
 	if err := callCtx(ctx, client, "Server.Abort", AbortArgs{ID: c.ID}, &reply); err != nil {
-		return fmt.Errorf("Call Server.Abort failed: %v", err.Error())
+		return fmt.Errorf("Call Server.Abort failed: %w", err)
 	}
 	return nil
 }
@@ -474,7 +474,7 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	var result RequestServerResultReply
 	if err := callCtx(ctx, client, "Server.RequestServerResult",
 		RequestServerResultArgs{ID: c.ID}, &result); err != nil {
-		return fmt.Errorf("Call Server.RequestServerResult failed: %v", err.Error())
+		return fmt.Errorf("Call Server.RequestServerResult failed: %w", err)
 	}
 	res := result.Result
 
@@ -507,13 +507,13 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		c.UDPResults = processUDP(c.UDPMsgsSent, c.UDPMsgsRcvd)
 		rows := generateUDPResultRows(c.UDPResults)
 		if err := writeCSV(c.Out, rows); err != nil {
-			return fmt.Errorf("writeCSV failed: %v", err.Error())
+			return fmt.Errorf("writeCSV failed: %w", err)
 		}
 	case TCP:
 		sndrRows := generateTCPResultRows(c.TCPMetricsSndr)
 		// rcvrRows := generateTCPResultRows(c.TCPMetricsRcvr)
 		if err := writeCSV(c.Out, sndrRows); err != nil {
-			return fmt.Errorf("writeCSV failed: %v", err.Error())
+			return fmt.Errorf("writeCSV failed: %w", err)
 		}
 	case ICMP:
 		// TODO: change naming or merge strategy?
@@ -521,7 +521,7 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		rows := generateUDPResultRows(c.UDPResults)
 		// slog.DebugContext(ctx, "Results", "MSGSSENT", c.UDPMsgsSent, "MSGSRCVD", c.UDPMsgsRcvd) //, "RESULTS", c.UDPResults)
 		if err := writeCSV(c.Out, rows); err != nil {
-			return fmt.Errorf("writeCSV failed: %v", err.Error())
+			return fmt.Errorf("writeCSV failed: %w", err)
 		}
 	default:
 		panic("Unknown SocketType")
@@ -863,7 +863,7 @@ func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 		var err error
 		c.tempDir, err = RandDir(c.Params.Name())
 		if err != nil {
-			return fmt.Errorf("RunCommand: failed RandDir: %v", err.Error())
+			return fmt.Errorf("RunCommand: failed RandDir: %w", err)
 		}
 
 		if err := waitUntil(ctx, c.StartAt); err != nil {
@@ -874,17 +874,17 @@ func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 
 		cmd, err := command.Exec(c.tempDir)
 		if err != nil {
-			return fmt.Errorf("RunCommand: failed command.Cmd: %v", err.Error())
+			return fmt.Errorf("RunCommand: failed command.Cmd: %w", err)
 		}
 
 		if err := MonitorCommand(ctx, cmd, c.Params.Timeout()); err != nil {
-			return fmt.Errorf("RunCommand: %v", err.Error())
+			return fmt.Errorf("RunCommand: %w", err)
 		}
 	} else {
 		args := RunCommandArgs{ID: c.ID, Params: c.Params, StartAt: c.StartAt}
 		var reply RunCommandReply
 		if err := callCtx(ctx, client, "Server.RunCommand", args, &reply); err != nil {
-			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
+			return fmt.Errorf("Call Server.RunCommand failed: %w", err)
 		}
 	}
 	return nil
@@ -899,7 +899,7 @@ func (c *CommandClient) Abort(ctx context.Context, client *rpc.Client) error {
 	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 	var reply AbortReply
 	if err := callCtx(ctx, client, "Server.Abort", AbortArgs{ID: c.ID}, &reply); err != nil {
-		return fmt.Errorf("Call Server.Abort failed: %v", err.Error())
+		return fmt.Errorf("Call Server.Abort failed: %w", err)
 	}
 	return nil
 }
@@ -910,7 +910,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 	if c.Local {
 		entries, err := os.ReadDir(c.tempDir)
 		if err != nil {
-			return fmt.Errorf("Failed os.ReadDir(%v): %v", c.tempDir, err.Error())
+			return fmt.Errorf("Failed os.ReadDir(%v): %w", c.tempDir, err)
 		}
 
 		for _, entry := range entries {
@@ -924,17 +924,17 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 			encPath := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", entry.Name()))
 			f, err := os.Create(encPath)
 			if err != nil {
-				return fmt.Errorf("Failed os.Create(%v): %v", encPath, err.Error())
+				return fmt.Errorf("Failed os.Create(%v): %w", encPath, err)
 			}
 
 			fW := bufio.NewWriter(f)
 			if err := CompressFile(path, fW); err != nil {
-				return fmt.Errorf("Failed compression: %v", err.Error())
+				return fmt.Errorf("Failed compression: %w", err)
 			}
 			fW.Flush()
 
 			if err := f.Close(); err != nil {
-				return fmt.Errorf("Failed closing compressed file %v: %v", encPath, err.Error())
+				return fmt.Errorf("Failed closing compressed file %v: %w", encPath, err)
 			}
 
 			if err := os.Remove(path); err != nil {
@@ -950,7 +950,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 
 		var result RequestRunCommandResultReply
 		if err := callCtx(ctx, client, "Server.RequestRunCommandResult", RequestRunCommandResultArgs{ID: c.ID}, &result); err != nil {
-			return fmt.Errorf("Call Server.RunCommand failed: %v", err.Error())
+			return fmt.Errorf("Call Server.RunCommand failed: %w", err)
 		}
 
 		slog.DebugContext(ctx, "Received results", "name", fmt.Sprintf("%T", c.Params))
@@ -958,7 +958,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 		for filename, bufEnc := range result.Files {
 			path := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", filename))
 			if err := os.WriteFile(path, bufEnc, 0644); err != nil {
-				return fmt.Errorf("Failed writing returned file to %v: %v", path, err.Error())
+				return fmt.Errorf("Failed writing returned file to %v: %w", path, err)
 			}
 		}
 	}
@@ -980,7 +980,7 @@ func (c *CommandClient) Summary() string {
 func listenICMPClient(ctx context.Context, ip string) (conn net.Conn, raddr net.Addr, err error) {
 	// ICMP PacketConn WriteTo expects an udp address
 	if raddr, err = net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%v", ip, "0")); err != nil {
-		err = fmt.Errorf("Failed resolving provided addr for ICMP: %v", err.Error())
+		err = fmt.Errorf("Failed resolving provided addr for ICMP: %w", err)
 		return
 	}
 	var icmpConn *icmp.PacketConn
@@ -988,13 +988,13 @@ func listenICMPClient(ctx context.Context, ip string) (conn net.Conn, raddr net.
 		slog.DebugContext(ctx, "icmp.ListenPacket failed to create dgram ICMP connecti", "error", err)
 
 		if raddr, err = net.ResolveIPAddr("ip4", ip); err != nil {
-			err = fmt.Errorf("Failed resolving ip4 addr for ICMP: %v", err.Error())
+			err = fmt.Errorf("Failed resolving ip4 addr for ICMP: %w", err)
 			return
 		}
 		var laddr *net.IPAddr
 		laddr, err = net.ResolveIPAddr("ip4", "0.0.0.0")
 		if err != nil {
-			err = fmt.Errorf("Failed resolving catch-all ip4 addr for ICMP: %v", err.Error())
+			err = fmt.Errorf("Failed resolving catch-all ip4 addr for ICMP: %w", err)
 			return
 		}
 		if conn, err = net.ListenIP("ip4:icmp", laddr); err != nil {

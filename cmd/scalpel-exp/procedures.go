@@ -137,7 +137,7 @@ func TraceRi(e *Executor, ts time.Time, resultPath string, params ParamMap) erro
 func ProgressiveRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	smallGap := 500 * time.Millisecond
@@ -195,7 +195,7 @@ func ProgressiveRate(e *Executor, ts time.Time, resultPath string, params ParamM
 func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	gap := 2000 * time.Millisecond
@@ -278,7 +278,7 @@ func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params Para
 func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	durationMs := 3000
@@ -346,7 +346,7 @@ func MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap) e
 func _MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap, runs []string) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	start := ts.Add(1 * time.Second)
@@ -407,7 +407,7 @@ func _MultiBurst(e *Executor, ts time.Time, resultPath string, params ParamMap, 
 func CoolDownDifferentFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	start := ts.Add(1 * time.Second)
@@ -495,7 +495,7 @@ outer:
 func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	start := ts.Add(1 * time.Second)
@@ -600,7 +600,7 @@ outer:
 func MultiFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	start := ts.Add(1 * time.Second)
@@ -675,7 +675,7 @@ func MultiFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) er
 func SwitchFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	start := ts.Add(1 * time.Second)
@@ -736,7 +736,7 @@ func SwitchFlow(e *Executor, ts time.Time, resultPath string, params ParamMap) e
 func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	start := ts.Add(1 * time.Second)
@@ -825,7 +825,7 @@ outer:
 func QUIC(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	start := ts.Add(1 * time.Second)
@@ -864,7 +864,7 @@ func QUIC(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 func ProgressiveDurationQUIC(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	gap := 1000 * time.Millisecond
@@ -913,7 +913,7 @@ func ProgressiveDurationQUIC(e *Executor, ts time.Time, resultPath string, param
 func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	// ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.CUBIC_NO_HYSTART, pkg.BBR1}
@@ -997,7 +997,7 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	ccas, err := params.TCPCCAsOr("ccas", pkg.TCPCCAS)
@@ -1193,7 +1193,7 @@ func MeasRate(e *Executor, ts time.Time, resultPath string, params ParamMap) err
 func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	// durationsMs := []uint{10, 20, 30, 40, 50, 60, 70, 80, 90, 100}
@@ -1274,7 +1274,7 @@ func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamM
 func RampUpProbe(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	direction, err := params.Direction()
 	if err != nil {
-		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
+		return fmt.Errorf("Procedure requires valid 'direction' param: %w", err)
 	}
 
 	smallGap := 500 * time.Millisecond

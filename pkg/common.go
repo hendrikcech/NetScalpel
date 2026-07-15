@@ -75,12 +75,12 @@ func (m *Msg) Decode(buf []byte) {
 func listenUDP(ctx context.Context) (*net.UDPConn, error) {
 	addr, err := net.ResolveUDPAddr("udp", ":0")
 	if err != nil {
-		return nil, fmt.Errorf("net.ResolveUDPAddr failed: %v", err.Error())
+		return nil, fmt.Errorf("net.ResolveUDPAddr failed: %w", err)
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("net.ListenUDP failed: %v\n", err.Error())
+		return nil, fmt.Errorf("net.ListenUDP failed: %w", err)
 	}
 
 	setSocketBuffers(ctx, conn)
@@ -91,7 +91,7 @@ func listenUDP(ctx context.Context) (*net.UDPConn, error) {
 func listenTCP(ctx context.Context) (*net.TCPListener, error) {
 	addr, err := net.ResolveTCPAddr("tcp", ":0")
 	if err != nil {
-		return nil, fmt.Errorf("net.ResolveTCPAddr failed: %v", err.Error())
+		return nil, fmt.Errorf("net.ResolveTCPAddr failed: %w", err)
 	}
 	// TODO: set socket buffers?
 	return net.ListenTCP("tcp", addr)
@@ -100,7 +100,7 @@ func listenTCP(ctx context.Context) (*net.TCPListener, error) {
 func listenICMP(ctx context.Context) (*net.IPConn, error) {
 	addr, err := net.ResolveIPAddr("ip4", "0.0.0.0")
 	if err != nil {
-		return nil, fmt.Errorf("net.ResolveIPAddr failed: %v", err.Error())
+		return nil, fmt.Errorf("net.ResolveIPAddr failed: %w", err)
 	}
 	return net.ListenIP("ip4:icmp", addr)
 }
@@ -143,25 +143,25 @@ func waitUntil(ctx context.Context, startAt time.Time) error {
 func CompressFile(path string, w io.Writer) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("Failed to open file %v: %v", path, err)
+		return fmt.Errorf("Failed to open file %v: %w", path, err)
 	}
 	defer f.Close()
 	fr := bufio.NewReader(f)
 
 	enc, err := zstd.NewWriter(w)
 	if err != nil {
-		return fmt.Errorf("Failed to create compression writer for %v: %v", path, err)
+		return fmt.Errorf("Failed to create compression writer for %v: %w", path, err)
 	}
 
 	// Feed the encoder with input
 	if _, err := io.Copy(enc, fr); err != nil {
 		_ = enc.Close()
-		return fmt.Errorf("Failed to compress file %v: %v", path, err)
+		return fmt.Errorf("Failed to compress file %v: %w", path, err)
 	}
 
 	// Flush the last data from the encoder and close it
 	if err := enc.Close(); err != nil {
-		return fmt.Errorf("Failed to close the encoder %v: %v", path, err)
+		return fmt.Errorf("Failed to close the encoder %v: %w", path, err)
 	}
 
 	// Important: don't forget to call Flush on w

@@ -86,7 +86,7 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 
 	mconn, err := mmsg.NewConn(conn)
 	if err != nil {
-		return nil, fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
+		return nil, fmt.Errorf("Failed mmsg.NewConn: %w", err)
 	}
 
 	go func() {
@@ -100,7 +100,7 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 		if err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Timeout() {
 				// not a timeout
-				return nil, fmt.Errorf("ReceiveFrom: ReadMsgs: %v", err.Error())
+				return nil, fmt.Errorf("ReceiveFrom: ReadMsgs: %w", err)
 			}
 			if ctx.Err() == nil {
 				slog.WarnContext(ctx, "RecvMsgs returned Timeout error from unknown origin -> extending",
@@ -229,7 +229,7 @@ func (s *BurstSender) run(ctx context.Context, conn net.Conn, raddr net.Addr) ([
 
 	mconn, err := mmsg.NewConn(conn)
 	if err != nil {
-		return nil, fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
+		return nil, fmt.Errorf("Failed mmsg.NewConn: %w", err)
 	}
 
 	// Same wakeup as in RateSender.Run: unblock SendMsgs when the test ends
@@ -491,7 +491,7 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 
 	mconn, err := mmsg.NewConn(conn)
 	if err != nil {
-		return fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
+		return fmt.Errorf("Failed mmsg.NewConn: %w", err)
 	}
 
 	for {

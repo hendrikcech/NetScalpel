@@ -54,7 +54,7 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 
 	mconn, err := mmsg.NewConn(conn)
 	if err != nil {
-		return fmt.Errorf("Failed mmsg.NewConn: %v", err.Error())
+		return fmt.Errorf("Failed mmsg.NewConn: %w", err)
 	}
 
 	for {
@@ -80,7 +80,7 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 			}
 
 			slog.ErrorContext(ctx, "TxTsReader: mconn.RecvMsgs errored", "error", err)
-			return fmt.Errorf("TxTsReader: mconn.RecvMsgs errored: %v", err.Error())
+			return fmt.Errorf("TxTsReader: mconn.RecvMsgs errored: %w", err)
 		}
 		// slog.DebugContext(ctx, "mconn.RecvMsgs() returned", "n", n)
 
@@ -101,7 +101,7 @@ func (t *TxTsReader) parseOOB(ctx context.Context, msg mmsg.Message) (MsgSent, e
 
 	cms, err := unix.ParseSocketControlMessage(msg.OOB[:msg.NN])
 	if err != nil {
-		return sentMsg, fmt.Errorf("TxTsReader: Failed parsing cmsg: %v", err.Error())
+		return sentMsg, fmt.Errorf("TxTsReader: Failed parsing cmsg: %w", err)
 	}
 
 	tsSet := false

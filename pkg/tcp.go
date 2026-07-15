@@ -44,13 +44,13 @@ func (t *TCPMonitor) Run(ctx context.Context, conn net.Conn, drainQueue bool) {
 
 	tc, err := tcp.NewConn(conn)
 	if err != nil {
-		t.Err = fmt.Errorf("Failed opening tcp info conn: %v", err.Error())
+		t.Err = fmt.Errorf("Failed opening tcp info conn: %w", err)
 		return
 	}
 
 	ccName, err := tcpCCName(ctx, tc)
 	if err != nil {
-		t.Err = fmt.Errorf("Failed getCCName: %v", err.Error())
+		t.Err = fmt.Errorf("Failed getCCName: %w", err)
 		return
 	}
 	bbrUsed := strings.HasPrefix(ccName, "bbr")
@@ -226,7 +226,7 @@ func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("Cancelled while waiting for TCP client: %v", ctx.Err())
+				return nil, fmt.Errorf("Cancelled while waiting for TCP client: %w", ctx.Err())
 			}
 			slog.DebugContext(ctx, "TCPReceiver accept", "error", err.Error())
 			return nil, err
@@ -252,7 +252,7 @@ func (r *TCPReceiver) run(ctx context.Context, conn net.Conn) error {
 	slog.DebugContext(ctx, "TCPReceiver: io.Copy returned", "n", n)
 	if err != nil && !(errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, syscall.ECONNRESET)) {
 		// ECONNRESET expected since the server closes the connection with Linger 0
-		return fmt.Errorf("Unexpected TCPReceiver error: %v", err)
+		return fmt.Errorf("Unexpected TCPReceiver error: %w", err)
 	}
 	return nil
 }

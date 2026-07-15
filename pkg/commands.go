@@ -22,14 +22,14 @@ import (
 func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("Failed to open StdinPipe: %v", err.Error())
+		return fmt.Errorf("Failed to open StdinPipe: %w", err)
 	}
 
 	// Own process group so signals reach children too
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("Failed to start cmd: %v", err.Error())
+		return fmt.Errorf("Failed to start cmd: %w", err)
 	}
 
 	stdin.Close()
@@ -46,7 +46,7 @@ func MonitorCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) e
 		// Command exited before its timeout; surface a failure (e.g. tcpdump
 		// exiting immediately because sudo is not available).
 		if err != nil {
-			return fmt.Errorf("Command exited prematurely: %v", err.Error())
+			return fmt.Errorf("Command exited prematurely: %w", err)
 		}
 		return nil
 	}

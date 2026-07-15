@@ -4,13 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/rpc"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -49,7 +49,8 @@ func RunServer(ctx context.Context, ip string, port uint, slogCh *chan *slog.Rec
 		for {
 			conn, err := s.listener.Accept()
 			if err != nil {
-				if !strings.HasSuffix(err.Error(), "use of closed network connection") {
+				// Stop() closing the listener is the normal shutdown path
+				if !errors.Is(err, net.ErrClosed) {
 					slog.ErrorContext(ctx, "Failed listener.Accept()", "error", err)
 				}
 				return
@@ -167,7 +168,7 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case UDP:
 		conn, err := listenUDP(ctx)
 		if err != nil {
-			return s.failTest(ctx, args.ID, "listenUDP failed: %v", err.Error())
+			return s.failTest(ctx, args.ID, "listenUDP failed: %w", err)
 		}
 		laddr = conn.LocalAddr()
 		reply.Port = uint(laddr.(*net.UDPAddr).Port)
@@ -175,7 +176,7 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case TCP:
 		ln, err := listenTCP(ctx)
 		if err != nil {
-			return s.failTest(ctx, args.ID, "listenTCP failed: %v", err.Error())
+			return s.failTest(ctx, args.ID, "listenTCP failed: %w", err)
 		}
 		laddr = ln.Addr()
 		reply.Port = uint(laddr.(*net.TCPAddr).Port)
@@ -183,7 +184,7 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	case ICMP:
 		conn, err := listenICMP(ctx)
 		if err != nil {
-			return s.failTest(ctx, args.ID, "listenICMP failed: %v", err.Error())
+			return s.failTest(ctx, args.ID, "listenICMP failed: %w", err)
 		}
 		go s.handleRequestServerICMP(testCtx, conn, args)
 
@@ -291,7 +292,7 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 		raddr, err := waitForUDPProbe(ctx, conn, args.StartAt)
 		if err != nil {
 			slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
-			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
+			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %w", err)
 			return
 		}
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, raddr)
@@ -319,7 +320,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 		// Bound the accept: if the client has not connected by the
 		// first-contact deadline, it never will.
 		if err := ln.SetDeadline(firstContactDeadline(args.StartAt)); err != nil {
-			result.Err = fmt.Errorf("Failed to set accept deadline: %v", err.Error())
+			result.Err = fmt.Errorf("Failed to set accept deadline: %w", err)
 			return
 		}
 		stop := context.AfterFunc(ctx, func() { ln.SetDeadline(time.Now()) })
@@ -327,7 +328,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 		stop()
 		if err != nil {
 			slog.ErrorContext(ctx, "RequestServerTCP: failed AcceptTCP", "error", err)
-			result.Err = fmt.Errorf("Failed AcceptTCP: %v", err.Error())
+			result.Err = fmt.Errorf("Failed AcceptTCP: %w", err)
 			return
 		}
 		defer func() {
@@ -355,7 +356,7 @@ func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, 
 		raddr, echoID, err := waitForICMPProbe(ctx, conn, args.Params.(ICMPParams).ClientEchoID, args.StartAt)
 		if err != nil {
 			slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
-			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %v", err)
+			result.Err = fmt.Errorf("RequestServer: failed waiting for probe: %w", err)
 			return
 		}
 		icmpParams, ok := args.Params.(ICMPParams)
@@ -454,15 +455,15 @@ func waitForUDPProbe(ctx context.Context, conn net.PacketConn, startAt time.Time
 	if err != nil {
 		if e, ok := err.(net.Error); !ok || !e.Timeout() {
 			// not a timeout
-			return nil, fmt.Errorf("waitForUDPProbe ReadFrom: %v", err.Error())
+			return nil, fmt.Errorf("waitForUDPProbe ReadFrom: %w", err)
 		}
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("waitForUDPProbe: cancelled: %v", ctx.Err())
+			return nil, fmt.Errorf("waitForUDPProbe: cancelled: %w", ctx.Err())
 		}
 		return nil, fmt.Errorf("waitForUDPProbe: no probe received before %v", deadline)
 	}
 	if _, err := conn.WriteTo([]byte{}, raddr); err != nil {
-		return nil, fmt.Errorf("handleSender: WriteTo: %v", err.Error())
+		return nil, fmt.Errorf("handleSender: WriteTo: %w", err)
 	}
 	slog.DebugContext(ctx, "Received kick-off msg", "remoteAddr", raddr)
 	return raddr, nil
@@ -482,9 +483,9 @@ func waitForICMPProbe(ctx context.Context, conn net.PacketConn, echoID uint16, s
 		n, raddr, err := conn.ReadFrom(buf[0:])
 		if err != nil {
 			if e, ok := err.(net.Error); ok && e.Timeout() {
-				return nil, 0, fmt.Errorf("Did not receive ICMP probe in time: %v", err.Error())
+				return nil, 0, fmt.Errorf("Did not receive ICMP probe in time: %w", err)
 			}
-			return nil, 0, fmt.Errorf("waitForICMPProbe ReadFrom error: %v", err.Error())
+			return nil, 0, fmt.Errorf("waitForICMPProbe ReadFrom error: %w", err)
 		}
 
 		msg, err := icmp.ParseMessage(1, buf[:n])
@@ -552,7 +553,7 @@ func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *Reques
 		s.resultLock.Unlock()
 	}
 	if err != nil {
-		return logErrContext(ctx, "Receive from resultC: %v", err)
+		return logErrContext(ctx, "Receive from resultC: %w", err)
 	}
 
 	slog.DebugContext(ctx, "RequestServerResult: responded")
@@ -580,7 +581,7 @@ func handleChanResult(ctx context.Context, c chan *Result, id string, reply *Req
 		return true, fmt.Errorf("Result %v was already retrieved", id)
 	}
 	if result.Err != nil {
-		return true, fmt.Errorf("handleChanResult: %v", result.Err.Error())
+		return true, fmt.Errorf("handleChanResult: %w", result.Err)
 	}
 	reply.Result = result.Res
 	return true, nil
@@ -636,8 +637,8 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 	resultDir, err := RandDir(args.Params.Name())
 	if err != nil {
 		s.finishTest(args.ID)
-		c <- &Result{Err: fmt.Errorf("RunCommand: failed RandDir: %v", err.Error())}
-		return logErrContext(ctx, "RunCommand: failed RandDir: %v", err.Error())
+		c <- &Result{Err: fmt.Errorf("RunCommand: failed RandDir: %w", err)}
+		return logErrContext(ctx, "RunCommand: failed RandDir: %w", err)
 	}
 
 	slog.DebugContext(ctx, "RunCommand", "name", args.Params.Name(), "resultDir", resultDir)
@@ -647,18 +648,18 @@ func (s *Server) RunCommand(args RunCommandArgs, reply *RunCommandReply) error {
 
 		if err := waitUntil(testCtx, args.StartAt); err != nil {
 			slog.WarnContext(ctx, "WaitUntil failed", "error", err)
-			c <- &Result{Err: fmt.Errorf("WaitUntil failed: %v", err.Error())}
+			c <- &Result{Err: fmt.Errorf("WaitUntil failed: %w", err)}
 			return
 		}
 
 		cmd, err := command.Exec(resultDir)
 		if err != nil {
-			c <- &Result{Err: fmt.Errorf("RunCommand: command.Exec: %v", err.Error())}
+			c <- &Result{Err: fmt.Errorf("RunCommand: command.Exec: %w", err)}
 			return
 		}
 
 		if err := MonitorCommand(testCtx, cmd, args.Params.Timeout()); err != nil {
-			c <- &Result{Err: fmt.Errorf("RunCommand: %v", err.Error())}
+			c <- &Result{Err: fmt.Errorf("RunCommand: %w", err)}
 			return
 		}
 
@@ -700,14 +701,14 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 		return logErrContext(ctx, "Command result %v was already retrieved", args.ID)
 	}
 	if result.Err != nil {
-		return logErrContext(ctx, "RequestRunCommandResult returning error: %v", result.Err.Error())
+		return logErrContext(ctx, "RequestRunCommandResult returning error: %w", result.Err)
 	}
 
 	resultPath := result.Res.(string)
 
 	entries, err := os.ReadDir(resultPath)
 	if err != nil {
-		return logErrContext(ctx, "Failed os.ReadDir(%v): %v", resultPath, err)
+		return logErrContext(ctx, "Failed os.ReadDir(%v): %w", resultPath, err)
 	}
 
 	reply.Files = make(map[string][]byte, len(entries))
@@ -722,7 +723,7 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 		var buf bytes.Buffer
 		w := bufio.NewWriter(&buf)
 		if err := CompressFile(path, w); err != nil {
-			return logErrContext(ctx, "Failed compression: %v", err.Error())
+			return logErrContext(ctx, "Failed compression: %w", err)
 		}
 		w.Flush()
 

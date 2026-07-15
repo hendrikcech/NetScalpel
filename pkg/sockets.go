@@ -84,7 +84,7 @@ func setMaxPacingRate(conn *net.UDPConn, rate uint) error {
 
 	err = rawConn.Control(func(fd uintptr) {
 		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, unix.SO_MAX_PACING_RATE, int(rate)); err != nil {
-			err = fmt.Errorf("Failed setting SO_MAX_PACING_RATE: %v", err.Error())
+			err = fmt.Errorf("Failed setting SO_MAX_PACING_RATE: %w", err)
 		}
 	})
 
@@ -144,10 +144,10 @@ func enableRxTimestamping(conn syscall.Conn) error {
 func applyTCPCCA(ctx context.Context, conn syscall.Conn, cca TCPCCA) error {
 	kernelName, err := cca.KernelName()
 	if err != nil {
-		return fmt.Errorf("Failed setting TCPCCA %v (%v): %v", cca.String(), kernelName, err.Error())
+		return fmt.Errorf("Failed setting TCPCCA %v (%v): %w", cca.String(), kernelName, err)
 	}
 	if err := setTCPCC(ctx, conn, kernelName); err != nil {
-		return fmt.Errorf("Failed setting TCPCCA %v (%v): %v", cca.String(), kernelName, err.Error())
+		return fmt.Errorf("Failed setting TCPCCA %v (%v): %w", cca.String(), kernelName, err)
 	}
 
 	if cca == CUBIC || cca == CUBIC_NO_HYSTART {
@@ -289,7 +289,7 @@ const hystartPath = "/sys/module/tcp_cubic/parameters/hystart"
 func enableHystart(enable bool) error {
 	file, err := os.OpenFile(hystartPath, os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("Failed to open hystart parameter: %v\n", err)
+		return fmt.Errorf("Failed to open hystart parameter: %w", err)
 	}
 	defer file.Close()
 
@@ -299,7 +299,7 @@ func enableHystart(enable bool) error {
 	}
 
 	if _, err = file.WriteString(content); err != nil {
-		return fmt.Errorf("Failed to write to hystart parameter: %v\n", err)
+		return fmt.Errorf("Failed to write to hystart parameter: %w", err)
 	}
 
 	return nil
@@ -309,7 +309,7 @@ func enableHystart(enable bool) error {
 func hystartEnabled() (bool, error) {
 	data, err := os.ReadFile(hystartPath)
 	if err != nil {
-		return false, fmt.Errorf("failed to read hystart parameter: %v", err)
+		return false, fmt.Errorf("failed to read hystart parameter: %w", err)
 	}
 
 	value := strings.TrimSpace(string(data))
@@ -327,7 +327,7 @@ func readAvailableKernelCCAs() (string, error) {
 	path := "/proc/sys/net/ipv4/tcp_available_congestion_control"
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("failed to read available congestion controls: %v", err)
+		return "", fmt.Errorf("failed to read available congestion controls: %w", err)
 	}
 	return string(data), nil
 }

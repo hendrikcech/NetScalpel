@@ -125,7 +125,7 @@ func (r *QUICReceiver) listen(ctx context.Context, listener *quic.Listener) erro
 		if quicClosedCleanly(err) {
 			return nil
 		}
-		return fmt.Errorf("Unexpected QUIC error: %v", err)
+		return fmt.Errorf("Unexpected QUIC error: %w", err)
 	}
 
 	return nil
@@ -198,7 +198,7 @@ func (s *QUICSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, tr
 	}
 	quicConn, err := tr.Dial(ctx, raddr, tlsConf, conf)
 	if err != nil {
-		return fmt.Errorf("QUIC Dial failed: %v", err.Error())
+		return fmt.Errorf("QUIC Dial failed: %w", err)
 	}
 	defer quicConn.CloseWithError(0, "")
 

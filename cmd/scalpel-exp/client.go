@@ -160,7 +160,7 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) {
 func (c *Client) WriteServerLog(path string, rpcClient *rpc.Client) error {
 	var result pkg.RequestSlogReply
 	if err := rpcClient.Call("Server.RequestSlog", pkg.RequestSlogArgs{}, &result); err != nil {
-		return fmt.Errorf("Call Server.RequestSlog failed: %v", err.Error())
+		return fmt.Errorf("Call Server.RequestSlog failed: %w", err)
 	}
 
 	if result.Log == "" {
@@ -169,7 +169,7 @@ func (c *Client) WriteServerLog(path string, rpcClient *rpc.Client) error {
 
 	logPath := filepath.Join(path, "scalpel_server.log")
 	if err := os.WriteFile(logPath, []byte(result.Log), 0644); err != nil {
-		return fmt.Errorf("Failed writing to %v: %v", logPath, err.Error())
+		return fmt.Errorf("Failed writing to %v: %w", logPath, err)
 	}
 
 	return nil
@@ -195,7 +195,7 @@ func nextRi(ts time.Time) time.Time {
 func mkResultPath(base string, ts time.Time, suffix string) (string, error) {
 	resultPath := filepath.Join(base, ts.Format("20060102T150405")+suffix)
 	if err := os.MkdirAll(resultPath, os.ModePerm); err != nil {
-		return "", fmt.Errorf("Failed to create the result directory %v: %v", resultPath, err)
+		return "", fmt.Errorf("Failed to create the result directory %v: %w", resultPath, err)
 	}
 	return resultPath, nil
 }

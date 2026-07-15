@@ -74,7 +74,7 @@ func (e *Executor) WriteInfo(path string) error {
 	infoPath := filepath.Join(path, "info.txt")
 	f, err := os.Create(infoPath)
 	if err != nil {
-		return fmt.Errorf("Failed creating %v: %v", infoPath, err.Error())
+		return fmt.Errorf("Failed creating %v: %w", infoPath, err)
 	}
 	defer f.Close()
 	w := bufio.NewWriter(f)
