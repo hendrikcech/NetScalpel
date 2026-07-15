@@ -60,10 +60,10 @@ type MsgRcvd struct {
 }
 
 func (m *Msg) Encode(buf []byte) (int, error) {
-	binary.BigEndian.PutUint64(buf[0:], m.Seq)
 	if len(buf) < int(8+m.PadN) {
-		return 8, fmt.Errorf("Provided buffer too small to add %v padding bytes", m.PadN)
+		return 0, fmt.Errorf("Provided buffer of %v bytes too small for seq and %v padding bytes", len(buf), m.PadN)
 	}
+	binary.BigEndian.PutUint64(buf[0:], m.Seq)
 	rand.Read(buf[8 : 8+m.PadN]) // always succeeds
 	return int(8 + m.PadN), nil
 }
