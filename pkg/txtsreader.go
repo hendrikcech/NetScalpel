@@ -169,6 +169,14 @@ func selectMsgsSent(ctx context.Context, reader *TxTsReader, cancelReader contex
 		slog.ErrorContext(ctx, fmt.Sprintf("run function returned %v, txTsReader %v msgs -> using timestamps from run function",
 			len(sentMsgs), len(tsMsgs)))
 		selectedMsgs = sentMsgs
+	} else if i := firstDifferentLen(sentMsgs); i != -1 {
+		// Copying sentMsgs[0].Len onto every tsMsg below is only correct
+		// because each sender uses one packet size per run; a variable-size
+		// sender would silently produce wrong sizes in the CSV. Guard the
+		// assumption and fall back to the run function's own records.
+		slog.ErrorContext(ctx, "selectMsgsSent assumes a uniform packet size per run -> using timestamps from run function",
+			"len0", sentMsgs[0].Len, "lenDiff", sentMsgs[i].Len, "seqDiff", sentMsgs[i].Seq)
+		selectedMsgs = sentMsgs
 	} else {
 		for i := range tsMsgs {
 			tsMsgs[i].Len = sentMsgs[0].Len
@@ -177,4 +185,15 @@ func selectMsgsSent(ctx context.Context, reader *TxTsReader, cancelReader contex
 		slog.DebugContext(ctx, "selectMsgsSent: returning with txTsReader infos")
 	}
 	return selectedMsgs
+}
+
+// firstDifferentLen returns the index of the first message whose Len differs
+// from the first message's, or -1 if all lengths are equal.
+func firstDifferentLen(msgs []MsgSent) int {
+	for i := range msgs {
+		if msgs[i].Len != msgs[0].Len {
+			return i
+		}
+	}
+	return -1
 }
