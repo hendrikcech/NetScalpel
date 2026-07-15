@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
-	"encoding/hex"
 	"fmt"
 	"github.com/klauspost/compress/zstd"
 	"io"
@@ -106,16 +105,23 @@ func listenICMP(ctx context.Context) (*net.IPConn, error) {
 	return net.ListenIP("ip4:icmp", addr)
 }
 
-func RandPath(suffix string) string {
-	randBytes := make([]byte, 4)
-	rand.Read(randBytes)
-	return filepath.Join(os.TempDir(), hex.EncodeToString(randBytes)+"_"+suffix)
-}
-
+// RandDir creates a unique temporary directory whose name starts with suffix
+// and returns its path. The directory holds per-test results and is removed,
+// together with its files, once the results are retrieved
+// (CommandClient.Gather locally, RequestRunCommandResult on the server).
+// It is made world-writable because commands may create files in it with a
+// different identity than this process (tcpdump started via sudo can drop
+// root privileges before opening its savefile).
 func RandDir(suffix string) (string, error) {
-	path := RandPath(suffix)
-	err := os.MkdirAll(path, os.ModePerm)
-	return path, err
+	path, err := os.MkdirTemp("", suffix+"_")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, os.ModePerm); err != nil {
+		os.RemoveAll(path)
+		return "", err
+	}
+	return path, nil
 }
 
 func waitUntil(ctx context.Context, startAt time.Time) error {
