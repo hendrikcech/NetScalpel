@@ -687,24 +687,22 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 		return logErrContext(ctx, "No command with id %v: never started or result already retrieved", args.ID)
 	}
 
-	var result *Result
-	select {
-	case result = <-c:
-	case <-s.ctx.Done():
-		return logErrContext(ctx, "Server shutting down while waiting for command result")
+	// Share the result-channel select with RequestServerResult so both paths
+	// stay in lockstep (shutdown handling, double-retrieval error, map
+	// cleanup). handleChanResult stashes result.Res in its reply.Result.
+	var chanReply RequestServerResultReply
+	received, err := handleChanResult(ctx, c, args.ID, &chanReply)
+	if received {
+		// See RequestServerResult: the map must not grow forever on long runs.
+		s.resultLock.Lock()
+		delete(s.resultC, args.ID)
+		s.resultLock.Unlock()
 	}
-	// See RequestServerResult: the map must not grow forever on long runs.
-	s.resultLock.Lock()
-	delete(s.resultC, args.ID)
-	s.resultLock.Unlock()
-	if result == nil {
-		return logErrContext(ctx, "Command result %v was already retrieved", args.ID)
-	}
-	if result.Err != nil {
-		return logErrContext(ctx, "RequestRunCommandResult returning error: %w", result.Err)
+	if err != nil {
+		return logErrContext(ctx, "RequestRunCommandResult returning error: %w", err)
 	}
 
-	resultPath := result.Res.(string)
+	resultPath := chanReply.Result.(string)
 
 	entries, err := os.ReadDir(resultPath)
 	if err != nil {

@@ -128,9 +128,10 @@ func TestRequestServerResultConcurrent(t *testing.T) {
 	}
 }
 
-// A RequestServerResult blocked on a test that never delivers must unblock
-// when the server context is cancelled (mirrors
-// TestRunCommandResultUnblocksOnServerShutdown for the sender/receiver path).
+// A result request blocked on a test that never delivers must unblock when
+// the server context is cancelled. RequestServerResult and
+// RequestRunCommandResult share this select via handleChanResult, so one
+// test covers both paths.
 func TestRequestServerResultUnblocksOnServerShutdown(t *testing.T) {
 	srvCtx, srvCancel := context.WithCancel(context.Background())
 	s := NewServer(srvCtx, nil)

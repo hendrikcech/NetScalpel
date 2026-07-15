@@ -329,28 +329,6 @@ func TestServerStopWithConnectedClient(t *testing.T) {
 	returnsWithin(t, 2*time.Second, "Server.Stop", s.Stop)
 }
 
-// --- RequestRunCommandResult ignores server shutdown (pkg/server.go) ---
-
-func TestRunCommandResultUnblocksOnServerShutdown(t *testing.T) {
-	srvCtx, srvCancel := context.WithCancel(context.Background())
-	s := NewServer(srvCtx, nil)
-	s.resultC["x"] = make(chan *Result) // never written to
-
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		srvCancel()
-	}()
-
-	var err error
-	returnsWithin(t, 2*time.Second, "RequestRunCommandResult", func() {
-		var res RequestRunCommandResultReply
-		err = s.RequestRunCommandResult(RequestRunCommandResultArgs{ID: "x"}, &res)
-	})
-	if err == nil {
-		t.Errorf("expected an error after server shutdown")
-	}
-}
-
 // --- UDPReceiver grace loop must not apply on user abort (pkg/udp.go) ---
 
 // sendEvery sends one small Msg packet from sendConn to raddr every interval,
