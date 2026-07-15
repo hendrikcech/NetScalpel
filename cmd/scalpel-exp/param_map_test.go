@@ -97,6 +97,68 @@ func TestParamMapUints(t *testing.T) {
 	}
 }
 
+func TestParamMapOrDefaults(t *testing.T) {
+	// Present keys are parsed, absent keys yield the default, parse errors
+	// are not masked by the default.
+	got, err := ParamMap{"durations": []string{"100", "200"}}.UintsOr("durations", []uint{1})
+	if err != nil || !reflect.DeepEqual(got, []uint{100, 200}) {
+		t.Errorf("UintsOr present: got %v (err %v)", got, err)
+	}
+	got, err = ParamMap{}.UintsOr("durations", []uint{1})
+	if err != nil || !reflect.DeepEqual(got, []uint{1}) {
+		t.Errorf("UintsOr absent: got %v (err %v)", got, err)
+	}
+	if _, err := (ParamMap{"durations": "x"}).UintsOr("durations", []uint{1}); err == nil {
+		t.Errorf("UintsOr invalid: expected an error")
+	}
+
+	gotUint, err := ParamMap{"step": "25"}.UintOr("step", 50)
+	if err != nil || gotUint != 25 {
+		t.Errorf("UintOr present: got %v (err %v)", gotUint, err)
+	}
+	gotUint, err = ParamMap{}.UintOr("step", 50)
+	if err != nil || gotUint != 50 {
+		t.Errorf("UintOr absent: got %v (err %v)", gotUint, err)
+	}
+	if _, err := (ParamMap{"step": "x"}).UintOr("step", 50); err == nil {
+		t.Errorf("UintOr invalid: expected an error")
+	}
+
+	gotCCAs, err := ParamMap{"ccas": "bbr1"}.TCPCCAsOr("ccas", pkg.TCPCCAS)
+	if err != nil || !reflect.DeepEqual(gotCCAs, []pkg.TCPCCA{pkg.BBR1}) {
+		t.Errorf("TCPCCAsOr present: got %v (err %v)", gotCCAs, err)
+	}
+	gotCCAs, err = ParamMap{}.TCPCCAsOr("ccas", pkg.TCPCCAS)
+	if err != nil || !reflect.DeepEqual(gotCCAs, pkg.TCPCCAS) {
+		t.Errorf("TCPCCAsOr absent: got %v (err %v)", gotCCAs, err)
+	}
+	if _, err := (ParamMap{"ccas": "notacca"}).TCPCCAsOr("ccas", pkg.TCPCCAS); err == nil {
+		t.Errorf("TCPCCAsOr invalid: expected an error")
+	}
+}
+
+func TestRatesFor(t *testing.T) {
+	defaultsUL, defaultsDL := []uint{10}, []uint{20}
+
+	got, err := ratesFor(pkg.UL, ParamMap{}, defaultsUL, defaultsDL)
+	if err != nil || !reflect.DeepEqual(got, defaultsUL) {
+		t.Errorf("UL default: got %v (err %v)", got, err)
+	}
+	got, err = ratesFor(pkg.DL, ParamMap{}, defaultsUL, defaultsDL)
+	if err != nil || !reflect.DeepEqual(got, defaultsDL) {
+		t.Errorf("DL default: got %v (err %v)", got, err)
+	}
+	// The opposite direction's key is ignored
+	got, err = ratesFor(pkg.UL, ParamMap{"ratesUL": "70", "ratesDL": "700"}, defaultsUL, defaultsDL)
+	if err != nil || !reflect.DeepEqual(got, []uint{70}) {
+		t.Errorf("UL param: got %v (err %v)", got, err)
+	}
+	got, err = ratesFor(pkg.DL, ParamMap{"ratesUL": "70", "ratesDL": "700"}, defaultsUL, defaultsDL)
+	if err != nil || !reflect.DeepEqual(got, []uint{700}) {
+		t.Errorf("DL param: got %v (err %v)", got, err)
+	}
+}
+
 func TestParamMapStrings(t *testing.T) {
 	got, err := ParamMap{"ccas": []string{"cubic", "bbr1"}}.Strings("ccas")
 	if err != nil || !reflect.DeepEqual(got, []string{"cubic", "bbr1"}) {

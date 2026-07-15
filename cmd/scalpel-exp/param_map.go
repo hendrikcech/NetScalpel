@@ -39,6 +39,14 @@ func (p ParamMap) Strings(key string) ([]string, error) {
 	return listStr, nil
 }
 
+// UintsOr returns the values stored under key, or def if the key is absent.
+func (p ParamMap) UintsOr(key string, def []uint) ([]uint, error) {
+	if _, ok := p[key]; !ok {
+		return def, nil
+	}
+	return p.Uints(key)
+}
+
 func (p ParamMap) Uints(key string) ([]uint, error) {
 	listStr, err := p.Strings(key)
 	if err != nil {
@@ -56,6 +64,14 @@ func (p ParamMap) Uints(key string) ([]uint, error) {
 	return list, nil
 }
 
+// UintOr returns the value stored under key, or def if the key is absent.
+func (p ParamMap) UintOr(key string, def uint) (uint, error) {
+	if _, ok := p[key]; !ok {
+		return def, nil
+	}
+	return p.Uint(key)
+}
+
 func (p ParamMap) Uint(key string) (uint, error) {
 	value, ok := p[key]
 	if !ok {
@@ -66,6 +82,14 @@ func (p ParamMap) Uint(key string) (uint, error) {
 		return 0, fmt.Errorf("Parameter '%v': failed parsing '%s' as uint", key, value)
 	}
 	return uint(parsed), nil
+}
+
+// TCPCCAsOr returns the CCAs stored under key, or def if the key is absent.
+func (p ParamMap) TCPCCAsOr(key string, def []pkg.TCPCCA) ([]pkg.TCPCCA, error) {
+	if _, ok := p[key]; !ok {
+		return def, nil
+	}
+	return p.TCPCCAs(key)
 }
 
 func (p ParamMap) TCPCCAs(key string) ([]pkg.TCPCCA, error) {

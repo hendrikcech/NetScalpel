@@ -57,6 +57,15 @@ func PPS(direction pkg.Direction) uint {
 	}
 }
 
+// ratesFor picks the rate list for direction, preferring the ratesUL/ratesDL
+// parameter when present.
+func ratesFor(direction pkg.Direction, params ParamMap, defaultsUL, defaultsDL []uint) ([]uint, error) {
+	if direction == pkg.UL {
+		return params.UintsOr("ratesUL", defaultsUL)
+	}
+	return params.UintsOr("ratesDL", defaultsDL)
+}
+
 // https://stackoverflow.com/a/39868255
 // min inclusive, max exclusive
 func makeRange(min, max uint) []uint {
@@ -136,13 +145,9 @@ func ProgressiveRate(e *Executor, ts time.Time, resultPath string, params ParamM
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
-	durationsMs := []uint{100, 200, 300, 350, 400, 450, 500}
-	if _, ok := params["durations"]; ok {
-		var err error
-		if durationsMs, err = params.Uints("durations"); err != nil {
-			return fmt.Errorf("parse duration: %v", err)
-		}
+	durationsMs, err := params.UintsOr("durations", []uint{100, 200, 300, 350, 400, 450, 500})
+	if err != nil {
+		return err
 	}
 
 	// Execute the bursts in random order
@@ -197,33 +202,14 @@ func MultiDurationRate(e *Executor, ts time.Time, resultPath string, params Para
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	durationsMs := []uint{1000, 4000}
-	if _, ok := params["durations"]; ok {
-		var err error
-		if durationsMs, err = params.Uints("durations"); err != nil {
-			return fmt.Errorf("parse duration: %v", err)
-		}
+	durationsMs, err := params.UintsOr("durations", []uint{1000, 4000})
+	if err != nil {
+		return err
 	}
 
-	var ratesMbps []uint
-	if direction == pkg.UL {
-		if _, ok := params["ratesUL"]; ok {
-			var err error
-			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
-				return fmt.Errorf("parse ratesUL: %v", err)
-			}
-		} else {
-			ratesMbps = []uint{140}
-		}
-	} else {
-		if _, ok := params["ratesDL"]; ok {
-			var err error
-			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
-				return fmt.Errorf("parse ratesDL: %v", err)
-			}
-		} else {
-			ratesMbps = []uint{500}
-		}
+	ratesMbps, err := ratesFor(direction, params, []uint{140}, []uint{500})
+	if err != nil {
+		return err
 	}
 
 	for _, rateIdx := range rng.Perm(len(ratesMbps)) {
@@ -299,25 +285,9 @@ func RateRI(e *Executor, ts time.Time, resultPath string, params ParamMap) error
 	duration := time.Duration(durationMs) * time.Millisecond
 	start := ts.Add(-duration / 2)
 
-	var ratesMbps []uint
-	if direction == pkg.UL {
-		if _, ok := params["ratesUL"]; ok {
-			var err error
-			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
-				return fmt.Errorf("parse ratesUL: %v", err)
-			}
-		} else {
-			ratesMbps = []uint{10, 70}
-		}
-	} else {
-		if _, ok := params["ratesDL"]; ok {
-			var err error
-			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
-				return fmt.Errorf("parse ratesDL: %v", err)
-			}
-		} else {
-			ratesMbps = []uint{50, 700}
-		}
+	ratesMbps, err := ratesFor(direction, params, []uint{10, 70}, []uint{50, 700})
+	if err != nil {
+		return err
 	}
 
 	rateMbps := ratesMbps[rng.Intn(len(ratesMbps))]
@@ -533,29 +503,23 @@ func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params Param
 	spacing := time.Duration(2000) * time.Millisecond
 	deadline := nextRi(ts).Add(-time.Second)
 
-	var ratesMbps []uint
-	if direction == pkg.UL {
-		if _, ok := params["ratesUL"]; ok {
-			var err error
-			if ratesMbps, err = params.Uints("ratesUL"); err != nil {
-				return fmt.Errorf("parse ratesUL: %v", err)
-			}
-		} else {
-			ratesMbps = []uint{140}
-		}
-	} else {
-		if _, ok := params["ratesDL"]; ok {
-			var err error
-			if ratesMbps, err = params.Uints("ratesDL"); err != nil {
-				return fmt.Errorf("parse ratesDL: %v", err)
-			}
-		} else {
-			ratesMbps = []uint{500}
-		}
+	ratesMbps, err := ratesFor(direction, params, []uint{140}, []uint{500})
+	if err != nil {
+		return err
 	}
 	rateIdx := rng.Intn(len(ratesMbps))
 	rateMbps := ratesMbps[rateIdx]
 	pps := rateMbps * 1000000 / 8 / 1400
+
+	// Limit cooldowns to multiples of step // tested with step=25
+	step, err := params.UintOr("step", 50)
+	if err != nil {
+		return err
+	}
+	maxBreak, err := params.UintOr("max", 600)
+	if err != nil {
+		return err
+	}
 
 	// coolDowns := []int{0, 5, 10, 25, 50, 100, 500, 1000}
 	// for _, idx := range rng.Perm(len(coolDowns)) {
@@ -563,22 +527,6 @@ func CoolDownSameFlow(e *Executor, ts time.Time, resultPath string, params Param
 outer:
 	for {
 		// coolDownMs := coolDowns[idx]
-		var step uint = 50 // Limit to multiples of X // tested with step=25
-		if _, ok := params["step"]; ok {
-			var err error
-			if step, err = params.Uint("step"); err != nil {
-				return fmt.Errorf("parse step: %v", err)
-			}
-		}
-
-		var maxBreak uint = 600
-		if _, ok := params["max"]; ok {
-			var err error
-			if maxBreak, err = params.Uint("max"); err != nil {
-				return fmt.Errorf("parse max (maxBreak): %v", err)
-			}
-		}
-
 		coolDownMs := int64(rng.Intn(int(maxBreak))) / int64(step) * int64(step)
 
 		for _, v := range coolDowns {
@@ -800,24 +748,13 @@ func MouseElephantFlows(e *Executor, ts time.Time, resultPath string, params Par
 	var miceMbps []uint
 	if direction == pkg.UL {
 		elephMbps = 140
-		miceMbps = []uint{1, 5, 10, 20, 35, 70, elephMbps}
-		if _, ok := params["miceUL"]; ok {
-			var err error
-			if miceMbps, err = params.Uints("miceUL"); err != nil {
-				return fmt.Errorf("parse miceUL: %v", err)
-			}
-		}
+		miceMbps, err = params.UintsOr("miceUL", []uint{1, 5, 10, 20, 35, 70, elephMbps})
 	} else {
-		// elephMbps = 500
-		// miceMbps = []uint{1, 50, 100, 150, 250, elephMbps}
 		elephMbps = 250
-		miceMbps = []uint{1, 50, 100, 150, 250}
-		if _, ok := params["miceDL"]; ok {
-			var err error
-			if miceMbps, err = params.Uints("miceDL"); err != nil {
-				return fmt.Errorf("parse miceDL: %v", err)
-			}
-		}
+		miceMbps, err = params.UintsOr("miceDL", []uint{1, 50, 100, 150, 250})
+	}
+	if err != nil {
+		return err
 	}
 
 	offsets := []time.Duration{
@@ -945,13 +882,9 @@ func ProgressiveDurationQUIC(e *Executor, ts time.Time, resultPath string, param
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
-	durationsMs := []uint{100, 400, 1000, 5000}
-	if _, ok := params["durations"]; ok {
-		var err error
-		if durationsMs, err = params.Uints("durations"); err != nil {
-			return fmt.Errorf("parse duration: %v", err)
-		}
+	durationsMs, err := params.UintsOr("durations", []uint{100, 400, 1000, 5000})
+	if err != nil {
+		return err
 	}
 
 	// Execute the tasks in random order
@@ -995,27 +928,19 @@ func DurationTCP(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	}
 
 	// ccas := []pkg.TCPCCA{pkg.CUBIC, pkg.CUBIC_NO_HYSTART, pkg.BBR1}
-	ccas := pkg.TCPCCAS
-	if _, ok := params["ccas"]; ok {
-		var err error
-		ccas, err = params.TCPCCAs("ccas")
-		if err != nil {
-			return fmt.Errorf("parse tcpccas: %v", err)
-		}
+	ccas, err := params.TCPCCAsOr("ccas", pkg.TCPCCAS)
+	if err != nil {
+		return err
 	}
 
 	gap := 2000 * time.Millisecond
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	// durationsMs := []int{100, 300, 500, 700, 900, 1400, 2000}
 	// durationsMs := []uint{100, 400, 1000, 3000}
-	durationsMs := []uint{4000}
-	if _, ok := params["durations"]; ok {
-		var err error
-		if durationsMs, err = params.Uints("durations"); err != nil {
-			return fmt.Errorf("parse duration: %v", err)
-		}
+	durationsMs, err := params.UintsOr("durations", []uint{4000})
+	if err != nil {
+		return err
 	}
 
 	ccaIdxs := makeRange(0, uint(len(ccas)))
@@ -1086,13 +1011,9 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 		return fmt.Errorf("Procedure requires valid 'direction' param: %v", err.Error())
 	}
 
-	ccas := pkg.TCPCCAS
-	if _, ok := params["ccas"]; ok {
-		var err error
-		ccas, err = params.TCPCCAs("ccas")
-		if err != nil {
-			return fmt.Errorf("parse tcpccas: %v", err)
-		}
+	ccas, err := params.TCPCCAsOr("ccas", pkg.TCPCCAS)
+	if err != nil {
+		return err
 	}
 
 	durationMs := 12000
@@ -1173,7 +1094,6 @@ func DurationTCPRI(e *Executor, ts time.Time, resultPath string, params ParamMap
 func MeasOWD(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	directions := []pkg.Direction{pkg.DL, pkg.UL}
 	if _, ok := params["direction"]; ok {
-		var err error
 		direction, err := params.Direction()
 		if err != nil {
 			return err
@@ -1183,14 +1103,11 @@ func MeasOWD(e *Executor, ts time.Time, resultPath string, params ParamMap) erro
 
 	start := ts.Add(5 * time.Second)
 
-	duration := 60 * time.Second
-	if _, ok := params["duration_ms"]; ok {
-		value, err := params.Uint("duration_ms")
-		if err != nil {
-			return err
-		}
-		duration = time.Duration(value) * time.Millisecond
+	durationMs, err := params.UintOr("duration_ms", 60000)
+	if err != nil {
+		return err
 	}
+	duration := time.Duration(durationMs) * time.Millisecond
 
 	interval := 1 * time.Millisecond
 
@@ -1227,24 +1144,20 @@ func MeasOWD(e *Executor, ts time.Time, resultPath string, params ParamMap) erro
 func MeasRate(e *Executor, ts time.Time, resultPath string, params ParamMap) error {
 	directions := []pkg.Direction{pkg.DL, pkg.UL}
 	if _, ok := params["direction"]; ok {
-		var err error
 		direction, err := params.Direction()
 		if err != nil {
-			return fmt.Errorf("parse duration: %v", err)
+			return err
 		}
 		directions = []pkg.Direction{direction}
 	}
 
 	start := ts.Add(5 * time.Second)
 
-	duration := 60 * time.Second
-	if _, ok := params["duration_ms"]; ok {
-		value, err := params.Uint("duration_ms")
-		if err != nil {
-			return err
-		}
-		duration = time.Duration(value) * time.Millisecond
+	durationMs, err := params.UintOr("duration_ms", 60000)
+	if err != nil {
+		return err
 	}
+	duration := time.Duration(durationMs) * time.Millisecond
 
 	for _, direction := range directions {
 		e.RunClient(&pkg.SenderClient{
@@ -1296,23 +1209,16 @@ func PacketsDuration(e *Executor, ts time.Time, resultPath string, params ParamM
 
 	// durationsMs := []uint{10, 20, 30, 40, 50, 60, 70, 80, 90, 100}
 	// durationsMs := []uint{30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 400}
-	durationsMs := []uint{10, 15, 20, 30, 35, 40, 50, 60, 70, 80, 100, 150, 200, 400}
-
-	if _, ok := params["durations"]; ok {
-		var err error
-		if durationsMs, err = params.Uints("durations"); err != nil {
-			return fmt.Errorf("parse duration: %v", err)
-		}
+	durationsMs, err := params.UintsOr("durations", []uint{10, 15, 20, 30, 35, 40, 50, 60, 70, 80, 100, 150, 200, 400})
+	if err != nil {
+		return err
 	}
 
 	// numPackets := []uint{500}
 	// numPackets := []uint{2500}
-	numPackets := []uint{1400}
-	if _, ok := params["packets"]; ok {
-		var err error
-		if numPackets, err = params.Uints("packets"); err != nil {
-			return fmt.Errorf("parse packets: %v", err)
-		}
+	numPackets, err := params.UintsOr("packets", []uint{1400})
+	if err != nil {
+		return err
 	}
 
 	// packets=500; [f"{packets} P {duration} ms: {packets * (1000/duration) * 1400 * 8 / 1e6:.0f} Mbps" for duration in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130]]
@@ -1387,12 +1293,9 @@ func RampUpProbe(e *Executor, ts time.Time, resultPath string, params ParamMap) 
 	start := ts.Add(1 * time.Second)
 	deadline := nextRi(ts).Add(-time.Second)
 
-	durationsMs := []uint{400}
-	if _, ok := params["durations"]; ok {
-		var err error
-		if durationsMs, err = params.Uints("durations"); err != nil {
-			return fmt.Errorf("parse duration: %v", err)
-		}
+	durationsMs, err := params.UintsOr("durations", []uint{400})
+	if err != nil {
+		return err
 	}
 
 	// Execute the bursts in random order
