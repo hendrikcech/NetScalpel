@@ -461,14 +461,17 @@ func testSender(t *testing.T, c *SenderClient) {
 					t.Errorf("expected seq %v, got %v in UDPMsgsRcvd", i, msg.Seq)
 				}
 			}
-		}
 
-		// TODO: reenable
-		// for i := range c.UDPMsgsSent {
-		// 	if c.UDPMsgsSent[i].Len != c.UDPMsgsRcvd[i].Len {
-		// 		t.Errorf("length of sent and received packet differs: %v != %v", c.UDPMsgsSent[i].Len, c.UDPMsgsRcvd[i].Len)
-		// 	}
-		// }
+			// For non-QUIC UDP the seqs are dense (seq == i on both sides,
+			// asserted above), so sent[i] and rcvd[i] are the same packet and
+			// their lengths must match. QUIC lengths legitimately differ (the
+			// seqs are packet numbers), so this only runs here.
+			for i := range c.UDPMsgsSent {
+				if c.UDPMsgsSent[i].Len != c.UDPMsgsRcvd[i].Len {
+					t.Errorf("length of sent and received packet differs: %v != %v", c.UDPMsgsSent[i].Len, c.UDPMsgsRcvd[i].Len)
+				}
+			}
+		}
 	case TCP:
 		if c.TCPMetricsSndr == nil {
 			t.Errorf("c.TCPMetricsSndr is nil")
