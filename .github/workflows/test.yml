@@ -24,6 +24,11 @@ jobs:
 
       - run: go vet ./...
 
+      # ST1005 is excluded in staticcheck.conf.
+      - run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
       - run: go build ./...
 
       # gotestsum reruns individual failed tests to absorb rare timing
@@ -36,7 +41,7 @@ jobs:
           --format testname
           --rerun-fails=2
           --packages=./...
-          -- -race -timeout 300s
+          -- -race -shuffle=on -timeout 300s
 
   # End-to-end validation: client and server across an emulated netem link,
   # asserting that the measured OWD/loss/rate values in the produced CSVs
