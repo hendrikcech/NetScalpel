@@ -469,6 +469,37 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 	return r.msgs, nil
 }
 
+// rateInterval returns the ticker interval for a segment paced at pps:
+// short enough that a tick asks for at most ~5 packets, but no longer than
+// 1ms so low rates still observe the segment end promptly.
+func rateInterval(pps uint) time.Duration {
+	const maxPacketsPerBurst = 5
+	calcInterval := time.Duration((maxPacketsPerBurst / float64(pps)) * 1e9)
+	return min(calcInterval, 1*time.Millisecond)
+}
+
+// numPacketsGoal returns how many packets in total should have left the
+// socket elapsed time into a segment paced at pps: exactly ⌊elapsed·pps⌋.
+// Integer math, so it is exact (overflows only past elapsed·pps ≈ 1.8e19,
+// far beyond any real segment).
+func numPacketsGoal(elapsed time.Duration, pps uint) uint {
+	if elapsed <= 0 {
+		return 0
+	}
+	return uint(uint64(elapsed) * uint64(pps) / uint64(time.Second))
+}
+
+// packetsDue returns how many packets a tick at elapsed must send given
+// what was already sent. The second return reports the sent-ahead-of-goal
+// anomaly (nothing is due then; the caller logs it).
+func packetsDue(elapsed time.Duration, pps uint, alreadySent uint) (uint, bool) {
+	goal := numPacketsGoal(elapsed, pps)
+	if alreadySent > goal {
+		return 0, true
+	}
+	return goal - alreadySent, false
+}
+
 func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Addr, params RateParams) error {
 	if params.Pps == 0 {
 		// Cooldown segment: send nothing until the segment duration is
@@ -480,10 +511,8 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 
 	start := time.Now() // must appear before ticker is started
 
-	maxPacketPerBurst := float64(5)
-	calcInterval := time.Duration((1/(float64(params.Pps)/maxPacketPerBurst))*1e9) * time.Nanosecond
-	interval := min(calcInterval, 1*time.Millisecond)
-	slog.DebugContext(ctx, "Dynamic interval calculation", "interval", interval.String(), "calculatedInterval", calcInterval.String())
+	interval := rateInterval(params.Pps)
+	slog.DebugContext(ctx, "Dynamic interval calculation", "interval", interval.String())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -497,29 +526,17 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 	for {
 		select {
 		case now := <-ticker.C:
-			elapsed := now.Sub(start).Seconds()
-			numPacketsGoal := uint(elapsed * float64(params.Pps))
-			if elapsed < 0 {
-				slog.ErrorContext(ctx, "elapsed < 0",
-					"sent", numPacketsSent,
-					"goal", numPacketsGoal,
-					"elapsed", elapsed,
-					"start", start,
-					"now", now)
-				panic("elapsed < 0")
-			}
-			if numPacketsSent > numPacketsGoal {
+			numPackets, ahead := packetsDue(now.Sub(start), params.Pps, numPacketsSent)
+			if ahead {
 				// I am not sure how this happens but it seldomly does
 				// Give a warning but proceed as if nothing has happened
 				slog.WarnContext(ctx, "numPacketsSent > numPacketsGoal",
 					"sent", numPacketsSent,
-					"goal", numPacketsGoal,
-					"elapsed", elapsed,
+					"elapsed", now.Sub(start),
 					"start", start,
 					"now", now)
 				continue
 			}
-			numPackets := numPacketsGoal - numPacketsSent
 			if numPackets == 0 {
 				continue
 			}
