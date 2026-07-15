@@ -26,6 +26,7 @@ require (
 	github.com/samber/slog-channel v1.4.2 // indirect
 	github.com/samber/slog-common v0.18.1 // indirect
 	go.uber.org/automaxprocs v1.6.0 // indirect
+	go.uber.org/goleak v1.3.0 // indirect
 	go.uber.org/mock v0.5.2 // indirect
 	golang.org/x/crypto v0.43.0 // indirect
 	golang.org/x/mod v0.28.0 // indirect

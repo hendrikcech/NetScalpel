@@ -386,14 +386,19 @@ func testSender(t *testing.T, c *SenderClient) {
 
 	port := serverPort()
 
-	ctxS := context.Background()
+	ctxS, ctxSCancel := context.WithCancel(context.Background())
 	server := RunServer(ctxS, c.IP, port, nil)
+	defer func() {
+		ctxSCancel()
+		server.Stop()
+	}()
 
 	ctxC := context.Background()
 	rpcClient, err := dialRpcClient(c.IP, port)
 	if err != nil {
 		t.Fatalf("%v", err.Error())
 	}
+	defer rpcClient.Close()
 
 	// Every sender runs against a scheduled start so
 	// that waitUntil and the probe-deadline capping are exercised in the
@@ -419,10 +424,6 @@ func testSender(t *testing.T, c *SenderClient) {
 		t.Fatalf("client.Gather failed: %v", err.Error())
 	}
 	_ = time.Since(start)
-
-	rpcClient.Close()
-
-	server.Stop()
 
 	assertClientTiming(t, c)
 
