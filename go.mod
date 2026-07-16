@@ -2,6 +2,8 @@ module github.com/hendrikcech/netscalpel
 
 go 1.25.0
 
+toolchain go1.25.12
+
 require (
 	github.com/alecthomas/kong v1.12.1
 	github.com/alistanis/cartesian v0.0.0-20220409094110-a224e60a7f74
