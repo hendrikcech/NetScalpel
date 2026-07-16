@@ -43,10 +43,20 @@ jobs:
           --packages=./...
           -- -race -shuffle=on -timeout 300s
 
+  # Fails fast, e.g., on a stale vendorHash in scalpel.nix
+  nix-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - run: nix build .#scalpel-run --no-link
+
   # End-to-end validation: client and server across an emulated netem link,
   # asserting that the measured OWD/loss/rate values in the produced CSVs
   # match the configured ground truth. See e2e/README.md.
   e2e:
+    needs: nix-build
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

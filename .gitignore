@@ -5,3 +5,4 @@ plans/
 **/out/
 /out/
 __pycache__/
+result

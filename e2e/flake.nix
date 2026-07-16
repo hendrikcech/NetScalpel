@@ -299,11 +299,31 @@
               '';
             };
           };
+          experiments = lib.mapAttrs (name: config: nixnet.mkExperiment config) configs;
+
+          # Runs every scenario back to back in one invocation. Each
+          # experiment's own workDir keys results by scenario name, so
+          # they don't clash; a failure in one scenario doesn't stop the
+          # rest from running, but is reflected in the final exit code.
+          all = pkgs.writeShellScriptBin "e2e-all" (
+            ''
+              set -u
+              status=0
+            ''
+            + lib.concatMapStringsSep "\n" (name: ''
+              echo "=== ${name} ===" >&2
+              ${experiments.${name}}/bin/e2e-${name} "$@" || status=1
+            '') (builtins.attrNames experiments)
+            + ''
+              exit $status
+            ''
+          );
         in
         {
-          packages = lib.mapAttrs (_: config: nixnet.mkExperiment config) configs // {
-            default = nixnet.mkExperiment configs.owd;
+          packages = experiments // {
+            default = experiments.owd;
             mermaid = nixnet.mkMermaid configs.owd;
+            all = all;
           };
         };
     };

@@ -32,6 +32,7 @@ the software TX timestamp and thus be invisible to the measurement.
 nix run ./e2e#owd    # from the repo root
 nix run ./e2e#loss
 nix run ./e2e#owd 1-5   # repeat 5 times (indexed output dirs)
+nix run ./e2e#all       # run every scenario back to back; exits non-zero if any fails
 ```
 
 The exit code is the test verdict. Root is not required (nixnet uses user
