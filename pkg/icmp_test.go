@@ -27,15 +27,17 @@ func (c *icmpQueueConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	return n, &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}, nil
 }
 
-func (c *icmpQueueConn) Read(b []byte) (int, error)                   { panic("receive reads via ReadFrom") }
-func (c *icmpQueueConn) Write(b []byte) (int, error)                  { panic("receive does not write") }
-func (c *icmpQueueConn) WriteTo(b []byte, addr net.Addr) (int, error) { panic("receive does not write") }
-func (c *icmpQueueConn) Close() error                                 { return nil }
-func (c *icmpQueueConn) LocalAddr() net.Addr                          { return nil }
-func (c *icmpQueueConn) RemoteAddr() net.Addr                         { return nil }
-func (c *icmpQueueConn) SetDeadline(t time.Time) error                { return nil }
-func (c *icmpQueueConn) SetReadDeadline(t time.Time) error            { return nil }
-func (c *icmpQueueConn) SetWriteDeadline(t time.Time) error           { return nil }
+func (c *icmpQueueConn) Read(b []byte) (int, error)  { panic("receive reads via ReadFrom") }
+func (c *icmpQueueConn) Write(b []byte) (int, error) { panic("receive does not write") }
+func (c *icmpQueueConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	panic("receive does not write")
+}
+func (c *icmpQueueConn) Close() error                       { return nil }
+func (c *icmpQueueConn) LocalAddr() net.Addr                { return nil }
+func (c *icmpQueueConn) RemoteAddr() net.Addr               { return nil }
+func (c *icmpQueueConn) SetDeadline(t time.Time) error      { return nil }
+func (c *icmpQueueConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *icmpQueueConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func marshalEchoReply(t *testing.T, echoID uint16, seq int, punch bool) []byte {
 	t.Helper()

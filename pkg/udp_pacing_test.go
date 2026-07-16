@@ -38,9 +38,9 @@ func TestNumPacketsGoal(t *testing.T) {
 		{elapsed: 0, pps: 100, want: 0},
 		{elapsed: -time.Second, pps: 100, want: 0},
 		{elapsed: time.Second, pps: 100, want: 100},
-		{elapsed: 100 * time.Millisecond, pps: 3, want: 0},  // 0.3
-		{elapsed: 333 * time.Millisecond, pps: 3, want: 0},  // 0.999
-		{elapsed: 334 * time.Millisecond, pps: 3, want: 1},  // 1.002
+		{elapsed: 100 * time.Millisecond, pps: 3, want: 0}, // 0.3
+		{elapsed: 333 * time.Millisecond, pps: 3, want: 0}, // 0.999
+		{elapsed: 334 * time.Millisecond, pps: 3, want: 1}, // 1.002
 		{elapsed: time.Nanosecond, pps: 1_000_000_000, want: 1},
 		{elapsed: time.Hour, pps: 123456, want: 123456 * 3600},
 	}
