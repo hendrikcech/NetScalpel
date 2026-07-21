@@ -1,5 +1,13 @@
-# NetScalpel
-A composable measurement toolkit to surgically dissect link and queue dynamics
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="netscalpel-dark.svg">
+    <img src="netscalpel.svg" alt="NetScalpel" width="450">
+  </picture>
+</p>
+
+<p align="center">
+  A composable measurement toolkit to surgically dissect link and queue dynamics.
+</p>
 
 ## Overview
 
