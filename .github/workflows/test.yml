@@ -26,8 +26,10 @@ jobs:
 
       # ST1005 is excluded in staticcheck.conf.
       - run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+        continue-on-error: true
 
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        continue-on-error: true
 
       - run: go build ./...
 

@@ -2,7 +2,7 @@ module github.com/hendrikcech/netscalpel
 
 go 1.25.0
 
-toolchain go1.25.12
+toolchain go1.25.13
 
 require (
 	github.com/alecthomas/kong v1.12.1
