@@ -268,3 +268,7 @@ TCP tests sample kernel-level metrics every 5 ms via the `tcp_info` socket optio
 - Congestion control state (`CAState`)
 
 Transfers can be bounded by the number of bytes (`--bytes`) or duration (`--duration` in milliseconds).
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
