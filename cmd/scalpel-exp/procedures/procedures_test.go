@@ -12,7 +12,7 @@ package procedures
 //     and suffix is uldl or bidir according to the mode; regenerate a single
 //     snapshot with
 //     `go test ./cmd/scalpel-exp/procedures -run '^TestProcedureSchedules/prograte_uldl$' -update`
-//     and review the diff — the snapshots encode the experiment definitions.
+//     and review the diff — the snapshots encode the procedure definitions.
 //
 // Inputs come from each registration's ScheduleTest metadata; there is no
 // central input table.

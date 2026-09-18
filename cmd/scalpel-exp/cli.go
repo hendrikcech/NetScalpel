@@ -10,13 +10,13 @@ var cli struct {
 
 	Client struct {
 		Results   string `help:"Path to the results folder." default:"results"`
-		Rounds    uint   `help:"number of measurement rounds to run; 0 = infinite" default:"1"`
-		Procedure string `help:"Test procedure to run."`
+		Rounds    uint   `help:"Number of procedure rounds to run; 0 = infinite." default:"1"`
+		Procedure string `help:"Procedure to use for the experiment."`
 		Params    string `help:"Semicolon-separated key=value pairs passed to procedure."`
-	} `cmd:"" help:"Send a burst of UDP packets."`
+	} `cmd:"" help:"Run an experiment."`
 
 	Server struct {
-	} `cmd:"" help:"Send a burst of UDP packets."`
+	} `cmd:"" help:"Serve remote experiment operations."`
 
 	Procedures struct {
 		Name string `arg:"" optional:"" help:"Show details for this procedure instead of the list."`

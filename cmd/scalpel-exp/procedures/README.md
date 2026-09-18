@@ -1,12 +1,17 @@
 # Experiment procedures
 
-Procedures compose NetScalpel senders and captures into experiments. Add a Go
-file in this directory to add an experiment to the next build. Each file
-registers its procedure, supported parameters, and schedule-test inputs.
+An experiment is one complete `scalpel-exp client` run. It selects a named,
+reusable procedure and repeats it for the requested number of rounds. A
+procedure invocation is one scheduled execution within a round; a
+`PerDirection` procedure may have separate DL and UL invocations.
+
+Procedures compose NetScalpel senders and captures. Add a Go file in this
+directory to add a procedure to the next build. Each file registers its
+procedure, supported parameters, and schedule-test inputs.
 
 ## Package structure
 
-- `procedures`: experiment definitions, registration, parameters, and golden tests.
+- `procedures`: procedure definitions, registration, parameters, and golden tests.
 - `../experiment`: shared `Executor`, `ParamMap`, and RI timing helpers.
 - The parent command: CLI, direction expansion, rounds, and result handling.
 
@@ -140,7 +145,7 @@ A single CLI value is accepted for a list parameter. Supported typed empty slice
 also carry type information. Defaults and supplied slices are copied per invocation.
 
 There is no Required field or general bounds framework. Choose usable defaults;
-check experiment-specific requirements in the procedure before scheduling clients.
+check procedure-specific requirements before scheduling clients.
 Unknown keys and values that cannot be parsed are rejected before connecting to
 the measurement server. Parameter descriptions should state units and meaning.
 
@@ -229,7 +234,7 @@ go test ./cmd/scalpel-exp/procedures -run '^TestProcedureSchedules$' -update
 
 Add a separate `_test.go` file only for behavior the shared harness does not cover.
 
-## Private experiments
+## Private procedures
 
 Keep private source and fixtures in private storage, and copy them into this
 directory in your build checkout. Optionally start a private Go file with:

@@ -34,12 +34,12 @@ func returnsWithin(t *testing.T, d time.Duration, name string, fn func()) {
 	testutil.ReturnsWithin(t, d, name, fn)
 }
 
-// --- runRound performs blocking Gather RPCs after cancellation ---
+// --- finishProcedureInvocation performs blocking Gather RPCs after cancellation ---
 
-// The umbrella test for client-side Ctrl+C latency: a cancelled round must
+// The umbrella test for client-side Ctrl+C latency: a cancelled invocation must
 // finish promptly instead of (a) waiting for senders that ignore ctx and
 // (b) gathering results from a server that runs the test to its natural end.
-func TestRoundFinishesQuicklyAfterCancel(t *testing.T) {
+func TestProcedureInvocationFinishesQuicklyAfterCancel(t *testing.T) {
 	pkg.RegisterGob()
 
 	port := termServerPort()
@@ -83,17 +83,17 @@ func TestRoundFinishesQuicklyAfterCancel(t *testing.T) {
 	}
 	e.RunClient(sc)
 
-	// Simulated Ctrl+C half a second into the round.
+	// Simulated Ctrl+C half a second into the invocation.
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		cancel()
 	}()
 
-	returnsWithin(t, 2500*time.Millisecond, "runRound", func() {
-		c.runRound(ctx, e, rpcClient, resultPath)
+	returnsWithin(t, 2500*time.Millisecond, "finishProcedureInvocation", func() {
+		c.finishProcedureInvocation(ctx, e, rpcClient, resultPath)
 	})
 
-	// The cancelled round must also have aborted the
+	// The cancelled invocation must also have aborted the
 	// server-side receiver; its (partial) result must be available promptly
 	// instead of after the full test duration + 1s receive timeout.
 	returnsWithin(t, 2*time.Second, "RequestServerResult after abort", func() {

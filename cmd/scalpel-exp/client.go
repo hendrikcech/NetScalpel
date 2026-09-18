@@ -99,15 +99,15 @@ func (c *Client) Run(ctx context.Context) {
 
 		for _, overrides := range paramsSet {
 			e := experiment.NewExecutor(ctx, c.IP, rpcClient)
-			resultPath := c.executeProcedure(ctx, e, time.Now(), proc, overrides)
-			c.runRound(ctx, e, rpcClient, resultPath)
+			resultPath := c.scheduleProcedureInvocation(ctx, e, time.Now(), proc, overrides)
+			c.finishProcedureInvocation(ctx, e, rpcClient, resultPath)
 		}
 
 		rpcClient.Close()
 	}
 }
 
-func (c *Client) runRound(ctx context.Context, e *experiment.Executor, rpcClient *rpc.Client, resultPath string) {
+func (c *Client) finishProcedureInvocation(ctx context.Context, e *experiment.Executor, rpcClient *rpc.Client, resultPath string) {
 	c.setupSlog(ctx, resultPath)
 
 	if err := e.G.Wait(); err != nil {
@@ -115,10 +115,10 @@ func (c *Client) runRound(ctx context.Context, e *experiment.Executor, rpcClient
 	}
 
 	// On user abort the results are incomplete; don't block on gathering.
-	// Tell the server to cancel the still-running tests of this round so it
+	// Tell the server to cancel the still-running tests of this invocation so it
 	// releases its sockets and goroutines right away.
 	if ctx.Err() != nil {
-		slog.InfoContext(ctx, "Round was cancelled, aborting server-side tests and skipping result gathering")
+		slog.InfoContext(ctx, "Procedure invocation was cancelled, aborting server-side tests and skipping result gathering")
 		if err := e.AbortServerTests(); err != nil {
 			slog.WarnContext(ctx, "Failed aborting server-side tests", "error", err.Error())
 		}
@@ -144,7 +144,7 @@ func (c *Client) runRound(ctx context.Context, e *experiment.Executor, rpcClient
 	}
 }
 
-func (c *Client) executeProcedure(ctx context.Context, e *experiment.Executor, ts time.Time, proc procedures.Procedure, overrides experiment.ParamMap) string {
+func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.Executor, ts time.Time, proc procedures.Procedure, overrides experiment.ParamMap) string {
 	// Prepare per invocation so DL, UL, and later rounds never share
 	// mutable parameter values. Errors were ruled out before dialing.
 	params, err := procedures.PrepareParams(proc, overrides)

@@ -65,7 +65,7 @@ type ScheduleTest struct {
 	AllowBeforeStart bool
 }
 
-// Procedure is one registered experiment definition.
+// Procedure is one registered, reusable procedure definition.
 type Procedure struct {
 	Name        string
 	Description string

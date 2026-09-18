@@ -86,32 +86,43 @@ Start the client to send UDP packets for 1 second with a gap of 200 ms:
 
 ## Using `scalpel-exp`
 
-The `scalpel-exp` binary is used to orchestrate complex, predefined experiments that schedule the execution of specific UDP or TCP measurements ahead of time. This prevents mixing measurement and control traffic during the experiment.
+The `scalpel-exp` binary orchestrates experiments that schedule measurements
+ahead of time. This prevents mixing measurement and control traffic during an
+experiment.
 
-To view the list of supported experimental procedures:
+The terms used by `scalpel-exp` have distinct meanings:
+
+- An **experiment** is one complete `scalpel-exp client` run.
+- A **procedure** is the named, reusable definition selected for an experiment.
+- A **round** is one repetition of that procedure within the experiment.
+- A **procedure invocation** is one scheduled execution within a round. A
+  per-direction procedure may have separate DL and UL invocations.
+
+To view the list of supported procedures:
 
 ```sh
 ./scalpel-exp procedures          # all registered procedures
 ./scalpel-exp procedures prograte # details for one procedure
 ```
 
-These procedures include advanced scenarios like `MultiDurationRate`, `Burst`, `Cooldown`, `SwitchFlow`, `Rate`, `OWD`, `MouseElephant`, and `TCPReconf`.
+The available procedures include `MultiDurationRate`, `Burst`, `Cooldown`,
+`SwitchFlow`, `Rate`, `OWD`, `MouseElephant`, and `TCPReconf`.
 
 To run an orchestrated experiment, you typically start the `scalpel-exp server` on the remote endpoint and the `scalpel-exp client` on the local endpoint, passing the necessary flags for the desired procedure.
 
-## Implementing New Experiments
+## Implementing New Procedures
 
 Experiment procedures live in [`cmd/scalpel-exp/procedures`](cmd/scalpel-exp/procedures/)
 as one Go file per procedure (closely related procedures may share a file).
 Each file registers its procedure definition, parameter metadata, and
-schedule-test inputs in an `init()` function; adding an experiment therefore
+schedule-test inputs in an `init()` function; adding a procedure therefore
 requires no central registry or test-table edits. Procedures schedule senders
 (UDP, TCP, ICMP, QUIC) and packet captures on an `experiment.Executor`,
 relative to the upcoming Starlink reconfiguration instant; the executor and
 the client/server RPC layer handle execution, gathering, and results.
 
 The full guide — procedure signature, execution modes and direction handling,
-parameter types, the shared dry-run schedule tests, and private experiments
+parameter types, the shared dry-run schedule tests, and private procedures
 behind build tags — is in the
 [procedures README](cmd/scalpel-exp/procedures/README.md).
 
