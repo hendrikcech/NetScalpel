@@ -1,11 +1,11 @@
-package main
+package experiment
 
 import (
 	"testing"
 	"time"
 )
 
-func TestNextRi(t *testing.T) {
+func TestNextRI(t *testing.T) {
 	t0, _ := time.Parse(time.RFC3339, "2006-01-02T15:04:05Z")
 	t1, _ := time.Parse(time.RFC3339, "2006-01-02T15:59:05Z")
 	t2, _ := time.Parse(time.RFC3339, "2006-01-02T15:59:57Z")
@@ -29,18 +29,18 @@ func TestNextRi(t *testing.T) {
 	ris := []time.Time{r0, r1, r2, r3, r4, r5, r6, r7}
 
 	for i := range tss {
-		ri := nextRi(tss[i])
+		ri := NextRI(tss[i])
 		if ri != ris[i] {
 			t.Errorf("Wrong RI calculated: %v -> %v but should be %v", tss[i], ri, ris[i])
 		}
 	}
 }
 
-func TestNextRiNonUTC(t *testing.T) {
+func TestNextRINonUTC(t *testing.T) {
 	loc := time.FixedZone("UTC+2", 2*60*60)
 	ts := time.Date(2026, 1, 2, 15, 4, 20, 0, loc)
 	want := time.Date(2026, 1, 2, 15, 4, 27, 0, loc)
-	if ri := nextRi(ts); !ri.Equal(want) || ri.Location() != loc {
-		t.Errorf("nextRi(%v) = %v, want %v in %v", ts, ri, want, loc)
+	if ri := NextRI(ts); !ri.Equal(want) || ri.Location() != loc {
+		t.Errorf("NextRI(%v) = %v, want %v in %v", ts, ri, want, loc)
 	}
 }

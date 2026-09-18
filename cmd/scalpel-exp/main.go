@@ -7,7 +7,6 @@ import (
 	"math"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/alecthomas/kong"
@@ -100,24 +99,10 @@ func main() {
 		go forceExitOnSignal()
 		s.Stop()
 
-	case "procedures":
-		var b strings.Builder
-
-		b.WriteString("UL/DL Procedures:\n")
-		for k := range proceduresUlDl {
-			b.WriteString("* ")
-			b.WriteString(k)
-			b.WriteString("\n")
-		}
-
-		b.WriteString("Bidir Procedures:\n")
-		for k := range proceduresBidir {
-			b.WriteString("* ")
-			b.WriteString(k)
-			b.WriteString("\n")
-		}
-
-		fmt.Print(b.String())
+	case "procedures", "procedures <name>":
+		// Runs without a server or a valid measurement IP: the output comes
+		// from registration metadata only.
+		printProcedures(cli.Procedures.Name)
 
 	default:
 		panic(kongctx.Command())

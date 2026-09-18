@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/experiment"
+	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/procedures"
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
@@ -21,7 +23,7 @@ type Client struct {
 	Results   string
 	Rounds    uint
 	Procedure string
-	Params    map[string]any
+	Params    experiment.ParamMap
 
 	LogLevel slog.Level
 	// Permanent log file supplied by the caller. Needs to be closed by the caller.
@@ -31,6 +33,41 @@ type Client struct {
 
 	// Per-round log file
 	slogFile *os.File
+}
+
+// prepareOverrides resolves the registered procedure and returns the
+// parameter overrides of every invocation in execution order: a
+// PerDirection procedure without a direction override runs once for DL and
+// once for UL per round, every other procedure once per round.
+//
+// All invocation overrides are validated here, before the first RPC dial or
+// result directory creation; Client.Run goes through this method, so direct
+// Go callers cannot bypass the checks.
+func (c *Client) prepareOverrides() (procedures.Procedure, []experiment.ParamMap, error) {
+	proc, ok := procedures.Lookup(c.Procedure)
+	if !ok {
+		return procedures.Procedure{}, nil, fmt.Errorf("unknown procedure %q", c.Procedure)
+	}
+
+	paramsSet := []experiment.ParamMap{c.Params}
+	if proc.Mode == procedures.PerDirection {
+		if _, ok := c.Params["direction"]; !ok {
+			// Direction wasn't specified: execute procedure twice, once on UL once on DL
+			paramsSet = nil
+			for _, direction := range []pkg.Direction{pkg.DL, pkg.UL} {
+				params := maps.Clone(c.Params)
+				params["direction"] = direction.String()
+				paramsSet = append(paramsSet, params)
+			}
+		}
+	}
+
+	for i, params := range paramsSet {
+		if _, err := procedures.PrepareParams(proc, params); err != nil {
+			return procedures.Procedure{}, nil, fmt.Errorf("invocation %v/%v: %w", i+1, len(paramsSet), err)
+		}
+	}
+	return proc, paramsSet, nil
 }
 
 func (c *Client) Run(ctx context.Context) {
@@ -43,22 +80,9 @@ func (c *Client) Run(ctx context.Context) {
 		}
 	}()
 
-	paramsSet := []map[string]any{c.Params}
-	var procFn ProcedureFunc
-	if fn, ok := proceduresUlDl[c.Procedure]; ok {
-		procFn = fn
-		if _, ok := c.Params["direction"]; !ok {
-			// Direction wasn't specified: execute procedure twice, once on UL once on DL
-			paramsDL := maps.Clone(c.Params)
-			paramsDL["direction"] = pkg.DL.String()
-			paramsUL := maps.Clone(c.Params)
-			paramsUL["direction"] = pkg.UL.String()
-			paramsSet = []map[string]any{paramsDL, paramsUL}
-		}
-	} else if fn, ok := proceduresBidir[c.Procedure]; ok {
-		procFn = fn
-	} else {
-		slog.ErrorContext(ctx, "Unknown -procedure", "procedure", c.Procedure)
+	proc, paramsSet, err := c.prepareOverrides()
+	if err != nil {
+		slog.ErrorContext(ctx, "Procedure setup failed", "procedure", c.Procedure, "error", err)
 		os.Exit(1)
 	}
 
@@ -73,9 +97,9 @@ func (c *Client) Run(ctx context.Context) {
 			return
 		}
 
-		for _, params := range paramsSet {
-			e := NewExecutor(ctx, c.IP, rpcClient)
-			resultPath := c.executeProcedure(ctx, e, time.Now(), procFn, params)
+		for _, overrides := range paramsSet {
+			e := experiment.NewExecutor(ctx, c.IP, rpcClient)
+			resultPath := c.executeProcedure(ctx, e, time.Now(), proc, overrides)
 			c.runRound(ctx, e, rpcClient, resultPath)
 		}
 
@@ -83,7 +107,7 @@ func (c *Client) Run(ctx context.Context) {
 	}
 }
 
-func (c *Client) runRound(ctx context.Context, e *Executor, rpcClient *rpc.Client, resultPath string) {
+func (c *Client) runRound(ctx context.Context, e *experiment.Executor, rpcClient *rpc.Client, resultPath string) {
 	c.setupSlog(ctx, resultPath)
 
 	if err := e.G.Wait(); err != nil {
@@ -120,8 +144,16 @@ func (c *Client) runRound(ctx context.Context, e *Executor, rpcClient *rpc.Clien
 	}
 }
 
-func (c *Client) executeProcedure(ctx context.Context, e *Executor, ts time.Time, fn ProcedureFunc, params ParamMap) string {
-	ri := nextRi(ts)
+func (c *Client) executeProcedure(ctx context.Context, e *experiment.Executor, ts time.Time, proc procedures.Procedure, overrides experiment.ParamMap) string {
+	// Prepare per invocation so DL, UL, and later rounds never share
+	// mutable parameter values. Errors were ruled out before dialing.
+	params, err := procedures.PrepareParams(proc, overrides)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed preparing procedure parameters", "error", err)
+		os.Exit(1)
+	}
+
+	ri := experiment.NextRI(ts)
 	name := "_" + c.Procedure
 	if direction, ok := params["direction"]; ok {
 		name += "_" + strings.ToLower(direction.(string))
@@ -133,7 +165,7 @@ func (c *Client) executeProcedure(ctx context.Context, e *Executor, ts time.Time
 		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())
 		os.Exit(1)
 	}
-	if err := fn(e, ri, resultPath, params); err != nil {
+	if err := proc.Run(e, ri, resultPath, params); err != nil {
 		slog.Error("Procedure errored", "error", err)
 		os.Exit(1)
 	}
@@ -173,23 +205,6 @@ func (c *Client) WriteServerLog(path string, rpcClient *rpc.Client) error {
 	}
 
 	return nil
-}
-
-type ProcedureFunc func(*Executor, time.Time, string, ParamMap) error
-
-func nextRi(ts time.Time) time.Time {
-	base := ts.Round(time.Second)
-	var riSec int
-	for _, riSec = range []int{12, 27, 42, 57, 57 + 15} {
-		if riSec > base.Second() {
-			break
-		}
-	}
-	minute := riSec / 60
-	second := riSec % 60
-	nextRi := time.Date(base.Year(), base.Month(), base.Day(), base.Hour(), base.Minute(), second, 0, base.Location())
-	nextRi = nextRi.Add(time.Duration(minute) * time.Minute)
-	return nextRi
 }
 
 func mkResultPath(base string, ts time.Time, suffix string) (string, error) {

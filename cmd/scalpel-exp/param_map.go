@@ -2,119 +2,17 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
-	"github.com/hendrikcech/netscalpel/pkg"
+	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/experiment"
 )
-
-type ParamMap map[string]any
-
-func (p ParamMap) Direction() (pkg.Direction, error) {
-	value, ok := p["direction"]
-	if !ok {
-		return 999, fmt.Errorf("Direction parameter not present")
-	}
-	directionStr, ok := value.(string)
-	if !ok {
-		return 999, fmt.Errorf("Direction parameter must be string")
-	}
-	direction, err := pkg.ParseDirection(directionStr)
-	if err != nil {
-		return 999, err
-	}
-	return direction, nil
-}
-
-func (p ParamMap) Strings(key string) ([]string, error) {
-	value, ok := p[key]
-	if !ok {
-		return nil, fmt.Errorf("Parameter '%v' not present", key)
-	}
-	listStr, ok := value.([]string)
-	if !ok {
-		// Only a single element
-		listStr = []string{value.(string)}
-	}
-	return listStr, nil
-}
-
-// UintsOr returns the values stored under key, or def if the key is absent.
-func (p ParamMap) UintsOr(key string, def []uint) ([]uint, error) {
-	if _, ok := p[key]; !ok {
-		return def, nil
-	}
-	return p.Uints(key)
-}
-
-func (p ParamMap) Uints(key string) ([]uint, error) {
-	listStr, err := p.Strings(key)
-	if err != nil {
-		return nil, err
-	}
-	list := make([]uint, len(listStr))
-	for i := range listStr {
-		var err error
-		parsed, err := strconv.ParseUint(listStr[i], 10, 32)
-		if err != nil {
-			return nil, fmt.Errorf("Parameter %v: failed parsing '%s' as uint", key, listStr[i])
-		}
-		list[i] = uint(parsed)
-	}
-	return list, nil
-}
-
-// UintOr returns the value stored under key, or def if the key is absent.
-func (p ParamMap) UintOr(key string, def uint) (uint, error) {
-	if _, ok := p[key]; !ok {
-		return def, nil
-	}
-	return p.Uint(key)
-}
-
-func (p ParamMap) Uint(key string) (uint, error) {
-	value, ok := p[key]
-	if !ok {
-		return 0, fmt.Errorf("Parameter '%v' not present", key)
-	}
-	parsed, err := strconv.ParseUint(value.(string), 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("Parameter '%v': failed parsing '%s' as uint", key, value)
-	}
-	return uint(parsed), nil
-}
-
-// TCPCCAsOr returns the CCAs stored under key, or def if the key is absent.
-func (p ParamMap) TCPCCAsOr(key string, def []pkg.TCPCCA) ([]pkg.TCPCCA, error) {
-	if _, ok := p[key]; !ok {
-		return def, nil
-	}
-	return p.TCPCCAs(key)
-}
-
-func (p ParamMap) TCPCCAs(key string) ([]pkg.TCPCCA, error) {
-	listStr, err := p.Strings(key)
-	if err != nil {
-		return nil, err
-	}
-	list := make([]pkg.TCPCCA, len(listStr))
-	for i := range listStr {
-		var err error
-		list[i], err = pkg.ParseTCPCCA(listStr[i])
-		if err != nil {
-			return nil, fmt.Errorf("Parameter %v: failed parsing '%s' as TCPCCA", key, listStr[i])
-		}
-	}
-	return list, nil
-
-}
 
 // Parses semicolon-separated key=value pairs
 // If value contains a comma, the value is parsed as a list
 // Example:
 // direction=ul;durations=100,200
-func parseParams(paramStr string) (ParamMap, error) {
-	params := make(map[string]any)
+func parseParams(paramStr string) (experiment.ParamMap, error) {
+	params := make(experiment.ParamMap)
 	if paramStr == "" {
 		return params, nil
 	}

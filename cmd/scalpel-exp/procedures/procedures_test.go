@@ -1,4 +1,4 @@
-package main
+package procedures
 
 // Dry-run schedule validation for every registered procedure: each runs
 // against a fixed ts with Executor.DryRun set, so the schedule it builds is
@@ -7,9 +7,15 @@ package main
 //   - generic invariants: StartAt sanity, no zero StartAt, unique
 //     non-empty Out paths, tcpdump windows covering every sender window
 //   - golden snapshots: the normalized schedule is compared against
-//     testdata/<registry>_<name>.golden; regenerate with
-//     `go test ./cmd/scalpel-exp -run TestProcedureSchedules -update`
+//     <base>_<suffix>.golden next to the procedure sources, where base is
+//     ScheduleTest.GoldenBase if non-empty, otherwise the procedure name,
+//     and suffix is uldl or bidir according to the mode; regenerate a single
+//     snapshot with
+//     `go test ./cmd/scalpel-exp/procedures -run '^TestProcedureSchedules/prograte_uldl$' -update`
 //     and review the diff — the snapshots encode the experiment definitions.
+//
+// Inputs come from each registration's ScheduleTest metadata; there is no
+// central input table.
 
 import (
 	"context"
@@ -23,50 +29,79 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/experiment"
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 var update = flag.Bool("update", false, "regenerate the golden schedule snapshots")
 
 // procedureTs is the fixed schedule anchor: second :12 is an RI boundary, so
-// nextRi(procedureTs) is :27 and every procedure gets its regular ~14s
-// window.
+// experiment.NextRI(procedureTs) is :27 and every procedure gets its regular
+// ~14s window.
 var procedureTs = time.Date(2026, 1, 2, 15, 4, 12, 0, time.UTC)
 
-// Minimal valid params per registered procedure. A registry entry without a
-// table entry fails the test, forcing the author of a new procedure to add
-// one (and thereby a reviewed golden snapshot).
-var uldlProcedureParams = map[string]ParamMap{
-	"burst":        {"direction": "ul"},
-	"multiburst":   {"direction": "ul"},
-	"prograte":     {"direction": "ul"},
-	"cddf":         {"direction": "ul"},
-	"cdsf":         {"direction": "ul"},
-	"multiflow":    {"direction": "ul"},
-	"switchflow":   {"direction": "ul"},
-	"mouseeleph":   {"direction": "ul"},
-	"multidurrate": {"direction": "ul"},
-	"simplequic":   {"direction": "ul"},
-	"progdurquic":  {"direction": "ul"},
-	"durationtcp":  {"direction": "ul"},
-	"tcpri":        {"direction": "ul"},
-	"rateri":       {"direction": "ul"},
-	"owd":          {"direction": "ul", "duration_ms": "3000"},
-	"rate":         {"direction": "ul", "duration_ms": "3000"},
-	"packetdur":    {"direction": "ul"},
-	"rampupprobe":  {"direction": "ul"},
+// goldenFileName returns the fixture name <base>_<suffix>.golden for a
+// procedure: base is ScheduleTest.GoldenBase if non-empty, otherwise the
+// procedure name; suffix is uldl or bidir according to the mode.
+func goldenFileName(p Procedure) (string, error) {
+	base := p.Name
+	if p.ScheduleTest.GoldenBase != "" {
+		base = p.ScheduleTest.GoldenBase
+	}
+	if base != filepath.Base(base) || base == "." || base == ".." {
+		return "", fmt.Errorf("golden base %q must be a plain basename without directory components", p.ScheduleTest.GoldenBase)
+	}
+	suffix := "uldl"
+	if p.Mode == OncePerRound {
+		suffix = "bidir"
+	}
+	return base + "_" + suffix + ".golden", nil
 }
 
-var bidirProcedureParams = map[string]ParamMap{
-	"trace":     {},
-	"owdbidir":  {"duration_ms": "3000"},
-	"ratebidir": {"duration_ms": "3000"},
-}
+func TestProcedureSchedules(t *testing.T) {
+	procs := All()
+	if len(procs) == 0 {
+		t.Fatal("no procedures registered")
+	}
 
-// Procedures that deliberately schedule around ts instead of after it
-// (spanning a Starlink reconfiguration instant).
-var startsBeforeTs = map[string]bool{
-	"rateri": true,
+	// Metadata checks before running anything: every registration needs
+	// schedule-test metadata, a valid basename, and a unique fixture path.
+	// Extra fixtures in this directory (e.g. of a private procedure not
+	// compiled in) are deliberately not rejected.
+	seen := make(map[string]string, len(procs))
+	for _, p := range procs {
+		if p.ScheduleTest == nil {
+			t.Errorf("procedure %q has no ScheduleTest metadata; every procedure must register schedule-test inputs (empty &ScheduleTest{} is valid)", p.Name)
+			continue
+		}
+		name, err := goldenFileName(p)
+		if err != nil {
+			t.Errorf("procedure %q: %v", p.Name, err)
+			continue
+		}
+		if prev, dup := seen[name]; dup {
+			t.Errorf("procedures %q and %q resolve to the same golden fixture %q", prev, p.Name, name)
+			continue
+		}
+		seen[name] = p.Name
+	}
+
+	for _, p := range procs {
+		if p.ScheduleTest == nil {
+			continue // Reported above.
+		}
+		base := p.Name
+		if p.ScheduleTest.GoldenBase != "" {
+			base = p.ScheduleTest.GoldenBase
+		}
+		suffix := "uldl"
+		if p.Mode == OncePerRound {
+			suffix = "bidir"
+		}
+		t.Run(base+"_"+suffix, func(t *testing.T) {
+			testProcedureSchedule(t, p)
+		})
+	}
 }
 
 type scheduleEntry struct {
@@ -87,57 +122,53 @@ func (s scheduleEntry) String() string {
 	return line
 }
 
-func TestProcedureSchedules(t *testing.T) {
-	// Reverse check: stale table entries point at a renamed/removed procedure.
-	for name := range uldlProcedureParams {
-		if _, ok := proceduresUlDl[name]; !ok {
-			t.Errorf("param table entry %q has no matching procedure in proceduresUlDl", name)
-		}
-	}
-	for name := range bidirProcedureParams {
-		if _, ok := proceduresBidir[name]; !ok {
-			t.Errorf("param table entry %q has no matching procedure in proceduresBidir", name)
-		}
-	}
+func testProcedureSchedule(t *testing.T, p Procedure) {
+	st := p.ScheduleTest
 
-	for name, fn := range proceduresUlDl {
-		t.Run("uldl_"+name, func(t *testing.T) {
-			testProcedureSchedule(t, name, "uldl_"+name, fn, uldlProcedureParams)
-		})
-	}
-	for name, fn := range proceduresBidir {
-		t.Run("bidir_"+name, func(t *testing.T) {
-			testProcedureSchedule(t, name, "bidir_"+name, fn, bidirProcedureParams)
-		})
-	}
-}
-
-func testProcedureSchedule(t *testing.T, name, id string, fn ProcedureFunc, paramTable map[string]ParamMap) {
-	params, ok := paramTable[name]
-	if !ok {
-		t.Fatalf("procedure %q has no entry in the dry-run param table; add its minimal valid params to procedures_test.go", name)
+	if p.Mode == PerDirection {
+		if _, ok := st.Params["direction"]; !ok {
+			t.Fatalf("schedule test of PerDirection procedure %q must request an explicit direction: each snapshot describes one procedure invocation", p.Name)
+		}
 	}
 
 	// Deterministic schedule randomization for a stable snapshot. Subtests
 	// must not run in parallel: rng is shared package state.
+	previousRng := rng
+	t.Cleanup(func() { rng = previousRng })
 	rng = rand.New(rand.NewSource(1))
 
+	// Same preparation path as production.
+	params, err := PrepareParams(p, st.Params)
+	if err != nil {
+		t.Fatalf("failed preparing schedule test params: %v", err)
+	}
+
 	resultPath := t.TempDir()
-	e := NewExecutor(context.Background(), "192.0.2.1", nil)
+	e := experiment.NewExecutor(context.Background(), "192.0.2.1", nil)
 	e.DryRun = true
-	if err := fn(e, procedureTs, resultPath, params); err != nil {
+	if err := p.Run(e, procedureTs, resultPath, params); err != nil {
 		t.Fatalf("procedure returned an error: %v", err)
 	}
 	if len(e.Clients) == 0 {
 		t.Fatalf("procedure scheduled no clients")
 	}
 
+	golden, err := goldenFileName(p)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
 	entries := normalizeSchedule(t, e, resultPath)
-	assertScheduleInvariants(t, name, entries)
-	compareGolden(t, name, id, params, entries)
+	assertScheduleInvariants(t, st.AllowBeforeStart, entries)
+	// Invariant failures above must stop an invalid snapshot from being
+	// written by -update.
+	if t.Failed() {
+		t.Fatal("skipping golden comparison/update because the schedule violated invariants")
+	}
+	compareGolden(t, p.Name, golden, st.Params, entries)
 }
 
-func normalizeSchedule(t *testing.T, e *Executor, resultPath string) []scheduleEntry {
+func normalizeSchedule(t *testing.T, e *experiment.Executor, resultPath string) []scheduleEntry {
 	t.Helper()
 	entries := make([]scheduleEntry, 0, len(e.Clients))
 	for _, client := range e.Clients {
@@ -176,12 +207,12 @@ func normalizeSchedule(t *testing.T, e *Executor, resultPath string) []scheduleE
 	return entries
 }
 
-func assertScheduleInvariants(t *testing.T, name string, entries []scheduleEntry) {
+func assertScheduleInvariants(t *testing.T, allowBeforeStart bool, entries []scheduleEntry) {
 	t.Helper()
 	ts := procedureTs
 
 	earliest := ts
-	if startsBeforeTs[name] {
+	if allowBeforeStart {
 		earliest = ts.Add(-10 * time.Second)
 	}
 	latest := ts.Add(5 * time.Minute)
@@ -233,12 +264,13 @@ func assertScheduleInvariants(t *testing.T, name string, entries []scheduleEntry
 	}
 }
 
-func compareGolden(t *testing.T, name, id string, params ParamMap, entries []scheduleEntry) {
+func compareGolden(t *testing.T, name, golden string, params experiment.ParamMap, entries []scheduleEntry) {
 	t.Helper()
 
 	lines := make([]string, 0, len(entries)+2)
 	lines = append(lines,
 		fmt.Sprintf("# procedure: %s", name),
+		// The header shows the test overrides, not every effective default.
 		fmt.Sprintf("# params: %s", formatParams(params)))
 	body := make([]string, 0, len(entries))
 	for _, en := range entries {
@@ -247,11 +279,8 @@ func compareGolden(t *testing.T, name, id string, params ParamMap, entries []sch
 	sort.Strings(body)
 	got := strings.Join(append(lines, body...), "\n") + "\n"
 
-	path := filepath.Join("testdata", id+".golden")
+	path := golden
 	if *update {
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(path, []byte(got), 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -268,7 +297,7 @@ func compareGolden(t *testing.T, name, id string, params ParamMap, entries []sch
 	}
 }
 
-func formatParams(params ParamMap) string {
+func formatParams(params experiment.ParamMap) string {
 	if len(params) == 0 {
 		return "(none)"
 	}

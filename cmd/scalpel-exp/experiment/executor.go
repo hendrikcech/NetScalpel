@@ -1,4 +1,4 @@
-package main
+package experiment
 
 import (
 	"bufio"
@@ -87,7 +87,9 @@ func (e *Executor) WriteInfo(path string) error {
 	return nil
 }
 
-func (e *Executor) tcpdump(resultPath string, start time.Time, duration time.Duration) {
+// Tcpdump schedules paired local and remote packet captures from start for
+// the given duration.
+func (e *Executor) Tcpdump(resultPath string, start time.Time, duration time.Duration) {
 	for _, local := range []bool{true, false} {
 		var name string
 		if local {

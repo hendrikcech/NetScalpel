@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/experiment"
 	"github.com/hendrikcech/netscalpel/internal/testutil"
 	"github.com/hendrikcech/netscalpel/pkg"
 )
@@ -69,7 +70,7 @@ func TestRoundFinishesQuicklyAfterCancel(t *testing.T) {
 	}
 
 	// What a procedure would schedule: one long UL test starting shortly.
-	e := NewExecutor(ctx, testIP, rpcClient)
+	e := experiment.NewExecutor(ctx, testIP, rpcClient)
 	sc := &pkg.SenderClient{
 		IP:        testIP,
 		Out:       filepath.Join(resultPath, "owd.csv"),

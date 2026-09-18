@@ -19,5 +19,6 @@ var cli struct {
 	} `cmd:"" help:"Send a burst of UDP packets."`
 
 	Procedures struct {
+		Name string `arg:"" optional:"" help:"Show details for this procedure instead of the list."`
 	} `cmd:"" help:"Output a list of supported procedures."`
 }
