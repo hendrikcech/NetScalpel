@@ -45,6 +45,33 @@ jobs:
           --packages=./...
           -- -race -shuffle=on -timeout 300s
 
+  # The Dockerfile compiles the module on its own, with its own list of
+  # copied paths and its own flags, so nothing else in CI notices when
+  # it breaks.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: netscalpel:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The three binaries are built separately; check each of them exists
+      # and runs, which also covers the noserver variant.
+      - name: Smoke test the image
+        run: |
+          for bin in scalpel-run scalpel-exp scalpel-exp_noserver; do
+            docker run --rm --entrypoint "$bin" netscalpel:ci --help
+          done
+
   # Fails fast, e.g., on a stale vendorHash in scalpel.nix
   nix-build:
     runs-on: ubuntu-latest
