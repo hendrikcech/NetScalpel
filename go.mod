@@ -9,7 +9,7 @@ require (
 	github.com/alistanis/cartesian v0.0.0-20220409094110-a224e60a7f74
 	github.com/anacrolix/mmsg v1.1.1
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.18.0
+	github.com/klauspost/compress v1.20.0
 	github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b
 	github.com/quic-go/quic-go v0.54.1
