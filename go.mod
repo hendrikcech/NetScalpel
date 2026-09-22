@@ -14,7 +14,7 @@ require (
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b
 	github.com/quic-go/quic-go v0.54.1
 	github.com/samber/slog-channel v1.4.2
-	github.com/samber/slog-multi v1.4.0
+	github.com/samber/slog-multi v1.8.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.46.0
 	golang.org/x/sync v0.17.0
@@ -24,8 +24,8 @@ require (
 require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
-	github.com/samber/lo v1.51.0 // indirect
-	github.com/samber/slog-common v0.18.1 // indirect
+	github.com/samber/lo v1.53.0 // indirect
+	github.com/samber/slog-common v0.21.0 // indirect
 	go.uber.org/mock v0.5.2 // indirect
 	golang.org/x/crypto v0.43.0 // indirect
 	golang.org/x/mod v0.28.0 // indirect
