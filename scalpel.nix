@@ -8,7 +8,7 @@ let
   common = {
     version = "0.1";
     inherit src;
-    vendorHash = "sha256-kppZ7ojN3XqsAnVXfkvqRJUO4iRth/zVDW4jWHvH4TE=";
+    vendorHash = "sha256-VPPj3XgKxzAyze3U0cc2Q/vbuMd7U7wMVauMyGGtLWY=";
   };
 in
 {

@@ -2,7 +2,7 @@
 # self-signed and verified off) and no shell tools. So build them statically and
 # ship them on an empty base instead of a full Go image.
 
-FROM golang:1.25 AS builder
+FROM golang:1.26 AS builder
 
 WORKDIR /src
 
