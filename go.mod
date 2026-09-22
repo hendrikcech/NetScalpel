@@ -1,8 +1,6 @@
 module github.com/hendrikcech/netscalpel
 
-go 1.25.0
-
-toolchain go1.25.13
+go 1.26.0
 
 require (
 	github.com/alecthomas/kong v1.12.1
@@ -17,7 +15,7 @@ require (
 	github.com/samber/slog-multi v1.4.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.46.0
-	golang.org/x/sync v0.17.0
+	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.37.0
 )
 
