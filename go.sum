@@ -30,8 +30,8 @@ github.com/quic-go/quic-go v0.54.1 h1:4ZAWm0AhCb6+hE+l5Q1NAL0iRn/ZrMwqHRGQiFwj2e
 github.com/quic-go/quic-go v0.54.1/go.mod h1:e68ZEaCdyviluZmy44P6Iey98v/Wfz6HCjQEm+l8zTY=
 github.com/samber/lo v1.53.0 h1:t975lj2py4kJPQ6haz1QMgtId2gtmfktACxIXArw3HM=
 github.com/samber/lo v1.53.0/go.mod h1:4+MXEGsJzbKGaUEQFKBq2xtfuznW9oz/WrgyzMzRoM0=
-github.com/samber/slog-channel v1.4.2 h1:YztPBn0pj7Wdwn4rDIqp73PbpPIA5MczpRc6vNywg8E=
-github.com/samber/slog-channel v1.4.2/go.mod h1:Z4LkU56HlJcHFMGThaWRP7Tqw/3T+6hDzSxirWLK2NA=
+github.com/samber/slog-channel v1.4.4 h1:EkAEqU/zDMt8JMOy7iWIcQT/lRY6qMcvqlqjyWsJPPQ=
+github.com/samber/slog-channel v1.4.4/go.mod h1:GhNDEA6TzBbr0WG7YsyltgRmpbmAY+nspqbPpwhRaHY=
 github.com/samber/slog-common v0.21.0 h1:Wo2hTly1Br5RjYqX/BTWJJeDnTE85oWk/7vqlpZuAUc=
 github.com/samber/slog-common v0.21.0/go.mod h1:d/6OaSlzdkl9PFpfRLgn8FwY1OW6EFmPtBpsHX4MrU0=
 github.com/samber/slog-multi v1.8.0 h1:E05c1wnQ+8M58oQDBABlJ4TEIJWssNgtckso3zlaLlI=
