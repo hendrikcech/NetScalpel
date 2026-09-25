@@ -11,7 +11,7 @@ require (
 	github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b
 	github.com/quic-go/quic-go v0.54.1
-	github.com/samber/slog-channel v1.4.2
+	github.com/samber/slog-channel v1.4.4
 	github.com/samber/slog-multi v1.8.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.59.0
