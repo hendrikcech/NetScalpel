@@ -32,6 +32,30 @@ func TestPrepareParamsAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestPrepareParamsBool(t *testing.T) {
+	p := Procedure{Params: []ParamSpec{{Name: "enabled", Default: false}}}
+	defaults, err := PrepareParams(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := defaults["enabled"]; got != false {
+		t.Errorf("enabled default: got %#v, want false", got)
+	}
+
+	for _, value := range []any{true, "true"} {
+		prepared, err := PrepareParams(p, experiment.ParamMap{"enabled": value})
+		if err != nil {
+			t.Fatalf("PrepareParams(%#v): %v", value, err)
+		}
+		if got := prepared["enabled"]; got != true {
+			t.Errorf("enabled with %#v: got %#v, want true", value, got)
+		}
+	}
+	if _, err := PrepareParams(p, experiment.ParamMap{"enabled": "sometimes"}); err == nil {
+		t.Error("invalid bool override: expected an error")
+	}
+}
+
 // Prepared maps must not share mutable storage with the registration or with
 // each other: DL, UL, and later rounds are independent invocations.
 func TestPrepareParamsDefaultsAreIndependent(t *testing.T) {

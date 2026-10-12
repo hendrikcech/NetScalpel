@@ -10,7 +10,7 @@ import (
 
 // ParamMap holds the parameters of one procedure invocation. Values are
 // either normalized typed values produced by procedures.PrepareParams
-// (uint, string, []uint, []string, []pkg.TCPCCA, plus the optional direction
+// (bool, uint, string, []uint, []string, []pkg.TCPCCA, plus the optional direction
 // as a string) or raw strings and []string from the CLI parser, which the
 // accessors below still accept. Wrong dynamic types return errors instead of
 // panicking.
@@ -43,6 +43,27 @@ func (p ParamMap) String(key string) (string, error) {
 		return "", fmt.Errorf("Parameter '%v' must be a string, got %T", key, value)
 	}
 	return s, nil
+}
+
+// Bool returns the boolean stored under key; a string value is parsed.
+func (p ParamMap) Bool(key string) (bool, error) {
+	switch v := p[key].(type) {
+	case bool:
+		return v, nil
+	case string:
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return false, fmt.Errorf("Parameter '%v': failed parsing '%s' as bool", key, v)
+		}
+		return parsed, nil
+	case nil:
+		if _, ok := p[key]; !ok {
+			return false, fmt.Errorf("Parameter '%v' not present", key)
+		}
+		return false, fmt.Errorf("Parameter '%v' must be a bool or a string, got nil", key)
+	default:
+		return false, fmt.Errorf("Parameter '%v' must be a bool or a string, got %T", key, v)
+	}
 }
 
 // Strings returns the strings stored under key; a single string value is

@@ -10,7 +10,7 @@ import (
 )
 
 // Supported parameter types are inferred from the typed ParamSpec defaults:
-// uint, string, []uint, []string, and []pkg.TCPCCA. Preparation is a plain
+// bool, uint, string, []uint, []string, and []pkg.TCPCCA. Preparation is a plain
 // type switch, not a reflection-driven schema system; extend the cases below
 // when a new procedure needs another type.
 
@@ -85,6 +85,8 @@ func canonicalDirection(value any) (string, error) {
 // share mutable storage with the registration.
 func cloneDefault(value any) (any, error) {
 	switch v := value.(type) {
+	case bool:
+		return v, nil
 	case uint:
 		return v, nil
 	case string:
@@ -104,6 +106,8 @@ func cloneDefault(value any) (any, error) {
 
 func applyOverride(spec ParamSpec, override any) (any, error) {
 	switch spec.Default.(type) {
+	case bool:
+		return overrideBool(override)
 	case uint:
 		return overrideUint(override)
 	case string:
@@ -118,6 +122,21 @@ func applyOverride(spec ParamSpec, override any) (any, error) {
 		// register() rejects these defaults; keep PrepareParams safe if a
 		// Procedure is used without registration.
 		return nil, fmt.Errorf("unsupported default type %T", spec.Default)
+	}
+}
+
+func overrideBool(override any) (any, error) {
+	switch v := override.(type) {
+	case bool:
+		return v, nil
+	case string:
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("failed parsing '%s' as bool", v)
+		}
+		return parsed, nil
+	default:
+		return nil, fmt.Errorf("bool parameter accepts a bool or a string value, got %T", override)
 	}
 }
 

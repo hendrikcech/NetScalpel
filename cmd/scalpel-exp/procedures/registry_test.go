@@ -49,7 +49,7 @@ func TestRegisterRejectsDeveloperErrors(t *testing.T) {
 			p.Params = []ParamSpec{{Name: "x", Default: 50}}
 		}},
 		{"unsupported default type", func(p *Procedure) {
-			p.Params = []ParamSpec{{Name: "x", Default: true}}
+			p.Params = []ParamSpec{{Name: "x", Default: int8(50)}}
 		}},
 	}
 	for _, c := range cases {

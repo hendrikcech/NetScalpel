@@ -150,7 +150,7 @@ Unknown keys and values that cannot be parsed are rejected before connecting to
 the measurement server. Parameter descriptions should state units and meaning.
 
 Defaults belong in registration, not duplicated in the procedure implementation.
-Read prepared values using accessors such as Uint, Uints, and TCPCCAs.
+Read prepared values using accessors such as Bool, Uint, Uints, and TCPCCAs.
 
 From the repository root:
 

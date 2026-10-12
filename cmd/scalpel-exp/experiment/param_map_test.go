@@ -54,6 +54,32 @@ func TestParamMapString(t *testing.T) {
 	}
 }
 
+func TestParamMapBool(t *testing.T) {
+	cases := []struct {
+		name    string
+		params  ParamMap
+		want    bool
+		wantErr bool
+	}{
+		{"typed true", ParamMap{"enabled": true}, true, false},
+		{"string false", ParamMap{"enabled": "false"}, false, false},
+		{"missing", ParamMap{}, false, true},
+		{"invalid", ParamMap{"enabled": "sometimes"}, false, true},
+		{"wrong type", ParamMap{"enabled": 1}, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := c.params.Bool("enabled")
+			if (err != nil) != c.wantErr {
+				t.Fatalf("Bool() error = %v, wantErr %v", err, c.wantErr)
+			}
+			if got != c.want {
+				t.Errorf("Bool() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestParamMapUint(t *testing.T) {
 	cases := []struct {
 		name    string
