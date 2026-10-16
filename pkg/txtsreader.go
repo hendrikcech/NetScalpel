@@ -1,7 +1,6 @@
 package pkg
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"syscall"
 	"time"
+	"unsafe"
 
 	mmsg "github.com/anacrolix/mmsg/socket"
 	"golang.org/x/sys/unix"
@@ -99,42 +99,60 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 func (t *TxTsReader) parseOOB(ctx context.Context, msg mmsg.Message) (MsgSent, error) {
 	sentMsg := MsgSent{Len: uint(msg.N)}
 
-	cms, err := unix.ParseSocketControlMessage(msg.OOB[:msg.NN])
-	if err != nil {
-		return sentMsg, fmt.Errorf("TxTsReader: Failed parsing cmsg: %w", err)
+	if msg.Flags&unix.MSG_CTRUNC != 0 {
+		return sentMsg, fmt.Errorf("TxTsReader: truncated ancillary data")
+	}
+	if msg.NN < 0 || msg.NN > len(msg.OOB) {
+		return sentMsg, fmt.Errorf("TxTsReader: invalid OOB length %d", msg.NN)
 	}
 
 	tsSet := false
 	seqSet := false
-	for _, cm := range cms {
-		if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
-			var times unix.ScmTimestamping
-			tsBuf := bytes.NewReader(cm.Data)
-			binary.Read(tsBuf, binary.LittleEndian, &times)
-			ts := times.Ts[0]
-			sentMsg.TsSent = time.Unix(ts.Sec, ts.Nsec)
+	remaining := msg.OOB[:msg.NN]
+	for len(remaining) >= unix.CmsgLen(0) {
+		hdr, data, rest, err := unix.ParseOneSocketControlMessage(remaining)
+		if err != nil {
+			return sentMsg, fmt.Errorf("TxTsReader: Failed parsing cmsg: %w", err)
+		}
+		remaining = rest
+		if hdr.Level == syscall.SOL_SOCKET && hdr.Type == syscall.SCM_TIMESTAMPING {
+			// SCM_TIMESTAMPING carries three native timespecs, not wire-order
+			// integers. Read only the software timestamp, without reflection or
+			// an allocating slice of control messages. Sizeof is a constant and
+			// accounts for the legacy 32-bit Linux timespec layout as well.
+			const timespecSize = int(unsafe.Sizeof(unix.Timespec{}))
+			if len(data) < 3*timespecSize {
+				return sentMsg, fmt.Errorf("TxTsReader: short SCM_TIMESTAMPING")
+			}
+			var sec, nsec int64
+			if timespecSize == 16 {
+				sec = int64(binary.NativeEndian.Uint64(data))
+				nsec = int64(binary.NativeEndian.Uint64(data[8:]))
+			} else {
+				sec = int64(int32(binary.NativeEndian.Uint32(data)))
+				nsec = int64(int32(binary.NativeEndian.Uint32(data[4:])))
+			}
+			if nsec < 0 || nsec >= int64(time.Second) {
+				return sentMsg, fmt.Errorf("TxTsReader: invalid timestamp nanoseconds %d", nsec)
+			}
+			sentMsg.TsSent = time.Unix(sec, nsec)
 			tsSet = true
-		} else if (cm.Header.Level == syscall.SOL_IP || cm.Header.Level == syscall.SOL_IPV6) &&
-			(cm.Header.Type == syscall.IP_RECVERR || cm.Header.Type == syscall.IPV6_RECVERR) {
-			var sockErr unix.SockExtendedErr
-			sockErrBuf := bytes.NewReader(cm.Data)
-			binary.Read(sockErrBuf, binary.LittleEndian, &sockErr)
-			if sockErr.Errno == uint32(syscall.ENOMSG) { // expected for timestamps
-				sentMsg.Seq = uint64(sockErr.Data)
+		} else if (hdr.Level == syscall.SOL_IP && hdr.Type == syscall.IP_RECVERR) ||
+			(hdr.Level == syscall.SOL_IPV6 && hdr.Type == syscall.IPV6_RECVERR) {
+			// sock_extended_err has a fixed 16-byte layout on Linux.
+			if len(data) < 16 {
+				return sentMsg, fmt.Errorf("TxTsReader: short sock_extended_err")
+			}
+			if binary.NativeEndian.Uint32(data) == uint32(syscall.ENOMSG) && data[4] == unix.SO_EE_ORIGIN_TIMESTAMPING {
+				sentMsg.Seq = uint64(binary.NativeEndian.Uint32(data[12:16]))
 				seqSet = true
 			}
 		} else {
-			slog.WarnContext(ctx, "TxTsReader: Unknown cm", "cm", cm)
+			slog.WarnContext(ctx, "TxTsReader: Unknown cm", "header", hdr)
 		}
 	}
 
 	if !tsSet || !seqSet {
-		slog.WarnContext(ctx, "TxTsReader: Missing data in cm",
-			"ts", tsSet,
-			"seq", seqSet,
-			"cms", cms,
-			"oob", fmt.Sprintf("%x", msg.OOB[:msg.NN]),
-		)
 		return sentMsg, fmt.Errorf("TxTsReader: Missing data in cm")
 	}
 
