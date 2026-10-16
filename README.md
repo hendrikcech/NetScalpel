@@ -74,6 +74,10 @@ The client connects to the server to perform targeted network tests. Available c
 - `tcp`: Execute TCP measurements with configurable parameters such as duration and bytes.
 - `icmp`: Send ICMP echo requests at a constant interval.
 
+UDP rate pacing preserves cumulative packet demand and can catch up in bursts
+after scheduler stalls. See [UDP pacing policy and evaluation](docs/udp-pacing.md)
+for the trade-offs of bounded catch-up and a separate kernel pacing experiment.
+
 **Example: Running a Periodic UDP Test**
 
 Start the client to send UDP packets for 1 second with a gap of 200 ms:
