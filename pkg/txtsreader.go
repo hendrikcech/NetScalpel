@@ -21,19 +21,27 @@ import (
 // If not, the results are written to C. If so, it reads the timestamps, waits
 // another 100 ms and checks again.
 type TxTsReader struct {
-	C chan []MsgSent
+	C        chan []MsgSent
+	sentMsgs []MsgSent
 }
 
 func NewTxTsReader() *TxTsReader {
+	return newTxTsReader(1024)
+}
+
+// Allocate before starting the reader goroutine so large runs do not repeatedly
+// copy their timestamp history while the sender is being measured. This is a
+// capacity hint, not a limit: unexpected extra timestamps can still be appended.
+func newTxTsReader(expectedPackets uint) *TxTsReader {
 	return &TxTsReader{
-		C: make(chan []MsgSent, 1),
+		C:        make(chan []MsgSent, 1),
+		sentMsgs: make([]MsgSent, 0, expectedPackets),
 	}
 }
 
 func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
-	sentMsgs := make([]MsgSent, 0, 1024)
 	defer func() {
-		t.C <- sentMsgs
+		t.C <- t.sentMsgs
 		close(t.C)
 	}()
 
@@ -91,7 +99,7 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 				continue
 			}
 			// slog.DebugContext(ctx, "", "sentMsg", sentMsg)
-			sentMsgs = append(sentMsgs, sentMsg)
+			t.sentMsgs = append(t.sentMsgs, sentMsg)
 		}
 	}
 }
@@ -160,13 +168,13 @@ func (t *TxTsReader) parseOOB(ctx context.Context, msg mmsg.Message) (MsgSent, e
 }
 
 // The caller must call the cancel func to stop the reader
-func startTxTsReader(ctx context.Context, conn *net.UDPConn) (*TxTsReader, context.CancelFunc) {
+func startTxTsReader(ctx context.Context, conn *net.UDPConn, expectedPackets uint) (*TxTsReader, context.CancelFunc) {
 	var reader *TxTsReader
 	ctxReader, cancelReader := context.WithCancel(ctx)
 	if err := enableTxTimestamping(conn); err != nil {
 		slog.WarnContext(ctx, "Failed enabling tx timestamping", "error", err.Error())
 	} else {
-		reader = NewTxTsReader()
+		reader = newTxTsReader(expectedPackets)
 		go reader.Run(ctxReader, conn)
 	}
 	return reader, cancelReader
