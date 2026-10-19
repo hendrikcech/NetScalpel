@@ -6,14 +6,13 @@ package pkg
 import (
 	"encoding/csv"
 	"fmt"
-	"log/slog"
 	"os"
 	"sort"
 	"strconv"
 	"time"
 )
 
-// C: Written to CSV
+// MsgResult describes one sent packet and all matching receive copies.
 type MsgResult struct {
 	Seq    uint64
 	TsSent time.Time
@@ -21,10 +20,17 @@ type MsgResult struct {
 	Owd    time.Duration
 	Len    uint
 	Lost   bool
+	// Additional receive timestamps, in chronological order after TsRcvd.
+	TsRcvdDups []time.Time
 }
 
 func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
+	// Group copies by sequence and select the earliest arrival, independently
+	// of input order. Preserve all other copies for the extended CSV output.
 	sort.Slice(rcvd, func(i, j int) bool {
+		if rcvd[i].Seq == rcvd[j].Seq {
+			return rcvd[i].TsRcvd.Before(rcvd[j].TsRcvd)
+		}
 		return rcvd[i].Seq < rcvd[j].Seq
 	})
 
@@ -32,9 +38,8 @@ func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
 	num := uint64(len(sent))
 	results := make([]MsgResult, 0, num)
 	for seq := uint64(0); seq < num; seq++ {
-		// slog.Debug("STA", "seq", seq, "rcvdSeq", rcvd[resultIdx].Seq, "resultIdx", resultIdx)
 		var result MsgResult
-		if resultIdx > len(rcvd)-1 || seq < rcvd[resultIdx].Seq {
+		if resultIdx >= len(rcvd) || seq < rcvd[resultIdx].Seq {
 			result = MsgResult{
 				Seq:    seq,
 				TsSent: sent[seq].TsSent,
@@ -43,14 +48,6 @@ func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
 				Len:    sent[seq].Len,
 				Lost:   true,
 			}
-		} else if seq > rcvd[resultIdx].Seq {
-			for resultIdx < len(rcvd) && seq > rcvd[resultIdx].Seq {
-				slog.Warn("Received duplicate packet", "seq", rcvd[resultIdx].Seq)
-				resultIdx += 1
-				// slog.Debug("DUP", "seq", seq, "rcvdSeq", rcvd[resultIdx].Seq, "resultIdx", resultIdx)
-			}
-			seq -= 1
-			continue
 		} else if seq == rcvd[resultIdx].Seq {
 			tsSent := sent[seq].TsSent
 			result = MsgResult{
@@ -62,13 +59,12 @@ func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
 				Lost:   false,
 			}
 			resultIdx += 1
+			for resultIdx < len(rcvd) && rcvd[resultIdx].Seq == seq {
+				result.TsRcvdDups = append(result.TsRcvdDups, rcvd[resultIdx].TsRcvd)
+				resultIdx++
+			}
 		}
 		results = append(results, result)
-		// rcvdSeq := -1
-		// if resultIdx < len(rcvd) {
-		// 	rcvdSeq = int(rcvd[resultIdx].Seq)
-		// }
-		// slog.Debug("ROW", "seq", seq, "rcvdSeq", rcvdSeq, "resultIdx", resultIdx, "result", result)
 	}
 
 	return results
@@ -76,7 +72,16 @@ func processUDP(sent []MsgSent, rcvd []MsgRcvd) []MsgResult {
 
 func generateUDPResultRows(results []MsgResult) [][]string {
 	rows := make([][]string, 1+len(results))
-	rows[0] = []string{"seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost"}
+	rows[0] = []string{"seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost", "dup_count"}
+	maxDups := 0
+	for _, r := range results {
+		if len(r.TsRcvdDups) > maxDups {
+			maxDups = len(r.TsRcvdDups)
+		}
+	}
+	for n := 1; n <= maxDups; n++ {
+		rows[0] = append(rows[0], "ts_rcvd_"+strconv.Itoa(n))
+	}
 
 	for i := uint(0); i < uint(len(results)); i++ {
 		r := results[i]
@@ -98,6 +103,14 @@ func generateUDPResultRows(results []MsgResult) [][]string {
 			owdStr,
 			strconv.FormatUint(uint64(r.Len), 10),
 			strconv.FormatBool(r.Lost),
+			strconv.Itoa(len(r.TsRcvdDups)),
+		}
+		for n := 0; n < maxDups; n++ {
+			ts := ""
+			if n < len(r.TsRcvdDups) && !r.TsRcvdDups[n].IsZero() {
+				ts = r.TsRcvdDups[n].Format(time.RFC3339Nano)
+			}
+			rows[i+1] = append(rows[i+1], ts)
 		}
 	}
 

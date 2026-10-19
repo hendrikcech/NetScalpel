@@ -140,12 +140,26 @@ git diff cmd/scalpel-exp/procedures/
 Both tools provide detailed packet and connection information in CSV format, facilitating post-hoc analysis. 
 
 ### UDP Tests
-UDP tests output information about each individual packet:
+UDP tests output one row per sent packet (including lost packets). The first six
+columns remain `seq,ts_sent,ts_rcvd,owd_ms,size,lost`, followed by `dup_count`
+and any duplicate receive timestamps:
 - `seq`: Sequence number starting at 0.
 - `ts_sent`: Timestamp taken when the packet is sent (via kernel software transmission timestamps).
-- `ts_rcvd`: Timestamp when the packet was received by the server (via Linux receive timestamping). Empty if lost.
-- `owd_ms`: Calculated one-way delay in milliseconds.
+- `ts_rcvd`: Earliest arrival timestamp at the receiver (via Linux receive timestamping). Empty if lost.
+- `owd_ms`: Calculated one-way delay in milliseconds, using the earliest arrival. Empty if lost.
+- `size`: Packet payload size in bytes.
 - `lost`: Boolean indicating if the packet was lost.
+- `dup_count`: Number of extra received copies, excluding the first arrival. Always present; `0` for packets received once or lost.
+- `ts_rcvd_1` through `ts_rcvd_N`: Additional arrival timestamps in chronological order, after `ts_rcvd`. `N` is the maximum `dup_count` across the file. Every row has the same number of columns; unused timestamp fields are blank. No extra timestamp columns are emitted when there are no duplicates.
+
+For example, a file containing up to two extra copies has this header:
+
+```csv
+seq,ts_sent,ts_rcvd,owd_ms,size,lost,dup_count,ts_rcvd_1,ts_rcvd_2
+```
+
+Consumers should read the header rather than assume a fixed CSV width. Duplicate
+copies do not create additional packet rows or count as additional sent packets.
 
 ### TCP Tests
 TCP tests sample kernel-level metrics every 5 ms via the `tcp_info` socket option. Key fields include:
