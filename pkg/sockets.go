@@ -82,6 +82,7 @@ func enableTxTimestamping(conn syscall.Conn) error {
 		return err
 	}
 
+	var cbErr error
 	err = rawConn.Control(func(fd uintptr) {
 		flags := unix.SOF_TIMESTAMPING_TX_SOFTWARE |
 			unix.SOF_TIMESTAMPING_TX_HARDWARE |
@@ -90,19 +91,25 @@ func enableTxTimestamping(conn syscall.Conn) error {
 			unix.SOF_TIMESTAMPING_OPT_ID |
 			unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
-		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
+		cbErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
+		if cbErr != nil {
+			return
+		}
 
 		var flag int
-		flag, err = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING)
-		if err != nil {
+		flag, cbErr = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING)
+		if cbErr != nil {
 			return
 		}
 		if flag != flags {
-			err = fmt.Errorf("TxTimestamping flags not set as expected: %v != %v", flags, flag)
+			cbErr = fmt.Errorf("TxTimestamping flags not set as expected: %v != %v", flags, flag)
 		}
 	})
 
-	return err
+	if err != nil {
+		return err
+	}
+	return cbErr
 }
 
 func enableRxTimestamping(conn syscall.Conn) error {
@@ -111,6 +118,7 @@ func enableRxTimestamping(conn syscall.Conn) error {
 		return err
 	}
 
+	var cbErr error
 	err = rawConn.Control(func(fd uintptr) {
 		flags := unix.SOF_TIMESTAMPING_RX_SOFTWARE |
 			unix.SOF_TIMESTAMPING_RX_HARDWARE |
@@ -119,10 +127,13 @@ func enableRxTimestamping(conn syscall.Conn) error {
 			unix.SOF_TIMESTAMPING_OPT_ID |
 			unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
-		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
+		cbErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
 	})
 
-	return err
+	if err != nil {
+		return err
+	}
+	return cbErr
 }
 
 // Used by the application
