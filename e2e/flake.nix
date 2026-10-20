@@ -51,6 +51,8 @@
               netemDL,
               client,
               check,
+              extraNodePackages ? [ ],
+              routerSetup ? "",
             }:
             {
               inherit name;
@@ -62,7 +64,8 @@
               nodePackages = [
                 scalpelRun
                 pkgs.coreutils
-              ];
+              ]
+              ++ extraNodePackages;
               nodes = {
                 client = {
                   networking.interfaces.veth0.ipv4 = {
@@ -92,6 +95,7 @@
                   sysctl."net.ipv4.ping_group_range" = "0 0"; # only mapped GIDs are allowed inside the user namespace
                 };
                 router = {
+                  postSetup = routerSetup;
                   networking.interfaces = {
                     veth0 = {
                       ipv4.addresses = [
@@ -146,6 +150,11 @@
             };
 
           configs = {
+            # Capture after the router qdisc, at the actual DL receiver. Avoid
+            # probabilistic expectations: compare every copy against the pcap.
+            duplicates = mkDeliveryScenario "duplicates" "delay 20ms duplicate 100%";
+            reordering = mkDeliveryScenario "reordering" "delay 50ms reorder 100% gap 5";
+
             # Scenario 1: OWD baseline. Both endpoints share the host clock,
             # so the 20 ms netem delay is exact ground truth for owd_ms.
             owd = mkScenario {
@@ -300,6 +309,32 @@
             };
           };
           experiments = lib.mapAttrs (name: config: nixnet.mkExperiment config) configs;
+
+          mkDeliveryScenario = name: impairment: mkScenario {
+            name = "e2e-${name}";
+            netemUL = { };
+            netemDL = { };
+            extraNodePackages = [ pkgs.python3 pkgs.tcpdump pkgs.iproute2 ];
+            routerSetup = ''
+              # Only impair the eight-byte measurement payloads (UDP length
+              # 16), not empty NAT probes or TCP RPC traffic. Otherwise a
+              # reordered data packet can be consumed as the probe reply.
+              tc qdisc replace dev veth0 root handle 1: prio bands 3 \
+                priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+              tc qdisc add dev veth0 parent 1:3 handle 30: netem limit 10000 ${impairment}
+              tc filter add dev veth0 parent 1: protocol ip prio 1 u32 \
+                match u8 0x45 0xff at 0 match ip protocol 17 0xff \
+                match u16 0x0010 0xffff at 24 flowid 1:3
+            '';
+            client = ''
+              python3 ${./.}/udp_delivery.py run --ip ${serverIP} --interface veth0
+            '';
+            check = ''
+              ${pkgs.python3}/bin/python3 ${./.}/udp_delivery.py check --scenario ${name} \
+                --csv client/delivery.csv --pcap client/delivery.pcap --capture-log client/capture.log
+              ${verify} txts --log server/server.log
+            '';
+          };
 
           # Runs every scenario back to back in one invocation. Each
           # experiment's own workDir keys results by scenario name, so
