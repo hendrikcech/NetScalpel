@@ -197,7 +197,7 @@ func (s *BurstSender) ReceiverMode() Mode {
 }
 
 func (s *BurstSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn))
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn), s.Params.Num)
 	defer tsReaderCancel()
 
 	msgsSent, err := s.run(ctx, conn, raddr)
@@ -311,7 +311,7 @@ func (s *PeriodicSender) ReceiverMode() Mode {
 }
 
 func (r *PeriodicSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn))
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn), r.Params.NumPackets())
 	defer tsReaderCancel()
 
 	msgsSent, err := r.run(ctx, conn, raddr)
@@ -440,7 +440,7 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
 	}
 
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn))
+	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn), uint(cap(r.msgs)))
 	defer tsReaderCancel()
 
 	// Wake a SendMsgs blocked on a full socket buffer when the test ends;

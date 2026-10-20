@@ -38,6 +38,9 @@ jobs:
       # sudo is passwordless on GitHub runners, so the tcpdump tests run
       # here even though they skip on typical dev machines.
       - name: go test
+        env:
+          # Local IPv6-disabled hosts may skip socket tests; CI must run both families.
+          NETSCALPEL_REQUIRE_IPV6: "1"
         run: >
           go run gotest.tools/gotestsum@v1.13.0
           --format testname

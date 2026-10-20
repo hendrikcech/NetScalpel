@@ -66,6 +66,36 @@ func TestPacketsDue(t *testing.T) {
 	}
 }
 
+// A service cap and a debt cap are different policies. Neither is substituted
+// for the production cumulative-count policy without an explicit decision.
+func TestCatchUpPolicyTradeoff(t *testing.T) {
+	const pps = 100_000
+	const capPerWindow = 100
+	elapsed := 20 * time.Millisecond
+	due, ahead := packetsDue(elapsed, pps, 0)
+	if ahead || due != 2000 {
+		t.Fatalf("after stall: due=%d ahead=%v", due, ahead)
+	}
+	served := min(due, uint(capPerWindow))
+	debt := due - served
+	if served != 100 || debt != 1900 {
+		t.Fatalf("bounded service: served=%d debt=%d", served, debt)
+	}
+	// A cap equal to the target rate cannot retire debt while demand continues.
+	for window := 0; window < 10; window++ {
+		elapsed += time.Millisecond
+		due, _ = packetsDue(elapsed, pps, served)
+		served += min(due, uint(capPerWindow))
+		if remaining := numPacketsGoal(elapsed, pps) - served; remaining != debt {
+			t.Fatalf("window %d: remaining debt=%d, want %d", window, remaining, debt)
+		}
+	}
+	// Discarding the initial excess instead makes that debt a permanent deficit.
+	if discarded := uint(2000 - capPerWindow); discarded != debt {
+		t.Fatalf("discarded demand=%d, want %d", discarded, debt)
+	}
+}
+
 // Simulates a segment tick by tick: at every tick the loop sends what
 // packetsDue asks for. After simulated time T at rate P, exactly ⌊T·P⌋
 // packets must have been requested (checked against a big.Int oracle so the

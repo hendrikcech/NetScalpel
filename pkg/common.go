@@ -61,17 +61,38 @@ type MsgRcvd struct {
 }
 
 func (m *Msg) Encode(buf []byte) (int, error) {
-	if len(buf) < int(8+m.PadN) {
+	if len(buf) < 8 || m.PadN > uint(len(buf)-8) {
 		return 0, fmt.Errorf("Provided buffer of %v bytes too small for seq and %v padding bytes", len(buf), m.PadN)
 	}
 	binary.BigEndian.PutUint64(buf[0:], m.Seq)
-	fillRandom(buf[8 : 8+m.PadN])
+	copyPadding(buf[8 : 8+m.PadN])
 	return int(8 + m.PadN), nil
 }
 
-// fillRandom fills b with non-cryptographic random padding (so links cannot
-// compress it away). math/rand/v2's global source is goroutine-safe and
-// cheap enough for the send hot path, unlike crypto/rand.
+// Keep a shared, immutable pool large enough not to repeat a short payload on
+// every packet. Initialization happens before measurements start. Random window
+// selection needs only one random draw per packet, rather than one per 8 bytes.
+// This is measurement padding, not cryptographic randomness: compressors with
+// sufficiently large cross-packet dictionaries can still recognize reused data.
+var paddingPool = func() []byte {
+	b := make([]byte, 4<<20)
+	fillRandom(b)
+	return b
+}()
+
+func copyPadding(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	offset := randv2.IntN(len(paddingPool))
+	for len(b) > 0 {
+		n := copy(b, paddingPool[offset:])
+		b = b[n:]
+		offset = 0
+	}
+}
+
+// fillRandom is used only to initialize the padding pool.
 func fillRandom(b []byte) {
 	for len(b) >= 8 {
 		binary.LittleEndian.PutUint64(b, randv2.Uint64())
