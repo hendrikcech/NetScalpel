@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Verify NetScalpel end-to-end measurement output against netem ground truth.
 
-Parses the CSV written by `scalpel-run` (seq, ts_sent, ts_rcvd, owd_ms, size,
-lost) and asserts that the measured values match the emulated link. Exits
+Parses the UDP CSV written by `scalpel-run` (seq, ts_sent, ts_rcvd, owd_ms,
+size, lost, dup_count, and optional ts_rcvd_1..N columns) and asserts that
+the measured values match the emulated link. Exits
 non-zero on any violation; the nixnet experiment uses this exit code as the
 test verdict.
 
@@ -12,6 +13,7 @@ Requires Python >= 3.11 (datetime.fromisoformat with nanosecond timestamps).
 import argparse
 import csv
 import math
+import re
 import statistics
 import sys
 from dataclasses import dataclass
@@ -37,17 +39,32 @@ class Row:
     lost: bool
 
 
+def arrival_key(value: str) -> tuple[datetime, str]:
+    # datetime truncates fractions to microseconds; retain the nanosecond tail
+    # so arrivals within the same microsecond are still checked in order.
+    fraction = re.search(r":\d{2}[.,](\d+)", value)
+    tail = fraction[1][6:] if fraction else ""
+    return datetime.fromisoformat(value), tail.ljust(3, "0")
+
+
 def parse_rows(path: str, errors: list[str]) -> list[Row]:
     rows = []
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
-        expected = ["seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost"]
-        if reader.fieldnames != expected:
-            errors.append(f"{path}: header {reader.fieldnames} != {expected}")
+        expected = ["seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost", "dup_count"]
+        fields = reader.fieldnames or []
+        extra_fields = [f"ts_rcvd_{i}" for i in range(1, len(fields) - len(expected) + 1)]
+        if fields != expected + extra_fields:
+            errors.append(f"{path}: header {reader.fieldnames} != {expected + extra_fields}")
             return rows
+        max_duplicates = 0
         for r in reader:
-            rows.append(
-                Row(
+            where = f"{path}: line {reader.line_num}"
+            if None in r or any(value is None for value in r.values()):
+                errors.append(f"{where}: row width does not match header")
+                continue
+            try:
+                row = Row(
                     seq=int(r["seq"]),
                     ts_sent=datetime.fromisoformat(r["ts_sent"]),
                     ts_rcvd=(
@@ -57,6 +74,44 @@ def parse_rows(path: str, errors: list[str]) -> list[Row]:
                     size=int(r["size"]),
                     lost=r["lost"] == "true",
                 )
+                dup_count = int(r["dup_count"])
+                extras = [
+                    datetime.fromisoformat(r[field]) if r[field] else None
+                    for field in extra_fields
+                ]
+            except ValueError as e:
+                errors.append(f"{where}: invalid value: {e}")
+                continue
+            if r["lost"] not in ("true", "false"):
+                errors.append(f"{where}: lost must be true or false")
+            if dup_count < 0 or dup_count > len(extra_fields):
+                errors.append(f"{where}: dup_count {dup_count} outside [0, {len(extra_fields)}]")
+            max_duplicates = max(max_duplicates, dup_count)
+            if any(ts is None for ts in extras[:dup_count]) or any(
+                ts is not None for ts in extras[dup_count:]
+            ):
+                errors.append(f"{where}: duplicate timestamps do not match dup_count {dup_count}")
+            if row.lost and (dup_count != 0 or any(ts is not None for ts in extras)):
+                errors.append(f"{where}: lost row has duplicate copies")
+            arrivals = [
+                arrival_key(r[field]) for field in ["ts_rcvd", *extra_fields] if r[field]
+            ]
+            try:
+                if any(a > b for a, b in zip(arrivals, arrivals[1:])):
+                    errors.append(f"{where}: receive timestamps are not chronological")
+            except TypeError:
+                errors.append(f"{where}: receive timestamps have inconsistent time zones")
+            if row.lost and (row.ts_rcvd is not None or row.owd_ms is not None):
+                errors.append(f"{where}: lost row has ts_rcvd/owd_ms set")
+                continue
+            if not row.lost and (row.ts_rcvd is None or row.owd_ms is None):
+                errors.append(f"{where}: received row is missing ts_rcvd/owd_ms")
+                continue
+            rows.append(row)
+        if len(extra_fields) != max_duplicates:
+            errors.append(
+                f"{path}: {len(extra_fields)} duplicate timestamp columns, "
+                f"but maximum dup_count is {max_duplicates}"
             )
     return rows
 

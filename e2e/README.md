@@ -25,12 +25,16 @@ the software TX timestamp and thus be invisible to the measurement.
 | `asym` | 30 ms UL / 10 ms DL delay | UL and DL runs show their direction's delay (catches swapped-direction bugs) |
 | `icmp-udp` | 20 ms delay each direction | `icmp` and `udp-periodic` each within OWD bounds and their medians agree within 1 ms |
 | `tcp` | 20 ms delay, 50 Mbit rate each direction | `tcp` UL and DL: RTT ≈ 40 ms at start, `MinRTT` ≈ 40 ms, acked throughput ≤ link rate and ≥ half of it |
+| `duplicates` | DL: 20 ms delay + 100% duplication | Every sent sequence captured twice; CSV records both exact receive timestamps, `dup_count=1`, earliest-arrival OWD, one row per sent packet |
+| `reordering` | DL: 50 ms delay, every fifth packet bypasses delay | Capture must show first-arrival sequence inversions; CSV preserves each exact arrival timestamp and earliest-arrival OWD, no loss or extra rows |
 
 ## Usage
 
 ```sh
 nix run ./e2e#owd    # from the repo root
 nix run ./e2e#loss
+nix run ./e2e#duplicates
+nix run ./e2e#reordering
 nix run ./e2e#owd 1-5   # repeat 5 times (indexed output dirs)
 nix run ./e2e#all       # run every scenario back to back; exits non-zero if any fails
 ```
@@ -46,4 +50,32 @@ an existing output directory:
 
 ```sh
 python3 e2e/verify.py owd --csv out/e2e-owd/00/client/owd_ul.csv --delay-ms 20
+```
+
+### Duplicate and reordering ground truth
+
+These two scenarios use `udp_delivery.py` to capture **inbound packets at the
+client receiver**, after the router's qdisc. The independent capture is compared
+against every CSV sequence, payload size, copy count, and receive timestamp at
+nanosecond precision. OWD must use the earliest captured arrival. Identical
+timestamps still represent separate copies. Missing capture-drop statistics or
+nonzero kernel capture drops fail the test; pcaps and logs remain in the run
+directory. These scenarios currently cover downlink UDP, not uplink or ICMP.
+
+Netem percentage-based impairments are normally probabilistic, and a seed does
+not eliminate scheduling variation. Here `duplicate 100%` avoids random selection;
+`delay 50ms reorder 100% gap 5` lets every fifth packet bypass the delay. We do not
+assume a fixed reordered sequence: the capture must demonstrate actual reordering
+and the CSV must match what arrived. A run with no reordering fails rather than
+passing vacuously. The duplicate scenario requires exactly two copies of every
+sent packet. Nixnet's pinned interface exposes neither option, so these qdiscs
+are installed with `tc` in the router's post-setup hook.
+Only the eight-byte measurement datagrams are classified into netem; empty
+NAT-probe replies and TCP control traffic bypass it. This keeps reordered data
+from racing the probe handshake, which otherwise consumes the first UDP reply.
+
+Run the oracle's regression tests without network privileges:
+
+```sh
+python3 -m unittest discover -s e2e -p 'test_udp_delivery.py'
 ```

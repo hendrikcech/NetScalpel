@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -15,8 +16,8 @@ import (
 // FuzzProcessUDP compares the two-pointer algorithm against a trivially
 // correct map-based oracle. rcvdSeqs is interpreted as one received packet
 // per byte, so duplication, reordering, and foreign seqs (>= numSent) all
-// occur naturally. Timestamps are a function of the seq, so duplicates of a
-// seq are identical and it does not matter which one processUDP picks.
+// occur naturally. Copy timestamps run backwards relative to input order, so
+// selecting the first observed copy instead of the earliest timestamp fails.
 func FuzzProcessUDP(f *testing.F) {
 	f.Add(uint8(6), []byte{0, 1, 2, 3, 4, 5})          // all received
 	f.Add(uint8(6), []byte{0, 1, 3, 4, 5})             // loss
@@ -31,37 +32,36 @@ func FuzzProcessUDP(f *testing.F) {
 		tsSent := func(seq uint64) time.Time {
 			return base.Add(time.Duration(seq) * time.Millisecond)
 		}
-		tsRcvd := func(seq uint64) time.Time {
-			return tsSent(seq).Add(20 * time.Millisecond)
-		}
-
 		sent := make([]MsgSent, numSent)
 		for i := range sent {
 			seq := uint64(i)
 			sent[i] = MsgSent{Seq: seq, TsSent: tsSent(seq), Len: 8 + uint(seq%100)}
 		}
 		rcvd := make([]MsgRcvd, len(rcvdSeqs))
+		rcvdBySeq := make(map[uint64][]time.Time)
 		for i, b := range rcvdSeqs {
 			seq := uint64(b)
-			rcvd[i] = MsgRcvd{Seq: seq, TsRcvd: tsRcvd(seq), Len: 28}
+			ts := tsSent(seq).Add(20*time.Millisecond + time.Duration(len(rcvdSeqs)-i)*time.Nanosecond)
+			rcvd[i] = MsgRcvd{Seq: seq, TsRcvd: ts, Len: 28}
+			rcvdBySeq[seq] = append(rcvdBySeq[seq], ts)
 		}
 
 		res := processUDP(sent, rcvd)
 
-		rcvdBySeq := make(map[uint64]MsgRcvd, len(rcvd))
-		for _, r := range rcvd {
-			rcvdBySeq[r.Seq] = r
-		}
 		exp := make([]MsgResult, len(sent))
 		for i, s := range sent {
-			if r, ok := rcvdBySeq[s.Seq]; ok {
+			if timestamps, ok := rcvdBySeq[s.Seq]; ok {
+				sort.Slice(timestamps, func(i, j int) bool { return timestamps[i].Before(timestamps[j]) })
 				exp[i] = MsgResult{
 					Seq:    s.Seq,
 					TsSent: s.TsSent,
-					TsRcvd: r.TsRcvd,
-					Owd:    r.TsRcvd.Sub(s.TsSent),
+					TsRcvd: timestamps[0],
+					Owd:    timestamps[0].Sub(s.TsSent),
 					Len:    s.Len,
 					Lost:   false,
+				}
+				if len(timestamps) > 1 {
+					exp[i].TsRcvdDups = timestamps[1:]
 				}
 			} else {
 				exp[i] = MsgResult{Seq: s.Seq, TsSent: s.TsSent, Len: s.Len, Lost: true}

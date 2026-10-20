@@ -18,20 +18,15 @@ import (
 
 // --- processUDP edge cases ---
 
-// checkProcessUDP compares the Seq and Lost fields of a processUDP result
-// against the expectation. The full struct (timestamps, OWD, Len) is pinned
-// exactly by FuzzProcessUDP's map oracle and by TestProcessUDPOwd.
+// checkProcessUDP compares complete results, including duplicate timestamps.
 func checkProcessUDP(t *testing.T, exp []MsgResult, res []MsgResult) {
 	if len(exp) != len(res) {
 		t.Fatalf("Wrong result length")
 	}
 
 	for i := range exp {
-		if exp[i].Seq != res[i].Seq {
-			t.Fatalf("Wrong sequence number")
-		}
-		if exp[i].Lost != res[i].Lost {
-			t.Fatalf("Wrong loss status")
+		if !reflect.DeepEqual(exp[i], res[i]) {
+			t.Fatalf("result %d = %+v, want %+v", i, res[i], exp[i])
 		}
 	}
 }
@@ -58,14 +53,19 @@ func TestProcessUDPSentEmpty(t *testing.T) {
 }
 
 func TestProcessUDPDupLastSeq(t *testing.T) {
-	// The existing dup test only covers interior dups; duplicates of the
-	// final seq must be ignored, not looped over or appended.
+	// Final-sequence duplicates stay on one row, with the earliest timestamp
+	// selected even when it is neither the first nor last copy in input order.
+	base := time.Unix(1700000000, 0)
+	early, middle, late := base.Add(time.Millisecond), base.Add(2*time.Millisecond), base.Add(3*time.Millisecond)
 	sent := []MsgSent{{Seq: 0}, {Seq: 1}, {Seq: 2}, {Seq: 3}}
 	rcvd := []MsgRcvd{
-		{Seq: 0}, {Seq: 1}, {Seq: 2}, {Seq: 3}, {Seq: 3}, {Seq: 3},
+		{Seq: 0}, {Seq: 1}, {Seq: 2},
+		{Seq: 3, TsRcvd: late}, {Seq: 3, TsRcvd: early}, {Seq: 3, TsRcvd: middle},
 	}
+	sent[3].TsSent = base
 	exp := []MsgResult{
-		{Seq: 0}, {Seq: 1}, {Seq: 2}, {Seq: 3},
+		{Seq: 0}, {Seq: 1}, {Seq: 2},
+		{Seq: 3, TsSent: base, TsRcvd: early, Owd: time.Millisecond, TsRcvdDups: []time.Time{middle, late}},
 	}
 	res := processUDP(sent, rcvd)
 	checkProcessUDP(t, exp, res)
@@ -160,7 +160,7 @@ func assertUDPReorderingCSV(t *testing.T, sent []MsgSent, received []MsgRcvd) {
 	if len(rows) != len(sent)+1 {
 		t.Fatalf("got %d CSV rows, want %d", len(rows), len(sent)+1)
 	}
-	if !reflect.DeepEqual(rows[0], []string{"seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost"}) {
+	if !reflect.DeepEqual(rows[0], []string{"seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost", "dup_count"}) {
 		t.Fatalf("unexpected CSV header: %v", rows[0])
 	}
 	timestamps := make(map[uint64]time.Time, len(sent))
@@ -168,7 +168,7 @@ func assertUDPReorderingCSV(t *testing.T, sent []MsgSent, received []MsgRcvd) {
 		r := want[s.Seq]
 		expected := []string{
 			fmt.Sprint(s.Seq), s.TsSent.Format(time.RFC3339Nano), r.TsRcvd.Format(time.RFC3339Nano),
-			fmtDurationMs(r.TsRcvd.Sub(s.TsSent)), fmt.Sprint(s.Len), "false",
+			fmtDurationMs(r.TsRcvd.Sub(s.TsSent)), fmt.Sprint(s.Len), "false", "0",
 		}
 		if !reflect.DeepEqual(rows[i+1], expected) {
 			t.Fatalf("CSV row %d = %v, want %v", i, rows[i+1], expected)
@@ -186,10 +186,12 @@ func assertUDPReorderingCSV(t *testing.T, sent []MsgSent, received []MsgRcvd) {
 
 func TestProcessUDPLossHeadAndTail(t *testing.T) {
 	sent := []MsgSent{{Seq: 0}, {Seq: 1}, {Seq: 2}, {Seq: 3}, {Seq: 4}}
-	rcvd := []MsgRcvd{{Seq: 1}, {Seq: 2}, {Seq: 3}}
+	// Reordered interior duplicates must neither hide head/tail loss nor
+	// introduce extra rows. Identical timestamps still represent extra copies.
+	rcvd := []MsgRcvd{{Seq: 3}, {Seq: 1}, {Seq: 2}, {Seq: 1}, {Seq: 3}}
 	exp := []MsgResult{
 		{Seq: 0, Lost: true},
-		{Seq: 1}, {Seq: 2}, {Seq: 3},
+		{Seq: 1, TsRcvdDups: []time.Time{{}}}, {Seq: 2}, {Seq: 3, TsRcvdDups: []time.Time{{}}},
 		{Seq: 4, Lost: true},
 	}
 	res := processUDP(sent, rcvd)
@@ -200,7 +202,10 @@ func TestProcessUDPOwd(t *testing.T) {
 	tsSent := time.Date(2026, 1, 2, 15, 4, 5, 0, time.UTC)
 	tsRcvd := tsSent.Add(12345 * time.Microsecond)
 	sent := []MsgSent{{Seq: 0, TsSent: tsSent, Len: 1400}}
-	rcvd := []MsgRcvd{{Seq: 0, TsRcvd: tsRcvd, Len: 1400}}
+	rcvd := []MsgRcvd{
+		{Seq: 0, TsRcvd: tsRcvd.Add(time.Millisecond), Len: 1400},
+		{Seq: 0, TsRcvd: tsRcvd, Len: 1400},
+	}
 
 	res := processUDP(sent, rcvd)
 	if len(res) != 1 {
@@ -219,6 +224,9 @@ func TestProcessUDPOwd(t *testing.T) {
 	if r.Len != 1400 {
 		t.Errorf("Len = %v, want 1400", r.Len)
 	}
+	if !reflect.DeepEqual(r.TsRcvdDups, []time.Time{tsRcvd.Add(time.Millisecond)}) {
+		t.Errorf("duplicate timestamps = %v", r.TsRcvdDups)
+	}
 }
 
 // --- CSV generation ---
@@ -231,16 +239,17 @@ func TestGenerateUDPResultRowsGolden(t *testing.T) {
 		// Lost: empty ts_rcvd and owd_ms
 		{Seq: 0, TsSent: tsSent, Len: 1400, Lost: true},
 		// Received
-		{Seq: 1, TsSent: tsSent, TsRcvd: tsRcvd, Owd: tsRcvd.Sub(tsSent), Len: 1400},
+		{Seq: 1, TsSent: tsSent, TsRcvd: tsRcvd, Owd: tsRcvd.Sub(tsSent), Len: 1400,
+			TsRcvdDups: []time.Time{tsRcvd.Add(time.Millisecond), tsRcvd.Add(2 * time.Millisecond)}},
 		// Zero-time formatting (e.g. a msg without a kernel timestamp)
-		{Seq: 2, TsSent: time.Time{}, TsRcvd: tsRcvd, Owd: 0, Len: 8},
+		{Seq: 2, TsSent: time.Time{}, TsRcvd: tsRcvd, Owd: 0, Len: 8, TsRcvdDups: []time.Time{tsRcvd}},
 	}
 
 	exp := [][]string{
-		{"seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost"},
-		{"0", "2026-01-02T15:04:05.123456789Z", "", "", "1400", "true"},
-		{"1", "2026-01-02T15:04:05.123456789Z", "2026-01-02T15:04:05.135802467Z", "12.345678", "1400", "false"},
-		{"2", "0001-01-01T00:00:00Z", "2026-01-02T15:04:05.135802467Z", "0", "8", "false"},
+		{"seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost", "dup_count", "ts_rcvd_1", "ts_rcvd_2"},
+		{"0", "2026-01-02T15:04:05.123456789Z", "", "", "1400", "true", "0", "", ""},
+		{"1", "2026-01-02T15:04:05.123456789Z", "2026-01-02T15:04:05.135802467Z", "12.345678", "1400", "false", "2", "2026-01-02T15:04:05.136802467Z", "2026-01-02T15:04:05.137802467Z"},
+		{"2", "0001-01-01T00:00:00Z", "2026-01-02T15:04:05.135802467Z", "0", "8", "false", "1", "2026-01-02T15:04:05.135802467Z", ""},
 	}
 
 	rows := generateUDPResultRows(results)
