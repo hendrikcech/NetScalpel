@@ -12,6 +12,7 @@ type rateSendMsgsStub struct {
 	t      *testing.T
 	counts []int
 	seqs   []uint64
+	lens   []int
 }
 
 func (s *rateSendMsgsStub) SendMsgs(msgs []mmsg.Message, _ int) (int, error) {
@@ -26,8 +27,44 @@ func (s *rateSendMsgsStub) SendMsgs(msgs []mmsg.Message, _ int) (int, error) {
 		var msg Msg
 		msg.Decode(packet.Buffers[0])
 		s.seqs = append(s.seqs, msg.Seq)
+		s.lens = append(s.lens, len(packet.Buffers[0]))
 	}
 	return n, nil
+}
+
+func TestRateSenderPayloadSizeChanges(t *testing.T) {
+	r := RateSender{tx: make([]mmsg.Message, 3)}
+	for i := range r.tx {
+		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
+	}
+	conn := &rateSendMsgsStub{t: t}
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+	// Reuse every buffer across growing and shrinking payloads, including
+	// an empty payload and one that fills the entire backing array.
+	for _, payload := range []uint{0, 16, 1492, 64, 1492} {
+		first := len(conn.seqs)
+		sent, err := r.sendRound(context.Background(), conn, addr, 3, payload)
+		if err != nil || sent != 3 {
+			t.Fatalf("sendRound(payload=%d) = (%d, %v), want (3, nil)", payload, sent, err)
+		}
+		for i := first; i < len(conn.seqs); i++ {
+			if conn.seqs[i] != uint64(i) || r.msgs[i].Seq != uint64(i) {
+				t.Errorf("packet %d: wire sequence %d, recorded sequence %d", i, conn.seqs[i], r.msgs[i].Seq)
+			}
+			if conn.lens[i] != int(8+payload) || r.msgs[i].Len != 8+payload {
+				t.Errorf("packet %d: wire length %d, recorded length %d, want %d", i, conn.lens[i], r.msgs[i].Len, 8+payload)
+			}
+		}
+	}
+	// Capacity is still a hard limit; an oversized payload must not be sent.
+	before := len(conn.seqs)
+	sent, err := r.sendRound(context.Background(), conn, addr, 3, 1493)
+	if err == nil || sent != 0 {
+		t.Fatalf("oversized sendRound = (%d, %v), want (0, error)", sent, err)
+	}
+	if len(conn.seqs) != before || len(r.msgs) != before || r.seq != uint64(before) {
+		t.Fatal("oversized payload changed sent messages or sequence")
+	}
 }
 
 func TestRateSenderPartialWriteSequence(t *testing.T) {

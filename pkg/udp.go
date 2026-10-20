@@ -570,7 +570,9 @@ func (r *RateSender) sendRound(ctx context.Context, conn interface {
 		for i := 0; uint(i) < packetsRound; i++ {
 			msg := &r.tx[i]
 			b := Msg{Seq: r.seq + uint64(i), PadN: payloadSize}
-			n, err := b.Encode(msg.Buffers[0])
+			// The previous packet shortened the slice; encode using the full
+			// capacity so later segments can grow their payload again.
+			n, err := b.Encode(msg.Buffers[0][:cap(msg.Buffers[0])])
 			if err != nil {
 				// r.msgs contains unsent messages
 				return sent, err
