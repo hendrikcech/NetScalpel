@@ -5,6 +5,8 @@ package pkg
 // tests assert the *current intended* behavior.
 
 import (
+	"encoding/csv"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -101,6 +103,85 @@ func TestProcessUDPOutOfOrderRcvd(t *testing.T) {
 	}
 	res := processUDP(sent, rcvd)
 	checkProcessUDP(t, exp, res)
+}
+
+// Arrival order and sequence order deliberately disagree. Check the complete
+// processing/output path, not just sequence numbers and loss status.
+func TestUDPReorderingCSV(t *testing.T) {
+	base := time.Date(2026, 1, 2, 15, 4, 5, 123456789, time.UTC)
+	sent := make([]MsgSent, 6)
+	for i := range sent {
+		sent[i] = MsgSent{Seq: uint64(i), TsSent: base.Add(time.Duration(i) * time.Millisecond), Len: uint(100 + i)}
+	}
+	var received []MsgRcvd
+	for i, seq := range []uint64{0, 1, 2, 3, 5, 4} {
+		received = append(received, MsgRcvd{
+			Seq: seq, TsRcvd: base.Add(time.Duration(10+i) * time.Millisecond), Len: sent[seq].Len,
+		})
+	}
+	assertUDPReorderingCSV(t, sent, received)
+}
+
+func assertUDPReorderingCSV(t *testing.T, sent []MsgSent, received []MsgRcvd) {
+	t.Helper()
+	// Snapshot the oracle before processUDP sorts its input in place.
+	want := make(map[uint64]MsgRcvd, len(received))
+	for _, r := range received {
+		want[r.Seq] = r
+	}
+	results := processUDP(sent, received)
+	if len(results) != len(sent) {
+		t.Fatalf("got %d results, want %d", len(results), len(sent))
+	}
+	for i, s := range sent {
+		r, ok := want[s.Seq]
+		if !ok {
+			t.Fatalf("missing received packet %d", s.Seq)
+		}
+		expected := MsgResult{Seq: s.Seq, TsSent: s.TsSent, TsRcvd: r.TsRcvd, Owd: r.TsRcvd.Sub(s.TsSent), Len: s.Len}
+		if !reflect.DeepEqual(results[i], expected) {
+			t.Errorf("result %d = %+v, want %+v", i, results[i], expected)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "reordered.csv")
+	if err := writeCSV(path, generateUDPResultRows(results)); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != len(sent)+1 {
+		t.Fatalf("got %d CSV rows, want %d", len(rows), len(sent)+1)
+	}
+	if !reflect.DeepEqual(rows[0], []string{"seq", "ts_sent", "ts_rcvd", "owd_ms", "size", "lost"}) {
+		t.Fatalf("unexpected CSV header: %v", rows[0])
+	}
+	timestamps := make(map[uint64]time.Time, len(sent))
+	for i, s := range sent {
+		r := want[s.Seq]
+		expected := []string{
+			fmt.Sprint(s.Seq), s.TsSent.Format(time.RFC3339Nano), r.TsRcvd.Format(time.RFC3339Nano),
+			fmtDurationMs(r.TsRcvd.Sub(s.TsSent)), fmt.Sprint(s.Len), "false",
+		}
+		if !reflect.DeepEqual(rows[i+1], expected) {
+			t.Fatalf("CSV row %d = %v, want %v", i, rows[i+1], expected)
+		}
+		ts, err := time.Parse(time.RFC3339Nano, rows[i+1][2])
+		if err != nil {
+			t.Fatal(err)
+		}
+		timestamps[s.Seq] = ts
+	}
+	if !timestamps[5].Before(timestamps[4]) {
+		t.Fatalf("packet 5 received at %v, must precede packet 4 at %v", timestamps[5], timestamps[4])
+	}
 }
 
 func TestProcessUDPLossHeadAndTail(t *testing.T) {
