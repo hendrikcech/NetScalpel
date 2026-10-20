@@ -550,7 +550,9 @@ func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Add
 	}
 }
 
-func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.Addr, packets uint, payloadSize uint) (uint, error) {
+func (r *RateSender) sendRound(ctx context.Context, conn interface {
+	SendMsgs([]mmsg.Message, int) (int, error)
+}, raddr net.Addr, packets uint, payloadSize uint) (uint, error) {
 	packetsLeft := packets
 	sent := uint(0)
 	for packetsLeft > 0 {
@@ -598,7 +600,7 @@ func (r *RateSender) sendRound(ctx context.Context, conn *mmsg.Conn, raddr net.A
 		if n != int(packetsRound) {
 			slog.WarnContext(ctx, fmt.Sprintf("Only sent %v packets instead of %v", n, packetsRound))
 			r.msgs = r.msgs[:len(r.msgs)-(int(packetsRound)-n)]
-			r.seq -= uint64(packetsRound) - uint64(n)
+			// r.seq already advanced by the number actually sent above.
 			break
 		}
 	}
