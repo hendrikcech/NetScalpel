@@ -1,0 +1,187 @@
+NETSCALPEL STATIC UDP RATE INVESTIGATION
+======================================
+
+Scope
+-----
+Branch: investigate/udp-rate-stability. Sender/production code is unchanged.
+New benchmark: e2e/udp_stability.py; usage: e2e/UDP_STABILITY.md.
+This report records a single-host investigation, not a universal timing SLA.
+
+Code review (no production changes)
+-----------------------------------
+1. Unlimited catch-up: pkg/udp.go:479-498,526-545,553-604 computes a
+   cumulative packet goal and immediately drains the entire deficit, in batches
+   up to 1024 packets. The nominal five-packet ticker interval is NOT a burst
+   cap. At 500 nominal Mbps a 60ms interruption creates about 2678 packets of
+   debt, allowing three back-to-back batches on resumption. This is a NetScalpel
+   pacing-policy choice; a scheduler interruption need not originate in it.
+
+2. Stale tick times: pkg/udp.go:526-527 uses the timestamp delivered by the Go
+   ticker rather than current monotonic elapsed time. After delayed delivery,
+   the first resumed iteration may use an old goal, delaying catch-up until a
+   later tick. Using current elapsed time would remove that extra lag, but
+   would NOT solve unlimited catch-up or provide real-time scheduling.
+
+3. Accounting: cmd/scalpel-run/main.go:125-131 computes pps using 1400 bytes;
+   pkg/common.go:63-69 adds an 8-byte sequence. Actual UDP payload = 1408.
+   At nominal 500Mbps expected payload rate = 502.847488Mbps. The benchmark
+   reports both; this constant discrepancy cannot explain a time-varying dip.
+
+4. Measurement caveat: pkg/txtsreader.go:167-179 discards all kernel TX times
+   on a count/size mismatch. Fallback timestamps in pkg/udp.go:562-579 are
+   taken once per batch BEFORE encoding and sendmmsg, not at packet departure.
+   Check logs before interpreting older CSV plots. Capture matching is needed
+   to distinguish this from true egress bursts.
+
+5. Defects found, not exercised as identified causes here:
+   - pkg/udp.go:595-601 advances seq by the successful short-send count, then
+     subtracts the unsent count again. Example: request100/send60 advances seq
+     by20, not60; sequence reuse/underflow can corrupt result matching.
+   - pkg/sockets.go:85-105,114-125 overwrites errors set in rawConn.Control's
+     callback with Control's own return value, potentially hiding failed
+     timestamp setup. TX also overwrites the setsockopt error with getsockopt.
+   - pkg/udp.go:571-576 reuses the previous slice length when encoding; a later
+     larger-payload segment can fail despite available buffer capacity. This
+     does not affect the fixed-size CLI tests.
+
+6. Optimization candidates, not proven root causes:
+   - pkg/common.go:63-84 randomizes padding anew for every packet. Reusable
+     incompressible buffers could remove substantial per-packet CPU work.
+   - pkg/txtsreader.go:87-125 uses allocating/reflection-based ancillary-data
+     decoding per packet; consider direct fixed-layout decoding and profiling.
+   - pkg/txtsreader.go:34 starts timestamp storage at1024 and grows it during
+     the run, alongside a separate sender-record stream. Preallocation avoids
+     repeated large copies/GC pressure on long/high-rate runs.
+   - Kernel pacing (e.g. suitably designed SO_TXTIME/FQ) or bounded catch-up
+     deserves separate evaluation. A debt/burst cap trades cumulative count
+     accuracy for short-window stability and needs an explicit policy decision.
+
+Attribution limits
+------------------
+There is no code-defined 60ms ramp/stall. External scheduling, cgroup quota,
+host/VM contention, GC, encoding work and socket backpressure are plausible
+triggers, not interchangeable explanations. A controlled sender pause can prove
+the catch-up response without proving the cause of an unexplained original dip.
+Independent software capture matching rules out CSV-only timestamp artifacts
+for the matched run, but does not establish physical NIC/wire timing. A remote
+tap/receiver or hardware timestamps are needed for that stronger claim.
+
+Measured results: private loopback
+----------------------------------
+2026-10-16; base revision cbe868c20a74aa6702ef2a38877b66ec8577f83a.
+Normal Go 1.26.8 build, Linux 6.18.55, KVM guest exposing four i7-4770 CPUs.
+tcpdump 4.99.6, 128-byte snapshots, 16 MiB capture buffer, nanosecond pcap.
+Each profile ran sequentially, three 2-second transfers per listed rate.
+An earlier exploratory sweep overlapping Go tests was NOT used in these numbers.
+
+All 39 loopback captures matched every CSV sequence/size, had zero kernel
+capture drops, and retained kernel TX timestamps (no userspace fallback).
+Raw evidence: out/udp-stability-{clean,pinned,compete,pause60}/.
+Those generated directories are gitignored; this report preserves key results.
+
+Clean profile: mean UDP-payload Mbps averaged across repeats; outlier percentages
+are ranges across repeats, outside +/-10% of the effective 1408-byte goal.
+
+nominal   mean payload   10ms outliers     60ms outliers  first60ms %goal
+  10         10.038       37.5-54.0%           0%         99.03-102.77
+ 100        100.484       10.0-20.5%           0%         99.87-109.21
+ 250        251.227        6.5-10.5%           0%         99.08-100.35
+ 500        502.575        7.5-10.5%           0%         98.71-101.40
+ 750        753.922        9.5-12.0%           0%        100.70-101.20
+1000       1004.831        7.5- 9.5%           0%        100.33-101.60
+
+At 500 Mbps: 70.15-73.85% of 1 ms bins were outliers; maximum interpacket gaps
+were 1.97-2.71 ms. Short-window instability is real, despite a very good average.
+No sustained ~60 ms startup undershoot reproduced in these clean 500 Mbps runs.
+At 10 Mbps, 100% of 1 ms bins are outliers even for ideal near-uniform pacing:
+only 0.892 packets/window are expected. Do NOT interpret this as 100% bad pacing.
+Low-rate quantization and ~millisecond wake/batching effects contribute to the
+large 10 ms low-rate counts; rate dependence is not simply higher=always worse.
+
+Controlled CPU profiles (sender threads pinned to CPU 1; receiver/capture free):
+nominal   pinned 10ms outliers  pinned+busy competitor 10ms  competitor 60ms
+ 100          24.5-26.0%                14.0-23.0%                0%
+ 500           8.0-12.5%                35.5-39.5%                0%
+1000           7.0-11.0%                55.5-63.5%             12.12-15.15%
+
+The competitor is one continuously busy Python process on the same CPU. At 1 Gbps,
+60 ms window rates in one run ranged 712.64-1179.15 Mbps, with a 34.1 ms cumulative
+traffic deficit before catch-up. Whole-test mean still ~1005 Mbps. This shows
+CPU availability matters much more at high rates; it does not identify a
+universal hardware capacity threshold or reproduce a slower CPU's frequency.
+Read local cgroup cpu.max was 'max 100000'; no local quota was configured.
+Host-wide steal ticks were small, not correlated to individual outliers.
+
+Deliberate external 60 ms SIGSTOP at 500 Mbps (three runs):
+- Actual injected pause 60.25-60.32 ms, starting 114.0-122.6 ms after seq=0.
+- Captured max gap 60.38-61.35 ms, followed by real over-goal transmission.
+- Example: five successive zero-rate 10 ms bins, followed by 10 ms bins at
+  1208.6, 1409.1, 1647.9 Mbps. Whole-test payload mean 502.72 Mbps.
+- Example cumulative deficit reached 65.22 ms of target-rate traffic, then ended
+  only 0.493 ms behind. This reproduces the deficit/catch-up SHAPE with a known
+  external trigger; it is not an unexplained spontaneous 60 ms startup ramp.
+
+Capture-vs-reporting evidence:
+Across all 39 runs, per-run median(capture minus CSV TX) was 0.218-4.140 us.
+Largest deviation from its run median was 145.443 us, not tens of milliseconds.
+Common-origin 10 ms capture and CSV rates differed by at most 1.126 Mbps (one
+1408-byte packet crossing a window boundary). The large stalls/bursts above
+therefore occurred in actual kernel-observed packet transmission, not merely
+CSV send-timestamp reporting. Physical-wire timing remains untested.
+
+Measured results: namespace E2E veth topology
+-------------------------------------------
+'nix run ./e2e#udp-stability' built and completed successfully. It uses an
+unshaped client/router/server path with capture on client veth0, not loopback.
+The pinned Nix package used Go 1.26.4 rather than the standalone Go 1.26.8;
+these are corroborating measurements, NOT a controlled topology-only A/B.
+Evidence: out/e2e-udp-stability/00/client/stability/.
+All 18 captures were valid, lossless against sent sequence/size, with zero
+capture drops and kernel TX timestamping retained.
+
+nominal   mean payload Mbps   10ms outliers   60ms outliers
+  10          10.040           39.5-48.0%          0%
+ 100         100.531           12.0-16.0%          0%
+ 250         251.319            6.0-15.5%          0%
+ 500         502.622            6.0-13.0%          0%
+ 750         753.978            7.0-12.0%          0%
+1000        1005.440            4.0- 5.5%          0%
+
+At 500 Mbps, first 60 ms averaged 98.08-99.35% of goal; no 60 ms ramp deficit.
+First-packet delay from the pacer-start log across all rates was 0.57-3.30 ms
+(log resolution ~1 ms). Median capture-minus-CSV TX was negative on this tap,
+-8.675 to -0.486 us, as the packet tap observes a different point in the stack.
+Maximum median-relative timestamp deviation was 147.398 us; 10 ms bin
+differences were still at most one packet (1.126 Mbps).
+
+Capture overhead control
+------------------------
+Six additional standalone transfers ran without tcpdump, otherwise using the
+same Go 1.26.8 binary, private loopback and 2-second duration. CSV retained kernel
+TX timestamps in all six; these controls are NOT independent capture evidence.
+At 500 Mbps, CSV 10 ms outliers were 9.5-11.0%; at 1000 Mbps, 8.5-11.5%.
+All 60 ms windows were within tolerance. These distributions overlap the
+capture-on baseline, so capture overhead is not needed to explain the observed
+jitter. Small non-interleaved samples cannot exclude a subtler observer effect.
+Evidence and exact CLI commands: out/udp-stability-capture-off/summary.json.
+
+Validation
+----------
+- Six deterministic Python analyzer tests pass (no timing assertions).
+- Ruff formatting/lint checks pass for the new Python files.
+- New nixnet E2E benchmark built and completed all 18 transfers successfully.
+- 'go test ./...' failed only TestTCPDLBBR: this kernel has no BBR support.
+- 'go test ./... -skip ^TestTCPDLBBR$' passed. Existing permission-dependent
+  tests may skip in this unprivileged environment; this is not a new regression.
+- No sender/production Go code changed. No fixes or optimizations above were
+  implemented, and no changes were pushed.
+
+Conclusion
+-----------------
+Yes: short-window jitter and deficit/catch-up overshoot are reproducible.
+No: a spontaneous ~60 ms settling deficit at 500 Mbps is not established here.
+Both layers matter: external CPU/scheduling delays can cause deficits, while
+NetScalpel's unlimited repayment policy turns them into overshoot. Code review
+also identifies avoidable CPU/allocation work and independent correctness bugs.
+The precise cause on the original sender still requires running the benchmark
+there and correlating timing with quota/scheduler/GC/backpressure evidence.

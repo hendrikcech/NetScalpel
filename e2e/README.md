@@ -79,3 +79,11 @@ Run the oracle's regression tests without network privileges:
 ```sh
 python3 -m unittest discover -s e2e -p 'test_udp_delivery.py'
 ```
+
+## Static UDP pacing benchmark
+
+`nix run ./e2e#udp-stability` runs an unshaped send-rate sweep with independent
+sender-side packet capture and a plain-text stability/outlier report. It is
+informational and excluded from `#all`. See [UDP_STABILITY.md](UDP_STABILITY.md)
+for standalone use on the original sender, CPU-contention/pause controls,
+timestamp validation, and measurement limitations.

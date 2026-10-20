@@ -336,6 +336,25 @@
             '';
           };
 
+          # Informational benchmark, deliberately excluded from `all`: no
+          # shaped bottleneck and no timing-dependent pass/fail assertions.
+          stability = nixnet.mkExperiment (mkScenario {
+            name = "e2e-udp-stability";
+            netemUL = { };
+            netemDL = { };
+            extraNodePackages = [
+              pkgs.python3
+              pkgs.tcpdump
+              pkgs.util-linux
+            ];
+            client = ''
+              python3 ${./udp_stability.py} run --ip ${serverIP} --interface veth0 \
+                --rates 10 100 250 500 750 1000 --repeats 3 --duration-ms 2000 \
+                --out ./stability
+            '';
+            check = "cat client/stability/report.txt";
+          });
+
           # Runs every scenario back to back in one invocation. Each
           # experiment's own workDir keys results by scenario name, so
           # they don't clash; a failure in one scenario doesn't stop the
@@ -359,6 +378,7 @@
             default = experiments.owd;
             mermaid = nixnet.mkMermaid configs.owd;
             all = all;
+            udp-stability = stability;
           };
         };
     };
