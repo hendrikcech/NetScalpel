@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -92,6 +93,17 @@ func TestProcedureInvocationFinishesQuicklyAfterCancel(t *testing.T) {
 	returnsWithin(t, 2500*time.Millisecond, "finishProcedureInvocation", func() {
 		c.finishProcedureInvocation(ctx, e, rpcClient, resultPath)
 	})
+	b, err := os.ReadFile(filepath.Join(resultPath, "info.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest experiment.Manifest
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Status != "cancelled" || manifest.ExecutionEnd == nil || len(manifest.Measurements) != 1 || manifest.Measurements[0].GatherStatus != "not_gathered" {
+		t.Fatalf("bad cancelled manifest: %s", b)
+	}
 
 	// The cancelled invocation must also have aborted the
 	// server-side receiver; its (partial) result must be available promptly

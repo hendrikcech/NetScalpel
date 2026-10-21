@@ -1,12 +1,13 @@
-//go:build !noserver
-
 package main
 
+import "github.com/alecthomas/kong"
+
 var cli struct {
-	IP       string `help:"Server IP." default:"0.0.0.0"`
-	Port     uint   `help:"Server port." default:"8500"`
-	Log      string `help:"Write all log output to this file."`
-	LogLevel int    `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
+	Version  kong.VersionFlag `help:"Print running build version and provenance."`
+	IP       string           `help:"Server IP." default:"0.0.0.0"`
+	Port     uint             `help:"Server port." default:"8500"`
+	Log      string           `help:"Write all log output to this file."`
+	LogLevel int              `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
 
 	Client struct {
 		Results   string `help:"Path to the results folder." default:"results"`

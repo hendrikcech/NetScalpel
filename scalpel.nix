@@ -3,10 +3,14 @@
 # flake as an input: a `path:../..` input would copy the whole working tree
 # (including gitignored results) into the store, while the enclosing git
 # fetcher only picks up tracked files.
-{ pkgs, src }:
+{ pkgs, src, version ? "2.0.0-dev", provenance ? { } }:
 let
   common = {
-    version = "0.1";
+    inherit version;
+    ldflags = [ "-X=github.com/hendrikcech/netscalpel/internal/buildinfo.Version=${version}" ]
+      ++ pkgs.lib.mapAttrsToList
+        (name: value: "-X=github.com/hendrikcech/netscalpel/internal/buildinfo.${name}=${value}")
+        provenance;
     inherit src;
     vendorHash = "sha256-VPPj3XgKxzAyze3U0cc2Q/vbuMd7U7wMVauMyGGtLWY=";
   };
