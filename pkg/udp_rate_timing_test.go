@@ -191,17 +191,25 @@ func (s *rateGatedDeadliner) deadlines() []time.Time {
 	return append([]time.Time(nil), s.calls...)
 }
 
+func (s *rateGatedDeadliner) SendMsgs([]mmsg.Message, int) (int, error) {
+	// Keep the first segment inside a write until its cancellation callback
+	// has started. Otherwise cleanup may legitimately stop the callback
+	// before it runs, leaving the test waiting forever for entered.
+	<-s.entered
+	return 0, &net.OpError{Op: "write", Net: "udp", Err: context.DeadlineExceeded}
+}
+
 func TestRateTimingCancellationCallbackJoinedBeforeReset(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
-		r := newRateTimingSender(RateParamsW{{Duration: time.Second}, {Duration: time.Second}})
+		r := newRateTimingSender(RateParamsW{{Pps: 1000, Duration: time.Second}, {Duration: time.Second}})
 		socket := &rateTimingSocket{}
 		s := &rateGatedDeadliner{socket: socket, end: start.Add(time.Second), entered: make(chan struct{}), release: make(chan struct{})}
 		var releaseOnce sync.Once
 		release := func() { releaseOnce.Do(func() { close(s.release) }) }
 		defer release()
 		done := make(chan error, 1)
-		go func() { done <- r.runSegments(context.Background(), s, socket, nil, start) }()
+		go func() { done <- r.runSegments(context.Background(), s, s, nil, start) }()
 		synctest.Wait()
 		time.Sleep(time.Second)
 		<-s.entered
