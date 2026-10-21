@@ -68,8 +68,8 @@ type SenderClient struct {
 func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
 	if c.ID == "" {
 		c.ID = GenID(c.Sender.SenderMode().String())
-		ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 	}
+	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 
 	switch c.Direction {
 	case UL:
@@ -582,15 +582,16 @@ type CommandClient struct {
 	StartAt  time.Time
 	LocalDir string
 
-	ID      string
-	tempDir string
+	ID        string
+	Artifacts []string
+	tempDir   string
 }
 
 func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 	if c.ID == "" {
 		c.ID = GenID(c.Params.Name())
-		ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 	}
+	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 
 	if c.Local {
 		var command Command
@@ -663,6 +664,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 			}
 
 			encPath := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", entry.Name()))
+			c.Artifacts = append(c.Artifacts, encPath)
 			f, err := os.Create(encPath)
 			if err != nil {
 				return fmt.Errorf("Failed os.Create(%v): %w", encPath, err)
@@ -698,6 +700,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 
 		for filename, bufEnc := range result.Files {
 			path := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", filename))
+			c.Artifacts = append(c.Artifacts, path)
 			if err := os.WriteFile(path, bufEnc, 0644); err != nil {
 				return fmt.Errorf("Failed writing returned file to %v: %w", path, err)
 			}

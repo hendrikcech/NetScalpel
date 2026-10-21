@@ -13,16 +13,18 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/uuid"
 
+	"github.com/hendrikcech/netscalpel/internal/buildinfo"
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 var cli struct {
-	IP        string `help:"Server IP." default:"0.0.0.0"`
-	Port      uint   `help:"Server port." default:"8500"`
-	Direction string `help:"Direction: UL or DL." default:"ul" enum:"dl,ul,DL,UL"`
-	Log       string `help:"Write debug log to this file."`
-	LogLevel  int    `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
-	Out       string `help:"CSV file to write results to (default: stdout)."`
+	Version   kong.VersionFlag `help:"Print running build version and provenance."`
+	IP        string           `help:"Server IP." default:"0.0.0.0"`
+	Port      uint             `help:"Server port." default:"8500"`
+	Direction string           `help:"Direction: UL or DL." default:"ul" enum:"dl,ul,DL,UL"`
+	Log       string           `help:"Write debug log to this file."`
+	LogLevel  int              `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
+	Out       string           `help:"CSV file to write results to (default: stdout)."`
 
 	UDPBurst struct {
 		Num     uint `help:"Number of packets to send in burst." default:"10"`
@@ -56,7 +58,7 @@ var cli struct {
 }
 
 func main() {
-	kongctx := kong.Parse(&cli)
+	kongctx := kong.Parse(&cli, kong.Vars{"version": buildinfo.String()})
 	if kongctx.Error != nil {
 		fmt.Printf("kong error: %v\n", kongctx.Error.Error())
 		os.Exit(1)

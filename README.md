@@ -13,6 +13,15 @@
 
 NetScalpel is a custom network measurement tool designed for fine-grained control over packet transmission timing and scheduling. Written in Go, it utilizes a client-server architecture to coordinate test execution and exchange results over a TCP control channel. The toolkit leverages kernel-level timestamps to record per-packet send and receive times with microsecond precision, enabling accurate computation of one-way delay (OWD), packet loss, and receive rates. Accurate analysis requires NTP synchronization between the client and server endpoints.
 
+## Versions
+
+- **v1.0** is the original released version used for the SIGCOMM paper below.
+- **v2.0 is currently in development.** It breaks output compatibility by replacing
+  `scalpel-exp`'s `info.txt` with `info.json` and adding duplicate-reporting CSV
+  columns (`dup_count` and additional receive timestamps).
+
+In v2, use `--version` with either binary to check its version.
+
 ## Citation
 
 NetScalpel was developed and used for the measurements presented in the paper *Dissecting the StarLink: Characterizing Queuing and Flow Dynamics in the Starlink Network*, published at SIGCOMM'26. 
@@ -138,6 +147,9 @@ git diff cmd/scalpel-exp/procedures/
 ## Output Format
 
 Both tools provide detailed packet and connection information in CSV format, facilitating post-hoc analysis. 
+
+`scalpel-exp` also writes an `info.json` execution manifest for each procedure
+invocation, recording its configuration, schedule, results and output files.
 
 ### UDP Tests
 UDP tests output one row per sent packet (including lost packets). The first six

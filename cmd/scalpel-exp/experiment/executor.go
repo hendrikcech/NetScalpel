@@ -1,12 +1,10 @@
 package experiment
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net/rpc"
-	"os"
-	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -19,10 +17,17 @@ type Executor struct {
 	RpcClient *rpc.Client
 	G         *errgroup.Group
 	Clients   []pkg.Client
-	// DryRun records the clients a procedure schedules without running them,
-	// so the schedule can be validated with no sockets and no sleeps.
+	// DryRun is the existing schedule golden-test mode: it records clients
+	// without running them, opening sockets, or sleeping.
 	DryRun bool
-	ctx    context.Context
+	// DeferStart separates planning from execution so the complete initial
+	// manifest can be written before Start launches any measurements.
+	DeferStart bool
+	Started    bool
+	Manifest   *Manifest
+	mu         sync.Mutex
+	records    []*Measurement
+	ctx        context.Context
 }
 
 func NewExecutor(ctx context.Context, ip string, rpcClient *rpc.Client) *Executor {
@@ -37,10 +42,49 @@ func NewExecutor(ctx context.Context, ip string, rpcClient *rpc.Client) *Executo
 
 func (e *Executor) RunClient(client pkg.Client) {
 	e.Clients = append(e.Clients, client)
+	m := describe(client)
+	e.records = append(e.records, m)
 	if e.DryRun {
 		return
 	}
-	e.G.Go(func() error { return client.Run(e.ctx, e.RpcClient) })
+	if !e.DeferStart {
+		e.launch(client, m)
+	}
+}
+
+func (e *Executor) Start() {
+	if e.DryRun || e.Started {
+		return
+	}
+	e.Started = true
+	for i, c := range e.Clients {
+		e.launch(c, e.records[i])
+	}
+}
+
+func (e *Executor) launch(c pkg.Client, m *Measurement) {
+	e.Started = true
+	e.G.Go(func() error {
+		e.mu.Lock()
+		now := time.Now().UTC()
+		m.ExecutionStart = &now
+		m.Status = "running"
+		e.mu.Unlock()
+		err := c.Run(e.ctx, e.RpcClient)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		end := time.Now().UTC()
+		m.ExecutionEnd = &end
+		m.Status = "ran"
+		if err != nil {
+			m.Status = "failed"
+			if e.ctx.Err() != nil {
+				m.Status = "cancelled"
+			}
+			m.Errors = append(m.Errors, errorRecord(m.Endpoint, "run", err))
+		}
+		return err
+	})
 }
 
 // AbortServerTests asks the server to cancel every test this executor
@@ -49,7 +93,7 @@ func (e *Executor) RunClient(client pkg.Client) {
 // called once the round context is cancelled, so the RPCs run on a short
 // fresh context.
 func (e *Executor) AbortServerTests() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	g := new(errgroup.Group)
 	for _, client := range e.Clients {
@@ -62,29 +106,28 @@ func (e *Executor) AbortServerTests() error {
 
 func (e *Executor) GatherResults() error {
 	g := new(errgroup.Group)
-	for _, client := range e.Clients {
+	for i, client := range e.Clients {
 		g.Go(func() error {
-			return client.Gather(e.ctx, e.RpcClient)
+			err := client.Gather(e.ctx, e.RpcClient)
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			m := e.records[i]
+			if err != nil {
+				m.GatherStatus = "failed"
+				if m.Status != "cancelled" {
+					m.Status = "failed"
+				}
+				m.Errors = append(m.Errors, errorRecord(m.Endpoint, "gather", err))
+			} else {
+				m.GatherStatus = "complete"
+				if m.Status == "ran" {
+					m.Status = "complete"
+				}
+			}
+			return err
 		})
 	}
 	return g.Wait()
-}
-
-func (e *Executor) WriteInfo(path string) error {
-	infoPath := filepath.Join(path, "info.txt")
-	f, err := os.Create(infoPath)
-	if err != nil {
-		return fmt.Errorf("Failed creating %v: %w", infoPath, err)
-	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
-	defer w.Flush()
-
-	for _, client := range e.Clients {
-		w.WriteString(client.Summary())
-		w.WriteString("\n")
-	}
-	return nil
 }
 
 // Tcpdump schedules paired local and remote packet captures from start for
