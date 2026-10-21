@@ -67,11 +67,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # The three binaries are built separately; check each of them exists
-      # and runs, which also covers the noserver variant.
+      # Check that both binaries exist and run.
       - name: Smoke test the image
         run: |
-          for bin in scalpel-run scalpel-exp scalpel-exp_noserver; do
+          for bin in scalpel-run scalpel-exp; do
             docker run --rm --entrypoint "$bin" netscalpel:ci --help
           done
 

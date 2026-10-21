@@ -18,8 +18,7 @@ COPY internal ./internal
 # -w -s drops the DWARF sections and the symbol table, -trimpath keeps the
 # build reproducible and independent of the source location.
 ENV CGO_ENABLED=0
-RUN go build -trimpath -ldflags="-w -s" -o /out/ ./cmd/scalpel-run ./cmd/scalpel-exp && \
-    go build -trimpath -ldflags="-w -s" -tags=noserver -o /out/scalpel-exp_noserver ./cmd/scalpel-exp
+RUN go build -trimpath -ldflags="-w -s" -o /out/ ./cmd/scalpel-run ./cmd/scalpel-exp
 
 # No ENTRYPOINT or CMD, so the binaries stay directly runnable:
 #   docker run --rm --cap-add=net_raw --cap-add=net_admin \

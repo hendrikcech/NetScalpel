@@ -1,5 +1,3 @@
-//go:build !noserver
-
 package main
 
 var cli struct {
