@@ -22,6 +22,9 @@ jobs:
           sudo modprobe tcp_bbr || true
           sudo sysctl -w net.ipv4.tcp_allowed_congestion_control="reno cubic bbr" || true
 
+      - name: Validate pacing benchmark analyzer
+        run: python3 -m unittest discover -s benchmarks -p 'test_*.py' -v
+
       - run: go vet ./...
 
       # ST1005 is excluded in staticcheck.conf.

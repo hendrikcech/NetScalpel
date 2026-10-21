@@ -171,6 +171,13 @@ TCP tests sample kernel-level metrics every 5 ms via the `tcp_info` socket optio
 
 Transfers can be bounded by the number of bytes (`--bytes`) or duration (`--duration` in milliseconds).
 
+## UDP sender timing
+
+Rate-segment deadlines are anchored to one sender start. Late segments do not
+extend the schedule or replay expired demand, and equal-rate segments remain
+distinct. See the [timing investigation](docs/rate-sender-pacing-investigation.md)
+for measured effects, the deadline policy, and repeatable benchmark instructions.
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
