@@ -11,11 +11,12 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"github.com/hendrikcech/netscalpel/internal/buildinfo"
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 func main() {
-	kongctx := kong.Parse(&cli)
+	kongctx := kong.Parse(&cli, kong.Vars{"version": buildinfo.String()})
 	if kongctx.Error != nil {
 		fmt.Printf("kong error: %v\n", kongctx.Error.Error())
 		os.Exit(1)
@@ -86,7 +87,10 @@ func main() {
 			LogLevel:  slog.Level(cli.LogLevel),
 			Logfile:   logfile,
 		}
-		client.Run(ctx)
+		if err := client.Run(ctx); err != nil {
+			slog.ErrorContext(ctx, "Experiment failed", "error", err)
+			os.Exit(1)
+		}
 
 	case "server":
 		slogCh := pkg.SetupSlogMulti(slog.Level(cli.LogLevel), true, logfile)

@@ -18,7 +18,13 @@ COPY internal ./internal
 # -w -s drops the DWARF sections and the symbol table, -trimpath keeps the
 # build reproducible and independent of the source location.
 ENV CGO_ENABLED=0
-RUN go build -trimpath -ldflags="-w -s" -o /out/ ./cmd/scalpel-run ./cmd/scalpel-exp
+ARG VERSION=2.0.0-dev
+ARG RELEASE=
+ARG REVISION=
+ARG VCS_TIME=
+ARG DIRTY=
+RUN flags="-w -s -X github.com/hendrikcech/netscalpel/internal/buildinfo.Version=${VERSION} -X github.com/hendrikcech/netscalpel/internal/buildinfo.Release=${RELEASE} -X github.com/hendrikcech/netscalpel/internal/buildinfo.Revision=${REVISION} -X github.com/hendrikcech/netscalpel/internal/buildinfo.Time=${VCS_TIME} -X github.com/hendrikcech/netscalpel/internal/buildinfo.Dirty=${DIRTY}"; \
+    go build -trimpath -ldflags="$flags" -o /out/ ./cmd/scalpel-run ./cmd/scalpel-exp
 
 # No ENTRYPOINT or CMD, so the binaries stay directly runnable:
 #   docker run --rm --cap-add=net_raw --cap-add=net_admin \

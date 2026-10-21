@@ -63,6 +63,9 @@ jobs:
         with:
           context: .
           tags: netscalpel:ci
+          build-args: |
+            REVISION=${{ github.sha }}
+            DIRTY=false
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -72,6 +75,7 @@ jobs:
         run: |
           for bin in scalpel-run scalpel-exp; do
             docker run --rm --entrypoint "$bin" netscalpel:ci --help
+            docker run --rm --entrypoint "$bin" netscalpel:ci --version
           done
 
   # Fails fast, e.g., on a stale vendorHash in scalpel.nix
