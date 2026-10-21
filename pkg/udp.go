@@ -383,6 +383,9 @@ type RateParams struct {
 var _ SenderParams = (*RateParams)(nil)
 
 func (r RateParams) NumPackets() uint {
+	if r.Duration <= 0 {
+		return 0
+	}
 	// return uint(float64(uint(r.RateMbps*float64(1e6))/8/r.PayloadSize) * r.Duration.Seconds())
 	return uint(float64(r.Pps) * r.Duration.Seconds())
 }
@@ -406,7 +409,7 @@ func (r RateParamsW) NumPackets() uint {
 func (r RateParamsW) GetDuration() time.Duration {
 	var duration time.Duration
 	for i := range r {
-		duration += r[i].GetDuration()
+		duration += max(0, r[i].GetDuration())
 	}
 	return duration
 }
@@ -434,6 +437,7 @@ func (s *RateSender) ReceiverMode() Mode {
 }
 
 func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
+	start := time.Now()
 	r.msgs = make([]MsgSent, 0, int(float64(r.Params.NumPackets())*1.1))
 	r.tx = make([]mmsg.Message, 1024)
 	for i := range r.tx {
@@ -443,23 +447,12 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn), uint(cap(r.msgs)))
 	defer tsReaderCancel()
 
-	// Wake a SendMsgs blocked on a full socket buffer when the test ends;
-	// the send loops treat the timeout error as a clean stop.
-	stopWake := context.AfterFunc(ctx, func() { conn.SetWriteDeadline(time.Now()) })
-	defer stopWake()
-
-	for i := range r.Params {
-		// Segment duration is owned by a per-segment child context; the
-		// caller's ctx carries the total duration and user cancellation.
-		segCtx, segCancel := context.WithTimeout(ctx, r.Params[i].Duration)
-		err := r.runParams(segCtx, conn, raddr, r.Params[i])
-		segCancel()
-		if err != nil {
-			return nil, err
-		}
-		if ctx.Err() != nil {
-			break
-		}
+	mconn, err := mmsg.NewConn(conn)
+	if err != nil {
+		return nil, fmt.Errorf("Failed mmsg.NewConn: %w", err)
+	}
+	if err := r.runSegments(ctx, conn, mconn, raddr, start); err != nil {
+		return nil, err
 	}
 
 	r.msgs = selectMsgsSent(ctx, tsReader, tsReaderCancel, r.msgs)
@@ -473,7 +466,7 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 func rateInterval(pps uint) time.Duration {
 	const maxPacketsPerBurst = 5
 	calcInterval := time.Duration((maxPacketsPerBurst / float64(pps)) * 1e9)
-	return min(calcInterval, 1*time.Millisecond)
+	return max(time.Nanosecond, min(calcInterval, 1*time.Millisecond))
 }
 
 // numPacketsGoal returns how many packets in total should have left the
@@ -499,46 +492,114 @@ func packetsDue(elapsed time.Duration, pps uint, alreadySent uint) (uint, bool) 
 }
 
 func (r *RateSender) runParams(ctx context.Context, conn net.Conn, raddr net.Addr, params RateParams) error {
-	if params.Pps == 0 {
-		// Cooldown segment: send nothing until the segment duration is
-		// reached or the caller aborts. (Also avoids the interval formula
-		// below dividing by zero.)
-		<-ctx.Done()
+	start := time.Now()
+	if params.Duration <= 0 || rateContextExpired(ctx, start) {
 		return nil
 	}
-
-	start := time.Now() // must appear before ticker is started
-
-	interval := rateInterval(params.Pps)
-	slog.DebugContext(ctx, "Dynamic interval calculation", "interval", interval.String())
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	numPacketsSent := uint(0)
-
 	mconn, err := mmsg.NewConn(conn)
 	if err != nil {
 		return fmt.Errorf("Failed mmsg.NewConn: %w", err)
 	}
+	return r.runSegment(ctx, conn, mconn, raddr, params, start, start.Add(max(0, params.Duration)))
+}
+
+type rateMessageSender interface {
+	SendMsgs([]mmsg.Message, int) (int, error)
+}
+
+type rateWriteDeadliner interface {
+	SetWriteDeadline(time.Time) error
+}
+
+// A context's timer callback may run late. Check its actual deadline as well
+// as Err before sending, including between batches in a catch-up round.
+func rateContextExpired(ctx context.Context, now time.Time) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && !now.Before(deadline)
+}
+
+func (r *RateSender) runSegments(ctx context.Context, conn rateWriteDeadliner, sender rateMessageSender, raddr net.Addr, start time.Time) error {
+	boundary := start
+	for i, params := range r.Params {
+		if rateContextExpired(ctx, time.Now()) {
+			break
+		}
+		if params.Duration <= 0 {
+			continue
+		}
+		end := boundary.Add(params.Duration)
+		if !time.Now().Before(end) {
+			boundary = end
+			continue
+		}
+		slog.DebugContext(ctx, "RateSender segment start", "segment", i)
+		if err := r.runSegment(ctx, conn, sender, raddr, params, boundary, end); err != nil {
+			return err
+		}
+		boundary = end
+	}
+	return nil
+}
+
+// Drop whole-packet demand missed before entering a segment, but retain the
+// existing cumulative catch-up policy once it is live. Neither debt nor
+// fractional credit crosses a segment boundary, even between equal rates.
+func rateSegmentGoal(now, start, end time.Time, pps, missed uint) uint {
+	goal := numPacketsGoal(min(now.Sub(start), end.Sub(start)), pps)
+	return goal - min(goal, missed)
+}
+
+func (r *RateSender) runSegment(ctx context.Context, conn rateWriteDeadliner, sender rateMessageSender, raddr net.Addr, params RateParams, start, end time.Time) error {
+	now := time.Now()
+	if params.Duration <= 0 || !now.Before(end) || rateContextExpired(ctx, now) {
+		return nil
+	}
+	missed := numPacketsGoal(now.Sub(start), params.Pps)
+	ctx, cancel := context.WithDeadline(ctx, end)
+	defer cancel()
+	deadline, _ := ctx.Deadline() // includes an earlier outer deadline
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	// Joining the callback before clearing the deadline prevents a late
+	// cancellation wakeup from poisoning the next segment (or conn reuse).
+	woke := make(chan struct{})
+	stopWake := context.AfterFunc(ctx, func() {
+		defer close(woke)
+		conn.SetWriteDeadline(time.Now())
+	})
+	defer func() {
+		if !stopWake() {
+			<-woke
+		}
+		conn.SetWriteDeadline(time.Time{})
+	}()
+
+	if params.Pps == 0 {
+		<-ctx.Done()
+		return nil
+	}
+	interval := rateInterval(params.Pps)
+	slog.DebugContext(ctx, "Dynamic interval calculation", "interval", interval.String())
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	numPacketsSent := uint(0)
 
 	for {
 		select {
-		case now := <-ticker.C:
-			numPackets, ahead := packetsDue(now.Sub(start), params.Pps, numPacketsSent)
-			if ahead {
-				// I am not sure how this happens but it seldomly does
-				// Give a warning but proceed as if nothing has happened
-				slog.WarnContext(ctx, "numPacketsSent > numPacketsGoal",
-					"sent", numPacketsSent,
-					"elapsed", now.Sub(start),
-					"start", start,
-					"now", now)
+		case <-ticker.C:
+			now := time.Now() // not the potentially stale ticker timestamp
+			if rateContextExpired(ctx, now) {
+				return nil
+			}
+			goal := rateSegmentGoal(now, start, end, params.Pps, missed)
+			if numPacketsSent >= goal {
 				continue
 			}
-			if numPackets == 0 {
-				continue
-			}
-			n, err := r.sendRound(ctx, mconn, raddr, numPackets, params.PayloadSize)
+			n, err := r.sendRound(ctx, sender, raddr, goal-numPacketsSent, params.PayloadSize)
 			if err != nil {
 				return err
 			}
@@ -558,7 +619,7 @@ func (r *RateSender) sendRound(ctx context.Context, conn interface {
 	for packetsLeft > 0 {
 		// A single round can span many 1024-packet batches; observe the test
 		// end between them
-		if ctx.Err() != nil {
+		if rateContextExpired(ctx, time.Now()) {
 			return sent, nil
 		}
 		tsSent := time.Now()
@@ -583,6 +644,10 @@ func (r *RateSender) sendRound(ctx context.Context, conn interface {
 			r.msgs = append(r.msgs, MsgSent{Seq: b.Seq, TsSent: tsSent, Len: 8 + payloadSize})
 		}
 
+		if rateContextExpired(ctx, time.Now()) {
+			r.msgs = r.msgs[:len(r.msgs)-int(packetsRound)]
+			return sent, nil
+		}
 		n, err := conn.SendMsgs(r.tx[:packetsRound], 0)
 		if err != nil {
 			// Nothing of this round went out (sendmmsg reports a count, not
