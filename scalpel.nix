@@ -12,11 +12,11 @@ let
         (name: value: "-X=github.com/hendrikcech/netscalpel/internal/buildinfo.${name}=${value}")
         provenance;
     inherit src;
-    vendorHash = "sha256-VPPj3XgKxzAyze3U0cc2Q/vbuMd7U7wMVauMyGGtLWY=";
+    vendorHash = "sha256-gTXzfrIqbBtEcc7sDh/evydV/FEXRdK5MjYECLP6dTM=";
   };
 in
 {
-  scalpel-run = pkgs.buildGoModule (
+  scalpel-run = pkgs.buildGo127Module (
     common
     // {
       pname = "scalpel-run";
@@ -24,7 +24,7 @@ in
     }
   );
 
-  scalpel-exp = pkgs.buildGoModule (
+  scalpel-exp = pkgs.buildGo127Module (
     common
     // {
       pname = "scalpel-exp";

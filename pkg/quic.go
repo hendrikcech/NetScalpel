@@ -17,7 +17,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/logging"
+	"github.com/quic-go/quic-go/qlog"
+	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 const quicProto = "quic-echo-example"
@@ -208,10 +209,11 @@ func (s *QUICSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, tr
 	}
 	defer stream.Close()
 
-	go func() {
-		<-ctx.Done()
+	stop := context.AfterFunc(ctx, func() {
 		stream.SetWriteDeadline(time.Now())
-	}()
+		stream.SetReadDeadline(time.Now())
+	})
+	defer stop()
 
 	n, err := io.CopyN(stream, mathRand.New(mathRand.NewSource(0)), int64(s.Params.Bytes))
 	slog.DebugContext(ctx, "io.copyN of sender returned", "n", n, "error", err)
@@ -224,6 +226,16 @@ func (s *QUICSender) send(ctx context.Context, conn net.Conn, raddr net.Addr, tr
 			// side); the packets sent until then are the result
 			return nil
 		}
+		return err
+	}
+	// Close only queues the FIN: closing the connection immediately afterwards
+	// can discard the final STREAM frames. Wait for the receiver's FIN (it
+	// closes its write side after io.Copy consumes ours) before tearing down.
+	if err := stream.Close(); err != nil {
+		return err
+	}
+	_, err = io.Copy(droppingWriter{}, stream)
+	if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) && !quicClosedCleanly(err) {
 		return err
 	}
 	return nil
@@ -259,14 +271,28 @@ func NewQUICTracer() *QUICTracer {
 	}
 }
 
-func (t *QUICTracer) NewSendTracer(ctx context.Context, pers logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
-	return &logging.ConnectionTracer{
-		SentShortHeaderPacket: func(hdr *logging.ShortHeader, size logging.ByteCount, ecn logging.ECN, ack *logging.AckFrame, frames []logging.Frame) {
-			// slog.DebugContext(ctx, "Sent", "dcid", hdr.DestConnectionID, "pn", hdr.PacketNumber)
+// quicPacketTrace records events synchronously so timestamps still describe
+// packet processing, not a later JSON encoding or background queue drain.
+type quicPacketTrace struct {
+	record func(qlogwriter.Event)
+}
+
+func (t quicPacketTrace) AddProducer() qlogwriter.Recorder   { return t }
+func (t quicPacketTrace) SupportsSchemas(schema string) bool { return schema == qlog.EventSchema }
+func (t quicPacketTrace) RecordEvent(event qlogwriter.Event) { t.record(event) }
+func (t quicPacketTrace) Close() error                       { return nil }
+
+func (t *QUICTracer) NewSendTracer(ctx context.Context, isClient bool, id quic.ConnectionID) qlogwriter.Trace {
+	return quicPacketTrace{
+		record: func(event qlogwriter.Event) {
+			packet, ok := event.(qlog.PacketSent)
+			if !ok || packet.Header.PacketType != qlog.PacketType1RTT {
+				return
+			}
 			msg := MsgSent{
-				Seq:    uint64(hdr.PacketNumber),
+				Seq:    uint64(packet.Header.PacketNumber),
 				TsSent: time.Now(),
-				Len:    uint(size),
+				Len:    uint(packet.Raw.Length),
 			}
 			// Prefer the buffered send: a select over both a ready channel
 			// and the closed quit picks randomly and would drop packets that
@@ -283,13 +309,17 @@ func (t *QUICTracer) NewSendTracer(ctx context.Context, pers logging.Perspective
 	}
 }
 
-func (t *QUICTracer) NewReceiveTracer(ctx context.Context, pers logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
-	return &logging.ConnectionTracer{
-		ReceivedShortHeaderPacket: func(hdr *logging.ShortHeader, size logging.ByteCount, ecn logging.ECN, frames []logging.Frame) {
+func (t *QUICTracer) NewReceiveTracer(ctx context.Context, isClient bool, id quic.ConnectionID) qlogwriter.Trace {
+	return quicPacketTrace{
+		record: func(event qlogwriter.Event) {
+			packet, ok := event.(qlog.PacketReceived)
+			if !ok || packet.Header.PacketType != qlog.PacketType1RTT {
+				return
+			}
 			msg := MsgRcvd{
-				Seq:    uint64(hdr.PacketNumber),
+				Seq:    uint64(packet.Header.PacketNumber),
 				TsRcvd: time.Now(),
-				Len:    uint(size),
+				Len:    uint(packet.Raw.Length),
 			}
 			// See NewSendTracer: prefer the buffered send over quit
 			select {

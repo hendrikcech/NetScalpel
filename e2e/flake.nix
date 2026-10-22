@@ -347,7 +347,7 @@
             ''
             + lib.concatMapStringsSep "\n" (name: ''
               echo "=== ${name} ===" >&2
-              ${experiments.${name}}/bin/e2e-${name} "$@" || status=1
+              ${lib.getExe experiments.${name}} "$@" || status=1
             '') (builtins.attrNames experiments)
             + ''
               exit $status

@@ -25,13 +25,16 @@ jobs:
       - name: Validate pacing benchmark analyzer
         run: python3 -m unittest discover -s benchmarks -p 'test_*.py' -v
 
+      - name: Validate UDP delivery analyzer
+        run: python3 -m unittest discover -s e2e -p 'test_*.py' -v
+
       - run: go vet ./...
 
       # ST1005 is excluded in staticcheck.conf.
-      - run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
         continue-on-error: true
 
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
         continue-on-error: true
 
       - run: go build ./...
@@ -88,7 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v23
-      - run: nix build .#scalpel-run --no-link
+      - run: nix build .#scalpel-run .#scalpel-exp --no-link
 
   # End-to-end validation: client and server across an emulated netem link,
   # asserting that the measured OWD/loss/rate values in the produced CSVs
@@ -100,7 +103,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [owd, loss, rate, asym, icmp-udp, tcp]
+        scenario: [owd, loss, rate, asym, icmp-udp, tcp, duplicates, reordering]
     steps:
       - uses: actions/checkout@v7
 
