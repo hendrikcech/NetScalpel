@@ -130,8 +130,8 @@ func TestWaitForUDPProbeCancellable(t *testing.T) {
 }
 
 // End-to-end Symptom B chain: a server-side send test whose NAT probe never
-// arrives must eventually feed an error into resultC so that
-// RequestServerResult returns instead of deadlocking the client's Gather.
+// arrives must eventually return a confirmed terminal error from
+// RequestServerResult instead of deadlocking the client's Gather.
 func TestStuckProbeProducesErrorResult(t *testing.T) {
 	srvCtx, srvCancel := context.WithCancel(context.Background())
 	defer srvCancel()
@@ -155,12 +155,15 @@ func TestStuckProbeProducesErrorResult(t *testing.T) {
 	// Never send a NAT probe to reply.Port.
 
 	var resErr error
+	var res RequestServerResultReply
 	returnsWithin(t, 3*time.Second, "RequestServerResult", func() {
-		var res RequestServerResultReply
 		resErr = s.RequestServerResult(RequestServerResultArgs{ID: "b1"}, &res)
 	})
-	if resErr == nil {
-		t.Errorf("expected an error result for a test whose probe never arrived")
+	if resErr != nil {
+		t.Fatalf("terminal failure should be returned as a confirmed result: %v", resErr)
+	}
+	if !res.Complete || res.Error == "" {
+		t.Errorf("expected a confirmed terminal error result, got %+v", res)
 	}
 }
 
@@ -190,12 +193,15 @@ func TestListenFailureProducesErrorResult(t *testing.T) {
 	}
 
 	var resErr error
+	var res RequestServerResultReply
 	returnsWithin(t, 3*time.Second, "RequestServerResult", func() {
-		var res RequestServerResultReply
 		resErr = s.RequestServerResult(RequestServerResultArgs{ID: "b3"}, &res)
 	})
-	if resErr == nil {
-		t.Errorf("expected an error result for a test whose listen setup failed")
+	if resErr != nil {
+		t.Fatalf("terminal failure should be returned as a confirmed result: %v", resErr)
+	}
+	if !res.Complete || res.Error == "" {
+		t.Errorf("expected a confirmed terminal error result, got %+v", res)
 	}
 }
 
@@ -235,12 +241,12 @@ func TestServerSendTCPAcceptProducesErrorResult(t *testing.T) {
 	// Never dial reply.Port.
 
 	var resErr error
+	var res RequestServerResultReply
 	returnsWithin(t, 3*time.Second, "RequestServerResult", func() {
-		var res RequestServerResultReply
 		resErr = s.RequestServerResult(RequestServerResultArgs{ID: "b2"}, &res)
 	})
-	if resErr == nil {
-		t.Errorf("expected an error result for a test whose client never connected")
+	if resErr != nil || !res.Complete || res.Error == "" {
+		t.Errorf("expected confirmed terminal error result, got reply=%+v err=%v", res, resErr)
 	}
 }
 
@@ -469,12 +475,15 @@ func TestAbortRPCEndsServerSenderEarly(t *testing.T) {
 	}
 
 	var resErr error
+	var res RequestServerResultReply
 	returnsWithin(t, 2*time.Second, "RequestServerResult", func() {
-		var res RequestServerResultReply
 		resErr = s.RequestServerResult(RequestServerResultArgs{ID: "abort-snd"}, &res)
 	})
-	if resErr == nil {
-		t.Errorf("expected an error result from an aborted sender test")
+	if resErr != nil {
+		t.Fatalf("terminal failure should be returned as a confirmed result: %v", resErr)
+	}
+	if !res.Complete || res.Error == "" {
+		t.Errorf("expected a confirmed terminal error result, got %+v", res)
 	}
 
 	// Aborting a finished or unknown ID is a no-op, not an error: the client

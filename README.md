@@ -102,7 +102,8 @@ experiment.
 The terms used by `scalpel-exp` have distinct meanings:
 
 - An **experiment** is one complete `scalpel-exp client` run.
-- A **procedure** is the named, reusable definition selected for an experiment.
+- A **procedure** is a named, reusable measurement definition. An experiment can
+  invoke one or more procedures.
 - A **round** is one repetition of that procedure within the experiment.
 - A **procedure invocation** is one scheduled execution within a round. A
   per-direction procedure may have separate DL and UL invocations.
@@ -118,6 +119,12 @@ The available procedures include `MultiDurationRate`, `Burst`, `Cooldown`,
 `SwitchFlow`, `Rate`, `OWD`, `MouseElephant`, and `TCPReconf`.
 
 To run an orchestrated experiment, you typically start the `scalpel-exp server` on the remote endpoint and the `scalpel-exp client` on the local endpoint, passing the necessary flags for the desired procedure.
+
+To run multiple procedures from a YAML file, use
+`scalpel-exp client --batch batch.yaml --ip <server-ip>`.
+Batch mode supports sequential blocks, shuffled
+blocks, and randomly interleaved rounds, including nested groups. See the
+[batch mode guide](docs/batch-mode.md) for examples and result summaries.
 
 ## Implementing New Procedures
 

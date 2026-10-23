@@ -31,6 +31,8 @@ type Client struct {
 	// Permanent log file supplied by the caller. Needs to be closed by the caller.
 	Logfile *os.File
 
+	batchInvocation *BatchInvocationMetadata
+
 	round        uint
 	experimentID string
 
@@ -124,21 +126,34 @@ func (c *Client) Run(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) finishProcedureInvocation(ctx context.Context, e *experiment.Executor, rpcClient *rpc.Client, resultPath string) (resultErr error) {
-	resultErr = c.setupSlog(ctx, resultPath)
+func (c *Client) finishProcedureInvocation(ctx context.Context, e *experiment.Executor, rpcClient *rpc.Client, resultPath string) error {
+	return c.finishProcedureInvocationClassified(ctx, e, rpcClient, resultPath).err
+}
+
+type invocationFinish struct {
+	err             error
+	fatal           bool
+	failed          bool
+	remoteConfirmed bool
+	cancelled       bool
+}
+
+func (c *Client) finishProcedureInvocationClassified(ctx context.Context, e *experiment.Executor, rpcClient *rpc.Client, resultPath string) (out invocationFinish) {
+	out.err = c.setupSlog(ctx, resultPath)
 	if e.Manifest == nil {
 		e.Manifest = &experiment.Manifest{SchemaVersion: 1, Status: "running"}
 	}
-	if resultErr != nil {
-		e.AddError("client", "log_setup", resultErr)
+	if out.err != nil {
+		out.fatal = true
+		out.failed = true
+		e.AddError("client", "log_setup", out.err)
 	}
-	remoteAfterSafe := true
 	defer func() {
 		e.Finalize()
 		if e.Manifest != nil {
 			after := hostinfo.Load()
 			e.Manifest.Client.After = &after
-			if ctx.Err() == nil && remoteAfterSafe {
+			if ctx.Err() == nil && out.remoteConfirmed {
 				if remote, err := pkg.FetchMetadata(ctx, rpcClient); err == nil {
 					e.Manifest.Server.After = &remote.Load
 				} else {
@@ -151,59 +166,145 @@ func (c *Client) finishProcedureInvocation(ctx context.Context, e *experiment.Ex
 		if err := e.WriteInfo(resultPath); err != nil {
 			slog.ErrorContext(ctx, "Failed writing final manifest", "error", err)
 			e.AddError("client", "manifest_final", err)
+			out.fatal = true
+			out.failed = true
 			if e.Manifest.Status != "cancelled" {
 				e.Manifest.Status = "failed"
 			}
-			resultErr = errors.Join(resultErr, fmt.Errorf("final manifest: %w", err))
+			out.err = errors.Join(out.err, fmt.Errorf("final manifest: %w", err))
 		}
 	}()
 
 	if e.Manifest != nil && !e.Started {
 		if len(e.Manifest.Errors) > 0 {
-			resultErr = errors.Join(resultErr, errors.New("invocation setup failed"))
+			out.err = errors.Join(out.err, errors.New("invocation setup failed"))
+			out.failed = true
 		}
+		out.remoteConfirmed = true
+		out.cancelled = ctx.Err() != nil
 		return
 	}
-	if err := e.G.Wait(); err != nil {
-		resultErr = errors.Join(resultErr, err)
-		e.AddError("client", "run", err)
-		slog.ErrorContext(ctx, fmt.Sprintf("[Round %v/%v] client.Run failed", c.round+1, c.Rounds), "error", err)
+	waitErr := e.Wait()
+	if waitErr != nil {
+		out.err = errors.Join(out.err, waitErr)
+		if hasIndependentInvocationError(waitErr, ctx.Err()) {
+			out.failed = true
+		}
+		e.AddError("client", "run", waitErr)
+		slog.ErrorContext(ctx, fmt.Sprintf("[Round %v/%v] client.Run failed", c.round+1, c.Rounds), "error", waitErr)
 	}
 
-	// On user abort the results are incomplete; don't block on gathering.
-	// Tell the server to cancel the still-running tests of this invocation so it
-	// releases its sockets and goroutines right away.
 	if ctx.Err() != nil {
-		resultErr = errors.Join(resultErr, ctx.Err())
+		out.err = errors.Join(out.err, ctx.Err())
+		out.cancelled = true
 		slog.InfoContext(ctx, "Procedure invocation was cancelled, aborting server-side tests and skipping result gathering")
-		if err := e.AbortServerTests(); err != nil {
+		if err := c.abortServerTests(e); err != nil {
 			e.AddError("server", "abort", err)
 			slog.WarnContext(ctx, "Failed aborting server-side tests", "error", err.Error())
 		}
 		return
 	}
+	if waitErr != nil {
+		// Abort only requests cancellation. Gathering the terminal results below
+		// confirms whether remote work actually stopped.
+		if err := c.abortServerTests(e); err != nil {
+			out.err = errors.Join(out.err, fmt.Errorf("abort server tests: %w", err))
+			e.AddError("server", "abort", err)
+		}
+	}
 
 	slog.InfoContext(ctx, "Gathering results ...")
 	start := time.Now()
-	if err := e.GatherResults(); err != nil {
-		resultErr = errors.Join(resultErr, err)
-		remoteAfterSafe = false
-		e.AddError("client", "gather", err)
-		slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Since(start).Seconds(), "error", err.Error())
+	gatherErr := e.GatherResults()
+	if gatherErr != nil {
+		out.err = errors.Join(out.err, gatherErr)
+		if hasIndependentInvocationError(gatherErr, ctx.Err()) {
+			out.failed = true
+		}
+		e.AddError("client", "gather", gatherErr)
+		slog.ErrorContext(ctx, "Failed gathering results", "duration", time.Since(start).Seconds(), "error", gatherErr.Error())
 	} else {
 		slog.InfoContext(ctx, fmt.Sprintf("Gathered results in %.2fs", time.Since(start).Seconds()))
+	}
+	out.remoteConfirmed = e.ResultsConfirmed()
+	if !out.remoteConfirmed {
+		out.fatal = true
+		if err := c.abortServerTests(e); err != nil {
+			out.err = errors.Join(out.err, fmt.Errorf("abort unconfirmed server tests: %w", err))
+			e.AddError("server", "abort", err)
+		}
+	}
+	var persistenceErr *pkg.ResultPersistenceError
+	if errors.As(gatherErr, &persistenceErr) {
+		out.fatal = true
+	}
+	if ctx.Err() != nil {
+		out.cancelled = true
+		out.err = errors.Join(out.err, ctx.Err())
+		if err := c.abortServerTests(e); err != nil {
+			e.AddError("server", "abort", err)
+			out.err = errors.Join(out.err, fmt.Errorf("abort server tests after cancellation: %w", err))
+		}
+		return
 	}
 
 	slog.DebugContext(ctx, "Fetching and writing server log ...")
 	if err := c.writeServerLog(ctx, resultPath, rpcClient); err != nil {
-		resultErr = errors.Join(resultErr, err)
+		out.err = errors.Join(out.err, err)
+		var persistenceErr *pkg.ResultPersistenceError
+		if errors.As(err, &persistenceErr) {
+			out.fatal = true
+		}
+		out.failed = out.failed || hasIndependentInvocationError(err, ctx.Err())
+		out.cancelled = ctx.Err() != nil
 		e.AddError("server", "server_log", err)
 		slog.ErrorContext(ctx, "Failed fetching and writing server log", "error", err.Error())
 	}
-	return
+	return out
 }
 
-func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.Executor, ts time.Time, proc procedures.Procedure, overrides experiment.ParamMap) (string, error) {
+func hasIndependentInvocationError(err, cancellation error) bool {
+	if err == nil {
+		return false
+	}
+	if cancellation == nil {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if hasIndependentInvocationError(cause, cancellation) {
+				return true
+			}
+		}
+		return false
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return hasIndependentInvocationError(cause, cancellation)
+	}
+	return !errors.Is(err, cancellation)
+}
+
+func (c *Client) abortServerTests(e *experiment.Executor) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	abortClient, err := dialRpcClient(ctx, c.IP, c.Port)
+	if err != nil {
+		return err
+	}
+	defer abortClient.Close()
+	original := e.RpcClient
+	e.RpcClient = abortClient
+	err = e.AbortServerTests()
+	e.RpcClient = original
+	return err
+}
+
+func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.Executor, ts time.Time, proc procedures.Procedure, overrides experiment.ParamMap) (resultPath string, resultErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			resultErr = &FatalInvocationError{Err: fmt.Errorf("procedure %s schedule panicked: %v", proc.Name, recovered)}
+		}
+	}()
 	e.DeferStart = true
 	local := pkg.LocalMetadata()
 	remote, metadataErr := pkg.FetchMetadata(ctx, e.RpcClient)
@@ -230,16 +331,16 @@ func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.
 		ts = now
 	}
 	ri := experiment.NextRI(ts)
-	name := "_" + c.Procedure
+	name := "_" + proc.Name
 	if direction, ok := params["direction"]; ok {
 		name += "_" + strings.ToLower(direction.(string))
 	}
 	slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Schedule %s in %.2fs", c.round+1, c.Rounds,
 		name, time.Until(ri).Seconds()), "start", ri, "params", params)
-	resultPath, err := mkResultPath(c.Results, ri, name)
+	resultPath, err = mkResultPath(c.Results, ri, name)
 	if err != nil {
 		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())
-		return "", err
+		return "", &FatalInvocationError{Err: err}
 	}
 	if c.experimentID == "" {
 		c.experimentID = pkg.GenID("experiment")
@@ -251,6 +352,14 @@ func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.
 		Client:   experiment.Endpoint{Role: "client", Metadata: &local},
 		Server:   experiment.Endpoint{Role: "server", Metadata: remote},
 		Warnings: []string{}, Errors: []experiment.ExecutionError{},
+	}
+	if c.batchInvocation != nil {
+		e.Manifest.BatchID = c.batchInvocation.BatchID
+		e.Manifest.BatchEntryID = c.batchInvocation.EntryID
+		e.Manifest.BatchAncestry = append([]string(nil), c.batchInvocation.Ancestry...)
+		e.Manifest.BatchPosition = c.batchInvocation.ExecutionPosition
+		e.Manifest.BatchRound = c.batchInvocation.Round
+		e.Manifest.BatchInvoke = c.batchInvocation.InvocationPosition
 	}
 	if metadataErr != nil {
 		e.Manifest.Warnings = append(e.Manifest.Warnings, "server metadata unavailable (older server may not support it): "+metadataErr.Error())
@@ -266,7 +375,7 @@ func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.
 	if err := e.WriteInfo(resultPath); err != nil {
 		e.AddError("client", "manifest", err)
 		slog.Error("Initial manifest failed; measurements not launched", "error", err)
-		return resultPath, err
+		return resultPath, &FatalInvocationError{Err: err}
 	}
 	now := time.Now().UTC()
 	e.Manifest.ExecutionStart = &now
@@ -277,7 +386,8 @@ func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.
 
 func (c *Client) setupSlog(ctx context.Context, resultPath string) (resultErr error) {
 	if c.slogFile != nil {
-		c.slogFile.Close()
+		resultErr = errors.Join(resultErr, c.slogFile.Close())
+		c.slogFile = nil
 	}
 
 	if resultPath != "" {
@@ -285,7 +395,7 @@ func (c *Client) setupSlog(ctx context.Context, resultPath string) (resultErr er
 		var err error
 		c.slogFile, err = os.Create(path)
 		if err != nil {
-			resultErr = err
+			resultErr = errors.Join(resultErr, err)
 			slog.ErrorContext(ctx, "Failed opening slogfile", "path", path, "error", err)
 		}
 	}
@@ -313,18 +423,31 @@ func (c *Client) writeServerLog(ctx context.Context, path string, rpcClient *rpc
 
 	logPath := filepath.Join(path, "scalpel_server.log")
 	if err := os.WriteFile(logPath, []byte(result.Log), 0644); err != nil {
-		return fmt.Errorf("Failed writing to %v: %w", logPath, err)
+		return &pkg.ResultPersistenceError{Err: fmt.Errorf("Failed writing to %v: %w", logPath, err)}
 	}
 
 	return nil
 }
 
 func mkResultPath(base string, ts time.Time, suffix string) (string, error) {
-	resultPath := filepath.Join(base, ts.Format("20060102T150405")+suffix)
-	if err := os.MkdirAll(resultPath, os.ModePerm); err != nil {
-		return "", fmt.Errorf("Failed to create the result directory %v: %w", resultPath, err)
+	if err := os.MkdirAll(base, os.ModePerm); err != nil {
+		return "", fmt.Errorf("Failed to create the results directory %v: %w", base, err)
 	}
-	return resultPath, nil
+	name := ts.Format("20060102T150405") + suffix
+	for collision := uint(0); ; collision++ {
+		candidate := name
+		if collision > 0 {
+			candidate += fmt.Sprintf("_%d", collision)
+		}
+		resultPath := filepath.Join(base, candidate)
+		if err := os.Mkdir(resultPath, os.ModePerm); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", fmt.Errorf("Failed to create the result directory %v: %w", resultPath, err)
+		}
+		return resultPath, nil
+	}
 }
 
 func dialRpcClient(ctx context.Context, ip string, port uint) (*rpc.Client, error) {

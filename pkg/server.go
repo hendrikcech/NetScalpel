@@ -530,9 +530,16 @@ type RequestServerResultArgs struct {
 }
 type RequestServerResultReply struct {
 	Result any
+	// Complete confirms that the remote work reached a terminal state; it does not mean it succeeded.
+	Complete bool
+	// Error is non-empty only when completed measurement work failed.
+	Error string
 }
 
 func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *RequestServerResultReply) error {
+	reply.Complete = false
+	reply.Error = ""
+
 	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
 	slog.DebugContext(ctx, "RequestServerResult: request")
 
@@ -553,8 +560,13 @@ func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *Reques
 		s.resultLock.Unlock()
 	}
 	if err != nil {
+		if received && reply.Complete {
+			reply.Error = err.Error()
+			return nil
+		}
 		return logErrContext(ctx, "Receive from resultC: %w", err)
 	}
+	reply.Complete = reply.Complete || received
 
 	slog.DebugContext(ctx, "RequestServerResult: responded")
 
@@ -581,9 +593,11 @@ func handleChanResult(ctx context.Context, c chan *Result, id string, reply *Req
 		return true, fmt.Errorf("Result %v was already retrieved", id)
 	}
 	if result.Err != nil {
+		reply.Complete = true
 		return true, fmt.Errorf("handleChanResult: %w", result.Err)
 	}
 	reply.Result = result.Res
+	reply.Complete = true
 	return true, nil
 }
 
@@ -674,9 +688,16 @@ type RequestRunCommandResultArgs struct {
 }
 type RequestRunCommandResultReply struct {
 	Files map[string][]byte
+	// Complete confirms that the remote work reached a terminal state; it does not mean it succeeded.
+	Complete bool
+	// Error is non-empty only when completed measurement work failed.
+	Error string
 }
 
 func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply *RequestRunCommandResultReply) error {
+	reply.Complete = false
+	reply.Error = ""
+
 	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
 
 	s.resultLock.Lock()
@@ -699,8 +720,14 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 		s.resultLock.Unlock()
 	}
 	if err != nil {
+		if received && chanReply.Complete {
+			reply.Complete = true
+			reply.Error = err.Error()
+			return nil
+		}
 		return logErrContext(ctx, "RequestRunCommandResult returning error: %w", err)
 	}
+	reply.Complete = chanReply.Complete || received
 
 	resultPath := chanReply.Result.(string)
 
@@ -723,7 +750,9 @@ func (s *Server) RequestRunCommandResult(args RequestRunCommandResultArgs, reply
 		if err := CompressFile(path, w); err != nil {
 			return logErrContext(ctx, "Failed compression: %w", err)
 		}
-		w.Flush()
+		if err := w.Flush(); err != nil {
+			return logErrContext(ctx, "Failed flushing compressed result: %w", err)
+		}
 
 		reply.Files[entry.Name()] = buf.Bytes()
 		if err := os.Remove(path); err != nil {

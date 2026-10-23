@@ -66,6 +66,12 @@ type Manifest struct {
 	Measurements   []*Measurement   `json:"measurements"`
 	Warnings       []string         `json:"warnings"`
 	Errors         []ExecutionError `json:"errors"`
+	BatchID        string           `json:"batch_id,omitempty"`
+	BatchEntryID   string           `json:"batch_entry_id,omitempty"`
+	BatchAncestry  []string         `json:"batch_ancestry,omitempty"`
+	BatchPosition  uint             `json:"batch_execution_position,omitempty"`
+	BatchRound     uint             `json:"batch_round,omitempty"`
+	BatchInvoke    uint             `json:"batch_invocation_position,omitempty"`
 }
 
 func errorRecord(endpoint, phase string, err error) ExecutionError {

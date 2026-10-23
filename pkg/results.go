@@ -5,6 +5,7 @@ package pkg
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -263,20 +264,22 @@ func fmtDurationMs(d time.Duration) string {
 
 func writeCSV(out string, rows [][]string) error {
 	f := os.Stdout
+	closeFile := false
 	if out != "" {
 		var err error
 		f, err = os.Create(out)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		closeFile = true
 	}
 
 	w := csv.NewWriter(f)
 	w.WriteAll(rows)
-
-	// Write any buffered data to the underlying writer (standard output).
 	w.Flush()
-
-	return w.Error()
+	err := w.Error()
+	if closeFile {
+		err = errors.Join(err, f.Close())
+	}
+	return err
 }

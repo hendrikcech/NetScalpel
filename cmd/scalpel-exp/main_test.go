@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,10 @@ func TestCLIHelp(t *testing.T) {
 		{"missing IP", []string{"client", "--procedure", "burst"}, []string{"Usage:", "missing required client flags: --ip"}, false},
 		{"unknown procedure", []string{"client", "--ip", "127.0.0.1", "--procedure", "no-such-procedure"}, []string{"Usage:", `unknown procedure "no-such-procedure"`, "scalpel-exp procedures"}, false},
 		{"zero port", []string{"client", "--ip", "127.0.0.1", "--procedure", "burst", "--port", "0"}, []string{"Usage:", "--port must be greater than zero"}, false},
-		{"client help", []string{"client", "--help"}, []string{"Usage:", "required for client", "Required: procedure", "scalpel-exp procedures"}, true},
+		{"batch conflicts with procedure", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--procedure", "burst"}, []string{"--batch and --procedure can't be used together"}, false},
+		{"batch conflicts with params", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--params="}, []string{"--batch and --params can't be used together"}, false},
+		{"batch conflicts with explicitly default rounds", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--rounds=1"}, []string{"--batch and --rounds can't be used together"}, false},
+		{"client help", []string{"client", "--help"}, []string{"Usage:", "required for client", "required unless --batch is supplied", "scalpel-exp procedures"}, true},
 		{"procedure list", []string{"procedures"}, []string{"burst"}, true},
 	}
 	for _, tc := range cases {
@@ -54,5 +58,63 @@ func TestCLIHelp(t *testing.T) {
 				t.Errorf("CLI validation reached runtime setup:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestCLIBatchWithoutProcedure(t *testing.T) {
+	if os.Getenv("SCALPEL_EXP_TEST_CLI_BATCH") == "1" {
+		for i, arg := range os.Args {
+			if arg == "--" {
+				os.Args = append(os.Args[:1], os.Args[i+1:]...)
+				main()
+				return
+			}
+		}
+		t.Fatal("missing CLI arguments")
+	}
+
+	root := t.TempDir()
+	batchPath := filepath.Join(root, "batch.yaml")
+	results := filepath.Join(root, "results")
+	if err := os.WriteFile(batchPath, []byte("mode: sequential\nsteps: [{id: one, procedure: trace, rounds: 1}]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"-test.run=^TestCLIBatchWithoutProcedure$", "--", "client", "--ip", "127.0.0.1", "--port", "1", "--batch", batchPath, "--results", results}
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Env = append(os.Environ(), "SCALPEL_EXP_TEST_CLI_BATCH=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected closed localhost RPC port to produce a failed batch\n%s", output)
+	}
+	if strings.Contains(string(output), "missing required client flags: --procedure") {
+		t.Fatalf("batch mode still required --procedure:\n%s", output)
+	}
+	for _, want := range []string{"Batch ", "Total: rounds"} {
+		if !strings.Contains(string(output), want) {
+			t.Errorf("output missing %q:\n%s", want, output)
+		}
+	}
+	batchDirs, err := os.ReadDir(results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batchDirs) != 1 || !batchDirs[0].IsDir() {
+		t.Fatalf("expected one isolated batch directory, got %v", batchDirs)
+	}
+	batchResults := filepath.Join(results, batchDirs[0].Name())
+	if !strings.Contains(string(output), batchResults) {
+		t.Fatalf("output omitted batch results directory %q:\n%s", batchResults, output)
+	}
+	for _, name := range []string{batchPlanFileName, batchSummaryFileName} {
+		if _, err := os.Stat(filepath.Join(batchResults, name)); err != nil {
+			t.Errorf("missing %s after ordinary failed invocation: %v", name, err)
+		}
+	}
+	summary, err := os.ReadFile(filepath.Join(batchResults, batchSummaryFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(summary), "rpc dial") {
+		t.Fatalf("batch summary omitted the pre-result-path invocation error:\n%s", summary)
 	}
 }

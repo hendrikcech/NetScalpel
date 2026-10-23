@@ -20,7 +20,7 @@ import (
 func main() {
 	kongctx := kong.Parse(&cli, kong.Vars{"version": buildinfo.String()}, kong.UsageOnError())
 	if kongctx.Command() == "client" {
-		if err := validateClientFlags(); err != nil {
+		if err := validateClientFlags(kongctx.Args); err != nil {
 			_ = kongctx.PrintUsage(false)
 			kongctx.Fatalf("%v", err)
 		}
@@ -54,6 +54,23 @@ func main() {
 
 	switch kongctx.Command() {
 	case "client":
+		if flagWasSet(kongctx.Args, "batch") {
+			client := &Client{
+				IP: cli.IP, Port: cli.Port, Results: cli.Client.Results,
+				LogLevel: slog.Level(cli.LogLevel), Logfile: logfile,
+			}
+			go func() {
+				sig := <-signalC
+				slog.InfoContext(ctx, "Cancelling ctx on signal", "signal", sig)
+				ctxCancel()
+				forceExitOnSignal()
+			}()
+			if err := RunBatchFile(ctx, cli.Client.Batch, cli.Client.Results, client); err != nil {
+				slog.ErrorContext(ctx, "Batch failed", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if cli.Client.Rounds == 0 {
 			cli.Client.Rounds = math.MaxUint
 		}
@@ -107,12 +124,19 @@ func main() {
 	}
 }
 
-func validateClientFlags() error {
+func validateClientFlags(args []string) error {
 	var missing []string
 	if cli.IP == "" || cli.IP == "0.0.0.0" {
 		missing = append(missing, "--ip")
 	}
-	if cli.Client.Procedure == "" {
+	batchSet := flagWasSet(args, "batch")
+	if batchSet && flagWasSet(args, "rounds") {
+		return fmt.Errorf("--batch and --rounds can't be used together")
+	}
+	if batchSet && cli.Client.Batch == "" {
+		return fmt.Errorf("--batch requires a non-empty file path")
+	}
+	if !batchSet && cli.Client.Procedure == "" {
 		missing = append(missing, "--procedure")
 	}
 	const hint = "Run 'scalpel-exp procedures' to list supported procedures."
@@ -122,8 +146,21 @@ func validateClientFlags() error {
 	if cli.Port == 0 {
 		return fmt.Errorf("--port must be greater than zero")
 	}
+	if batchSet {
+		return nil
+	}
 	if _, ok := procedures.Lookup(cli.Client.Procedure); !ok {
 		return fmt.Errorf("unknown procedure %q. %s", cli.Client.Procedure, hint)
 	}
 	return nil
+}
+
+func flagWasSet(args []string, name string) bool {
+	long := "--" + name
+	for _, arg := range args {
+		if arg == long || strings.HasPrefix(arg, long+"=") {
+			return true
+		}
+	}
+	return false
 }

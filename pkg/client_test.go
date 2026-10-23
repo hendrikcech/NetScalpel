@@ -2,8 +2,10 @@ package pkg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/rpc"
 	"os"
 	"os/exec"
@@ -26,6 +28,144 @@ func init() {
 var ip string = "127.0.0.1"
 
 var ports = testutil.NewPortCounter(15000)
+
+type resultRPC struct {
+	calls              int
+	statusCalls        int
+	reply              RequestServerResultReply
+	err                error
+	commandCalls       int
+	commandStatusCalls int
+	commandReply       RequestRunCommandResultReply
+	commandErr         error
+}
+
+func (s *resultRPC) RequestServerResult(_ RequestServerResultArgs, reply *RequestServerResultReply) error {
+	s.calls++
+	*reply = s.reply
+	return s.err
+}
+
+// These test-only methods simulate absent status RPCs and detect fallback retries.
+func (s *resultRPC) RequestServerResultStatus(_ RequestServerResultArgs, _ *RequestServerResultReply) error {
+	s.statusCalls++
+	return errors.New("can't find method Server.RequestServerResultStatus")
+}
+
+func (s *resultRPC) RequestRunCommandResult(_ RequestRunCommandResultArgs, reply *RequestRunCommandResultReply) error {
+	s.commandCalls++
+	*reply = s.commandReply
+	return s.commandErr
+}
+
+func (s *resultRPC) RequestRunCommandResultStatus(_ RequestRunCommandResultArgs, _ *RequestRunCommandResultReply) error {
+	s.commandStatusCalls++
+	return errors.New("can't find method Server.RequestRunCommandResultStatus")
+}
+
+func TestSenderGatherUsesCanonicalResultRPC(t *testing.T) {
+	tests := []struct {
+		name       string
+		reply      RequestServerResultReply
+		rpcErr     error
+		wantRemote bool
+	}{
+		{
+			name:       "terminal measurement error",
+			reply:      RequestServerResultReply{Complete: true, Error: "measurement failed"},
+			wantRemote: true,
+		},
+		{
+			name:  "unconfirmed result",
+			reply: RequestServerResultReply{},
+		},
+		{
+			name:       "RPC error drops populated reply",
+			reply:      RequestServerResultReply{Complete: true, Error: "untrusted reply"},
+			rpcErr:     errors.New("uncertain RPC failure"),
+			wantRemote: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &resultRPC{reply: tt.reply, err: tt.rpcErr}
+			client := rpcTestClient(t, service)
+			gatherErr := (&SenderClient{ID: "result"}).Gather(context.Background(), client)
+			var remoteErr *RemoteExecutionError
+			isRemoteErr := errors.As(gatherErr, &remoteErr)
+			if isRemoteErr != tt.wantRemote {
+				t.Fatalf("Gather error = %T (%v), remote error = %v; want remote = %v", gatherErr, gatherErr, isRemoteErr, tt.wantRemote)
+			}
+			if gatherErr == nil {
+				t.Fatal("Gather unexpectedly succeeded without a usable result")
+			}
+			if service.calls != 1 || service.statusCalls != 0 {
+				t.Fatalf("canonical calls = %d, status calls = %d; want one canonical call and no retry", service.calls, service.statusCalls)
+			}
+		})
+	}
+}
+
+func TestCommandGatherUsesCanonicalResultRPC(t *testing.T) {
+	tests := []struct {
+		name       string
+		reply      RequestRunCommandResultReply
+		rpcErr     error
+		wantRemote bool
+	}{
+		{
+			name:       "terminal command error",
+			reply:      RequestRunCommandResultReply{Complete: true, Error: "command failed"},
+			wantRemote: true,
+		},
+		{
+			name:  "unconfirmed result",
+			reply: RequestRunCommandResultReply{},
+		},
+		{
+			name:       "RPC error drops populated reply",
+			reply:      RequestRunCommandResultReply{Complete: true, Error: "untrusted reply"},
+			rpcErr:     errors.New("uncertain RPC failure"),
+			wantRemote: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &resultRPC{commandReply: tt.reply, commandErr: tt.rpcErr}
+			client := rpcTestClient(t, service)
+			gatherErr := (&CommandClient{ID: "command-result"}).Gather(context.Background(), client)
+			var remoteErr *RemoteExecutionError
+			isRemoteErr := errors.As(gatherErr, &remoteErr)
+			if isRemoteErr != tt.wantRemote {
+				t.Fatalf("Gather error = %T (%v), remote error = %v; want remote = %v", gatherErr, gatherErr, isRemoteErr, tt.wantRemote)
+			}
+			if gatherErr == nil {
+				t.Fatal("Gather unexpectedly succeeded without a usable result")
+			}
+			if service.commandCalls != 1 || service.commandStatusCalls != 0 {
+				t.Fatalf("canonical calls = %d, status calls = %d; want one canonical call and no retry", service.commandCalls, service.commandStatusCalls)
+			}
+		})
+	}
+}
+
+func rpcTestClient(t *testing.T, service any) *rpc.Client {
+	t.Helper()
+	server := rpc.NewServer()
+	if err := server.RegisterName("Server", service); err != nil {
+		t.Fatal(err)
+	}
+	clientConn, serverConn := net.Pipe()
+	go server.ServeConn(serverConn)
+	client := rpc.NewClient(clientConn)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = serverConn.Close()
+	})
+	return client
+}
 
 func approxEqual[T int | uint](exp T, act T, margin T) error {
 	if act < exp-margin || act > exp+margin {

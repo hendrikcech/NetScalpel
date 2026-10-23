@@ -30,20 +30,26 @@ type Client interface {
 var _ Client = (*SenderClient)(nil)
 var _ Client = (*CommandClient)(nil)
 
-// callCtx invokes client.Call but returns early with the context's error if
-// ctx ends first (rpc.Client.Call itself is not context-aware and would
-// block for as long as the server takes to respond).
-// The abandoned call keeps running in the background; its reply is discarded
-// when the RPC connection is closed.
+// callCtx bounds RPC request-lock acquisition, transport writes, and replies.
+// Cancellation closes the connection and joins the outstanding call so a
+// blocked write cannot outlive its caller.
 func callCtx(ctx context.Context, client *rpc.Client, serviceMethod string, args any, reply any) error {
-	call := client.Go(serviceMethod, args, reply, make(chan *rpc.Call, 1))
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case c := <-call.Done:
-		return c.Error
-	}
+	return BoundedCall(ctx, client, serviceMethod, args, reply)
 }
+
+// RemoteExecutionError means the server returned and consumed a terminal
+// result for this measurement. The operation failed, but remote work is done.
+type RemoteExecutionError struct{ Err error }
+
+func (e *RemoteExecutionError) Error() string { return e.Err.Error() }
+func (e *RemoteExecutionError) Unwrap() error { return e.Err }
+
+// ResultPersistenceError identifies local result-file failures after the
+// remote result has been consumed. A batch must stop rather than continue.
+type ResultPersistenceError struct{ Err error }
+
+func (e *ResultPersistenceError) Error() string { return e.Err.Error() }
+func (e *ResultPersistenceError) Unwrap() error { return e.Err }
 
 type SenderClient struct {
 	IP        string
@@ -459,9 +465,14 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	slog.DebugContext(ctx, "Requesting results", "sender", fmt.Sprintf("%T", c.Sender))
 
 	var result RequestServerResultReply
-	if err := callCtx(ctx, client, "Server.RequestServerResult",
-		RequestServerResultArgs{ID: c.ID}, &result); err != nil {
+	if err := callCtx(ctx, client, "Server.RequestServerResult", RequestServerResultArgs{ID: c.ID}, &result); err != nil {
 		return fmt.Errorf("Call Server.RequestServerResult failed: %w", err)
+	}
+	if !result.Complete {
+		return fmt.Errorf("server did not confirm completion for result %q", c.ID)
+	}
+	if result.Error != "" {
+		return &RemoteExecutionError{Err: fmt.Errorf("server measurement failed: %s", result.Error)}
 	}
 	res := result.Result
 
@@ -493,13 +504,13 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		c.UDPResults = processUDP(c.UDPMsgsSent, c.UDPMsgsRcvd)
 		rows := generateUDPResultRows(c.UDPResults)
 		if err := writeCSV(c.Out, rows); err != nil {
-			return fmt.Errorf("writeCSV failed: %w", err)
+			return &ResultPersistenceError{Err: fmt.Errorf("writeCSV failed: %w", err)}
 		}
 	case TCP:
 		sndrRows := generateTCPResultRows(c.TCPMetricsSndr)
 		// rcvrRows := generateTCPResultRows(c.TCPMetricsRcvr)
 		if err := writeCSV(c.Out, sndrRows); err != nil {
-			return fmt.Errorf("writeCSV failed: %w", err)
+			return &ResultPersistenceError{Err: fmt.Errorf("writeCSV failed: %w", err)}
 		}
 	case ICMP:
 		// TODO: change naming or merge strategy?
@@ -507,7 +518,7 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 		rows := generateUDPResultRows(c.UDPResults)
 		// slog.DebugContext(ctx, "Results", "MSGSSENT", c.UDPMsgsSent, "MSGSRCVD", c.UDPMsgsRcvd) //, "RESULTS", c.UDPResults)
 		if err := writeCSV(c.Out, rows); err != nil {
-			return fmt.Errorf("writeCSV failed: %w", err)
+			return &ResultPersistenceError{Err: fmt.Errorf("writeCSV failed: %w", err)}
 		}
 	default:
 		panic("Unknown SocketType")
@@ -652,7 +663,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 	if c.Local {
 		entries, err := os.ReadDir(c.tempDir)
 		if err != nil {
-			return fmt.Errorf("Failed os.ReadDir(%v): %w", c.tempDir, err)
+			return &ResultPersistenceError{Err: fmt.Errorf("Failed os.ReadDir(%v): %w", c.tempDir, err)}
 		}
 
 		for _, entry := range entries {
@@ -667,17 +678,21 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 			c.Artifacts = append(c.Artifacts, encPath)
 			f, err := os.Create(encPath)
 			if err != nil {
-				return fmt.Errorf("Failed os.Create(%v): %w", encPath, err)
+				return &ResultPersistenceError{Err: fmt.Errorf("Failed os.Create(%v): %w", encPath, err)}
 			}
 
 			fW := bufio.NewWriter(f)
 			if err := CompressFile(path, fW); err != nil {
-				return fmt.Errorf("Failed compression: %w", err)
+				_ = f.Close()
+				return &ResultPersistenceError{Err: fmt.Errorf("Failed compression: %w", err)}
 			}
-			fW.Flush()
+			if err := fW.Flush(); err != nil {
+				_ = f.Close()
+				return &ResultPersistenceError{Err: fmt.Errorf("Failed flushing compressed file %v: %w", encPath, err)}
+			}
 
 			if err := f.Close(); err != nil {
-				return fmt.Errorf("Failed closing compressed file %v: %w", encPath, err)
+				return &ResultPersistenceError{Err: fmt.Errorf("Failed closing compressed file %v: %w", encPath, err)}
 			}
 
 			if err := os.Remove(path); err != nil {
@@ -695,6 +710,12 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 		if err := callCtx(ctx, client, "Server.RequestRunCommandResult", RequestRunCommandResultArgs{ID: c.ID}, &result); err != nil {
 			return fmt.Errorf("Call Server.RunCommand failed: %w", err)
 		}
+		if !result.Complete {
+			return fmt.Errorf("server did not confirm completion for command result %q", c.ID)
+		}
+		if result.Error != "" {
+			return &RemoteExecutionError{Err: fmt.Errorf("server command failed: %s", result.Error)}
+		}
 
 		slog.DebugContext(ctx, "Received results", "name", fmt.Sprintf("%T", c.Params))
 
@@ -702,7 +723,7 @@ func (c *CommandClient) Gather(ctx context.Context, client *rpc.Client) error {
 			path := filepath.Join(c.LocalDir, fmt.Sprintf("%s.zst", filename))
 			c.Artifacts = append(c.Artifacts, path)
 			if err := os.WriteFile(path, bufEnc, 0644); err != nil {
-				return fmt.Errorf("Failed writing returned file to %v: %w", path, err)
+				return &ResultPersistenceError{Err: fmt.Errorf("Failed writing returned file to %v: %w", path, err)}
 			}
 		}
 	}

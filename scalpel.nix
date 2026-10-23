@@ -12,7 +12,7 @@ let
         (name: value: "-X=github.com/hendrikcech/netscalpel/internal/buildinfo.${name}=${value}")
         provenance;
     inherit src;
-    vendorHash = "sha256-gTXzfrIqbBtEcc7sDh/evydV/FEXRdK5MjYECLP6dTM=";
+    vendorHash = "sha256-+YWlpPdnBNMpBQ6BsRuXMwIvHMoZyBCONUiOM6IsOQ8=";
   };
 in
 {

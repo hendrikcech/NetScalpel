@@ -2,6 +2,7 @@ package experiment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/rpc"
 	"sync"
@@ -27,6 +28,7 @@ type Executor struct {
 	Manifest   *Manifest
 	mu         sync.Mutex
 	records    []*Measurement
+	runErrors  []error
 	ctx        context.Context
 }
 
@@ -77,6 +79,7 @@ func (e *Executor) launch(c pkg.Client, m *Measurement) {
 		m.ExecutionEnd = &end
 		m.Status = "ran"
 		if err != nil {
+			e.runErrors = append(e.runErrors, err)
 			m.Status = "failed"
 			if e.ctx.Err() != nil {
 				m.Status = "cancelled"
@@ -85,6 +88,18 @@ func (e *Executor) launch(c pkg.Client, m *Measurement) {
 		}
 		return err
 	})
+}
+
+// Wait preserves all measurement failures, including those concurrent with
+// cancellation; errgroup.Wait alone returns only the first error.
+func (e *Executor) Wait() error {
+	firstErr := e.G.Wait()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.runErrors) == 0 {
+		return firstErr
+	}
+	return errors.Join(e.runErrors...)
 }
 
 // AbortServerTests asks the server to cancel every test this executor
@@ -105,15 +120,29 @@ func (e *Executor) AbortServerTests() error {
 }
 
 func (e *Executor) GatherResults() error {
-	g := new(errgroup.Group)
+	errs := make([]error, len(e.Clients))
+	var wg sync.WaitGroup
 	for i, client := range e.Clients {
-		g.Go(func() error {
-			err := client.Gather(e.ctx, e.RpcClient)
+		idx, c := i, client
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := c.Gather(e.ctx, e.RpcClient)
+			errs[idx] = err
 			e.mu.Lock()
 			defer e.mu.Unlock()
-			m := e.records[i]
+			m := e.records[idx]
 			if err != nil {
-				m.GatherStatus = "failed"
+				var completed *pkg.RemoteExecutionError
+				var persistence *pkg.ResultPersistenceError
+				if errors.As(err, &completed) || errors.As(err, &persistence) {
+					// The server returned a terminal result. The procedure failed,
+					// or a local result write failed after consuming it. Remote work
+					// is confirmed stopped in either case.
+					m.GatherStatus = "complete"
+				} else {
+					m.GatherStatus = "failed"
+				}
 				if m.Status != "cancelled" {
 					m.Status = "failed"
 				}
@@ -124,10 +153,22 @@ func (e *Executor) GatherResults() error {
 					m.Status = "complete"
 				}
 			}
-			return err
-		})
+		}()
 	}
-	return g.Wait()
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// ResultsConfirmed reports whether every scheduled client delivered a terminal
+// result. A failed terminal result and a local result-writing error after
+// consuming it are still confirmation; a transport error is not.
+func (e *Executor) ResultsConfirmed() bool {
+	for _, record := range e.records {
+		if record.GatherStatus != "complete" {
+			return false
+		}
+	}
+	return true
 }
 
 // Tcpdump schedules paired local and remote packet captures from start for

@@ -11,9 +11,10 @@ var cli struct {
 
 	Client struct {
 		Results   string `help:"Path to the results folder." default:"results"`
+		Batch     string `help:"YAML batch file; mutually exclusive with --procedure, --params, and --rounds." xor:"batch-procedure,batch-params"`
 		Rounds    uint   `help:"Number of procedure rounds to run; 0 = infinite." default:"1"`
-		Procedure string `help:"Required: procedure to run. Use 'scalpel-exp procedures' to list supported procedures."`
-		Params    string `help:"Semicolon-separated key=value pairs passed to procedure."`
+		Procedure string `help:"Procedure to run (required unless --batch is supplied). Use 'scalpel-exp procedures' to list supported procedures." xor:"batch-procedure"`
+		Params    string `help:"Semicolon-separated key=value pairs passed to procedure." xor:"batch-params"`
 	} `cmd:"" help:"Run an experiment."`
 
 	Server struct {
