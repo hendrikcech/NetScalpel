@@ -4,7 +4,7 @@ import "github.com/alecthomas/kong"
 
 var cli struct {
 	Version  kong.VersionFlag `help:"Print running build version and provenance."`
-	IP       string           `help:"Server IP." default:"0.0.0.0"`
+	IP       string           `help:"Server IP (required for client)." default:"0.0.0.0"`
 	Port     uint             `help:"Server port." default:"8500"`
 	Log      string           `help:"Write all log output to this file."`
 	LogLevel int              `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
@@ -12,7 +12,7 @@ var cli struct {
 	Client struct {
 		Results   string `help:"Path to the results folder." default:"results"`
 		Rounds    uint   `help:"Number of procedure rounds to run; 0 = infinite." default:"1"`
-		Procedure string `help:"Procedure to use for the experiment."`
+		Procedure string `help:"Required: procedure to run. Use 'scalpel-exp procedures' to list supported procedures."`
 		Params    string `help:"Semicolon-separated key=value pairs passed to procedure."`
 	} `cmd:"" help:"Run an experiment."`
 

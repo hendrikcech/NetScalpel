@@ -7,19 +7,23 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/alecthomas/kong"
 
+	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/procedures"
 	"github.com/hendrikcech/netscalpel/internal/buildinfo"
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
 func main() {
-	kongctx := kong.Parse(&cli, kong.Vars{"version": buildinfo.String()})
-	if kongctx.Error != nil {
-		fmt.Printf("kong error: %v\n", kongctx.Error.Error())
-		os.Exit(1)
+	kongctx := kong.Parse(&cli, kong.Vars{"version": buildinfo.String()}, kong.UsageOnError())
+	if kongctx.Command() == "client" {
+		if err := validateClientFlags(); err != nil {
+			_ = kongctx.PrintUsage(false)
+			kongctx.Fatalf("%v", err)
+		}
 	}
 
 	pkg.RegisterGob()
@@ -50,16 +54,6 @@ func main() {
 
 	switch kongctx.Command() {
 	case "client":
-		if cli.IP == "0.0.0.0" || cli.IP == "" {
-			fmt.Println("Expected server --ip")
-			os.Exit(1)
-		}
-
-		if cli.Port == 0 {
-			fmt.Println("expected --port")
-			os.Exit(1)
-		}
-
 		if cli.Client.Rounds == 0 {
 			cli.Client.Rounds = math.MaxUint
 		}
@@ -111,4 +105,25 @@ func main() {
 	default:
 		panic(kongctx.Command())
 	}
+}
+
+func validateClientFlags() error {
+	var missing []string
+	if cli.IP == "" || cli.IP == "0.0.0.0" {
+		missing = append(missing, "--ip")
+	}
+	if cli.Client.Procedure == "" {
+		missing = append(missing, "--procedure")
+	}
+	const hint = "Run 'scalpel-exp procedures' to list supported procedures."
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required client flags: %s. %s", strings.Join(missing, ", "), hint)
+	}
+	if cli.Port == 0 {
+		return fmt.Errorf("--port must be greater than zero")
+	}
+	if _, ok := procedures.Lookup(cli.Client.Procedure); !ok {
+		return fmt.Errorf("unknown procedure %q. %s", cli.Client.Procedure, hint)
+	}
+	return nil
 }
