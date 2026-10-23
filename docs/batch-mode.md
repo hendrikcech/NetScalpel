@@ -1,7 +1,8 @@
 # Batch mode
 
 Batch mode runs a validated list of existing procedures in a
-chosen serial order. It does not add new measurement procedures. A procedure
+chosen serial order. Product expansion can create multiple configurations from a
+procedure entry, but it does not add new measurement procedures. A procedure
 round is one repetition of a procedure; a procedure invocation is one scheduled
 execution within that round. Some procedures have more than one invocation per
 round.
@@ -23,8 +24,10 @@ Batch mode uses the usual connection and logging options (`--ip`, `--port`,
 `--log`, and `--log-level`) and the results directory option (`--results`). It
 cannot be combined with the single-procedure options `--procedure`,
 `--params`, or `--rounds`, even when an explicitly supplied value matches its
-default. Use `./scalpel-exp procedures` and `./scalpel-exp procedures <name>` to
-check which procedures and parameters are registered in your build.
+default. Single-procedure runs require a positive `--rounds` value, which
+defaults to 1. Use `./scalpel-exp procedures` and
+`./scalpel-exp procedures <name>` to check which procedures and parameters are
+registered in your build.
 
 ## YAML format
 
@@ -32,39 +35,116 @@ The root requires a `mode` (`sequential`, `shuffled`, or `interleaved`) and a
 non-empty `steps` list. An optional signed 64-bit integer `seed` controls
 randomized ordering; if omitted, a seed is chosen for the run. A step is either
 a procedure entry with required `id`, `procedure`, and `rounds` fields and
-optional `params`, or a nested block with required `id`, explicit `mode`, and
-non-empty `steps`. A block
-has no `rounds` field and does not inherit parameters from its parent. The full
-examples below show the YAML structure.
+optional `params` and `product`, or a nested block with required `id`, explicit
+`mode`, and non-empty `steps`. `product` is available only on procedure entries,
+not on blocks or the batch root. A block has no `rounds` field and does not
+inherit parameters from its parent. The full examples below show the YAML
+structure.
 
 Put procedure options in the `params` mapping, not a semicolon-separated CLI
 string. Use YAML integers for numeric options and YAML lists for list options,
 for example `durations: [100, 400, 1000]`. Omitted procedure parameters use their
 registered defaults. Direction is special: omitting it can change how many
-invocations run, as described below.
+invocations run, as described below. Ordinary `params` retain their existing
+meaning: a list supplied there is passed as one parameter value, and the
+procedure decides how to use or sample that value. It is not a product axis.
 
 All IDs must be explicit and globally unique across the entire YAML tree,
-including block IDs. IDs start with an ASCII letter or digit, contain only
-ASCII letters, digits, dots, underscores, or hyphens, and are at most 64
-characters long. `rounds` belongs to each procedure entry and must be a
-positive finite integer. It is that entry's exact number of repetitions and is
-not inherited from an ancestor. Nested entries are identified in results by
-their IDs and parent-block ancestry. Unlike single-procedure `--rounds 0`, a
-batch cannot request infinite repetition: `rounds: 0` is invalid.
+including block IDs. A normal ID starts with an ASCII letter or digit, contains
+only ASCII letters, digits, dots, underscores, or hyphens, and is at most 64
+characters long. For a product entry, `id` is an explicit template: it must
+contain at least one `{parameter}` placeholder naming a product axis. For
+example, `downlink-{duration_ms}` can render as `downlink-1000` and
+`downlink-3000`. Placeholders substitute only scalar number, boolean, or string
+candidates. They do not support expressions, formatting, or list substitution.
+The template is syntax only; every rendered ID must independently match the
+normal ASCII pattern, stay within 64 characters, and be globally unique across
+all expanded entries, other entries, and blocks. Invalid or duplicate rendered
+IDs fail validation; IDs are never sanitized or truncated, and there is no
+automatic ID fallback.
+
+`rounds` belongs to each procedure entry and must be a positive finite integer.
+For a product entry it is the exact number of repetitions **per generated
+configuration**. It is not inherited from an ancestor. Nested entries are
+identified in results by their IDs and parent-block ancestry. Zero repetitions
+are invalid in both batch and single-procedure mode.
+
+### Product expansion
+
+On a procedure entry, `product` maps registered procedure parameter names to
+non-empty YAML sequences of candidate values. A key must be a parameter the
+procedure supports; `direction` is allowed only when that procedure supports
+it. A parameter cannot appear in both `params` and `product`: put fixed values
+in `params` and axes to expand in `product`. Each candidate is checked using
+the same native YAML parameter type rules as an ordinary parameter. For a
+list-valued parameter, a scalar candidate means a one-item list, while a nested
+list candidate supplies the complete list value.
+
+The batch creates one procedure entry for every combination of product
+candidates. Axes are processed in parameter-name order, and candidates retain
+their authored order; the last axis varies fastest. Expansion is deterministic.
+Each generated entry gets
+its own rendered ID and resolved parameters. A product ID must identify every
+generated entry uniquely. In particular, list-valued candidates cannot be
+inserted into an ID; if other scalar axes do not make the rendered IDs unique,
+validation rejects the product.
+
+```yaml
+mode: sequential
+steps:
+  - id: "rate-{direction}-{duration_ms}"
+    procedure: rate
+    rounds: 2
+    product:
+      direction: [dl, ul]
+      duration_ms: [1000, 3000]
+```
+
+This complete example uses the registered `rate` procedure and expands to
+`rate-dl-1000`, `rate-dl-3000`, `rate-ul-1000`, and `rate-ul-3000`. Each generated
+configuration has two rounds and an explicit direction: four configurations
+times two rounds gives eight invocations. To sweep only downlink durations,
+move `direction: dl` to `params`, remove its product axis, and use
+`id: "downlink-{duration_ms}"`. If the product axes describe
+all the choices for each configuration, product expansion directly provides
+one entry per configuration; no procedure-specific `single_config` setting is
+needed just to force that behavior. Other unswept multi-value parameters in
+`params` remain ordinary parameter values and may still be sampled or
+interpreted by the procedure.
+
+For a list-valued parameter such as `multidurrate`'s `ratesDL`, scalar candidates
+like `ratesDL: [500, 600]` expand to separate singleton-list configurations and
+can appear in the ID template. A nested candidate such as
+`ratesDL: [[500, 600]]` supplies one complete list, but cannot appear in the ID
+template. Multiple whole-list candidates cannot be distinguished by scalar-only
+templates: other axes are crossed with every list candidate, so their values
+alone cannot make IDs unique. Use separate explicitly named entries for those
+whole-list configurations, or put a fixed list in `params`.
+
+The CLI is unchanged: use the same `--batch batch.yaml` command shown above.
+There is no `--product` flag; declare expansion in the YAML entry.
 
 ### Ordering modes
 
 - **`sequential`** runs direct children in the order written. A procedure entry
-  completes all its rounds before the next child. A nested block runs in that
-  position using its own mode.
+  completes all its rounds before the next child. Product-generated entries
+  are siblings in their deterministic expansion order, with all rounds for one
+  configuration completed before the next. A nested block runs in that position
+  using its own mode.
 - **`shuffled`** shuffles the direct children once. Each procedure entry's
   rounds still run together, and nested blocks remain contiguous, using their
-  own modes internally.
+  own modes internally. Product-generated configurations are direct children
+  and are shuffled like other entries.
 - **`interleaved`** shuffles a pool containing one item per round of each
   direct procedure entry, plus one atomic item for each direct nested block.
-  Each procedure-round item is scheduled once; a block runs completely and
+  Each procedure-round item is scheduled once; for products, the pool has one
+  item per generated configuration-round. A block runs completely and
   contiguously before the next pool item. A block's own mode controls its
   internal ordering.
+
+Expansion does not create an implicit group around a sweep. To keep a product's
+configurations contiguous as one unit relative to the block's siblings, put the
+product entry inside an explicit block.
 
 Randomization changes serial order only; it does not run tests concurrently.
 Round counts are exact repetitions, not time shares. In interleaved mode, the
@@ -180,9 +260,10 @@ steps:
 ## Directions, rounds, and invocations
 
 UL means client to server; DL means server to client. For a per-direction
-procedure such as `rate`, omitting `direction` means DL then UL
-invocations, kept together within each round. Setting `direction: ul` or
-`direction: dl` selects one direction; values are case-insensitive. A
+procedure such as `rate`, omitting `direction` means DL then UL invocations,
+kept together within each round of each generated configuration. Setting
+`direction: ul` or `direction: dl` selects one direction; values are
+case-insensitive. A
 procedure that runs once per round may handle omission differently: for example,
 `ratebidir` covers both directions in one invocation when direction is omitted.
 `trace` does not support a direction parameter. Check the help for the specific
@@ -190,17 +271,21 @@ procedure before setting parameters.
 
 ## Validation
 
-The complete YAML tree is validated before any tests start. Validation
-rejects unknown fields, unknown procedures or parameter keys, invalid
-parameter values, duplicate or missing IDs, empty step lists, and invalid
-round counts. This avoids starting a batch that is malformed partway through.
-Use one YAML document; aliases and merge keys are not supported. Numeric
-parameters and round counts must be native YAML integers, not quoted strings
-or fractional numbers.
+The complete YAML tree, including every product expansion and every generated
+configuration's procedure schedule, is validated before any tests start.
+Validation rejects unknown fields, unknown procedures or parameter keys,
+invalid parameter values, invalid product axes or candidates, overlapping fixed
+and product parameters, duplicate or missing IDs (including rendered IDs),
+empty step lists, and invalid round counts. This avoids starting a batch that
+is malformed partway through. Use one YAML document; aliases and merge keys are
+not supported. Numeric parameters and round counts must be native YAML
+integers, not quoted strings or fractional numbers.
 
 A configuration can be at most 8 MiB, with at most 16 levels of steps and
-10,000 planned invocations in total. A per-direction round with omitted
-direction counts as two invocations toward that limit.
+10,000 planned invocations in total after product expansion, rounds, and
+direction expansion. A per-direction round with omitted direction counts as
+two invocations toward that limit. All expanded configurations are checked
+against the limit and schedule-validated before the batch runs.
 
 ## Errors and interruption
 
@@ -248,9 +333,9 @@ Each run creates a separate batch directory beneath `--results`, so running
 another batch does not replace earlier summaries. The command prints the batch
 directory. It contains:
 
-- `batch-plan.json`: the seed, software build, resolved parameters, entry and
-  block identities, and the full planned invocation order, saved before any
-  measurements start.
+- `batch-plan.json`: the seed, software build, resolved parameters, generated
+  entry IDs and block identities, and the full planned invocation order, saved
+  before any measurements start.
 - `batch-summary.json`: per-invocation outcomes, result paths and errors, and
   round and invocation counts for each entry, each block, and the whole batch.
   This file is updated during execution and finalized when the batch stops.
@@ -271,8 +356,9 @@ Use `execution_position` in the plan and summary to follow the actual ordering.
 At the end, the command prints and saves a summary with successful and failed
 round and invocation counts for each procedure entry and overall. The summary
 includes block ancestry; the saved files include error details and result paths.
-Together, the plan and summary record the order, seed, resolved procedure
-parameters, and software version to help reproduce a run. A batch with failures
+Together, the plan and summary record each generated ID, its resolved procedure
+parameters and block ancestry, the order, seed, and software version to help
+reproduce a run. A batch with failures
 exits nonzero. Successful, failed, cancelled, and not-run work are counted
 separately; success means the invocation finished and its results were collected, not that
 the measured network had no packet loss.
@@ -285,7 +371,8 @@ without overlap; randomization only changes order and does not add parallel
 execution. Batch mode does not add a cooldown. Measurement state such as
 queues or network load can carry over between items, and serial order can bias
 comparisons, so random ordering does not by itself remove time-dependent
-effects. Batch mode does not include block repetition, parameter
-inheritance, retries, resuming, or parallel execution. Serial ordering applies
-only to this batch; other clients or background traffic can still interfere
-with measurements.
+effects. Batch mode does not include block repetition, parameter inheritance,
+retries, resuming, or parallel execution. Product expansion creates sibling
+entries; it does not change ordinary parameter semantics. Serial ordering
+applies only to this batch; other clients or background traffic can still
+interfere with measurements.

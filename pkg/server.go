@@ -553,8 +553,8 @@ func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *Reques
 
 	received, err := handleChanResult(ctx, c, args.ID, reply)
 	if received {
-		// The server runs indefinitely (--rounds 0); drop the entry so the
-		// map does not grow by one test forever.
+		// Drop completed entries so the map does not grow over the server's
+		// lifetime.
 		s.resultLock.Lock()
 		delete(s.resultC, args.ID)
 		s.resultLock.Unlock()

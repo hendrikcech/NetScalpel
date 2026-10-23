@@ -43,6 +43,7 @@ type batchNode struct {
 	Mode      string
 	IsBlock   bool
 	Procedure string
+	Product   *batchProduct
 	Rounds    uint
 	Params    experiment.ParamMap
 	Children  []*batchNode
@@ -257,6 +258,7 @@ func buildBatchPlan(data []byte, batchID string) (*BatchPlan, error) {
 	if len(steps) == 0 {
 		return nil, errors.New("batch root: steps must be non-empty")
 	}
+	rootNode := &batchNode{Mode: mode, Children: steps}
 	plan := &BatchPlan{
 		SchemaVersion:         batchFileFormatVersion,
 		BatchID:               batchID,
@@ -267,7 +269,7 @@ func buildBatchPlan(data []byte, batchID string) (*BatchPlan, error) {
 		MaxDepth:              MaxBatchDepth,
 		MaxPlannedInvocations: MaxPlannedInvocations,
 	}
-	plan.root = &batchNode{Mode: mode, Children: steps}
+	plan.root = rootNode
 	plannedCount := 0
 	if err := prepareBatchNode(plan.root, seed, &plannedCount); err != nil {
 		return nil, err
@@ -294,7 +296,16 @@ func validBatchMode(mode string) bool {
 }
 
 func parseBatchSteps(node *yaml.Node, depth int, ancestry []string) ([]*batchNode, error) {
-	return parseBatchStepsSeen(node, depth, ancestry, make(map[string]struct{}))
+	seenIDs := make(map[string]struct{})
+	steps, err := parseBatchStepsSeen(node, depth, ancestry, seenIDs)
+	if err != nil {
+		return nil, err
+	}
+	root := &batchNode{Children: steps}
+	if err := expandBatchProducts(root, seenIDs); err != nil {
+		return nil, err
+	}
+	return root.Children, nil
 }
 
 func parseBatchStepsSeen(node *yaml.Node, depth int, ancestry []string, seenIDs map[string]struct{}) ([]*batchNode, error) {
@@ -311,27 +322,26 @@ func parseBatchStepsSeen(node *yaml.Node, depth int, ancestry []string, seenIDs 
 		if err != nil {
 			return nil, err
 		}
-		if err := onlyFields(fields, where, "id", "procedure", "rounds", "params", "mode", "steps"); err != nil {
+		if err := onlyFields(fields, where, "id", "procedure", "rounds", "params", "product", "mode", "steps"); err != nil {
 			return nil, err
 		}
 		id, err := requiredString(fields, "id", where)
 		if err != nil {
 			return nil, err
 		}
-		if !batchIDPattern.MatchString(id) || len(id) > MaxBatchIDLength {
-			return nil, fmt.Errorf("%s: ID %q must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}", where, id)
+		_, hasProduct := fields["product"]
+		if !hasProduct {
+			if err := reserveBatchID(id, where, seenIDs); err != nil {
+				return nil, err
+			}
 		}
-		if _, exists := seenIDs[id]; exists {
-			return nil, fmt.Errorf("duplicate batch ID %q", id)
-		}
-		seenIDs[id] = struct{}{}
-		stepAncestry := append(append([]string(nil), ancestry...), id)
 		procedureNode, procedureSet := fields["procedure"]
 		modeNode, modeSet := fields["mode"]
 		if procedureSet == modeSet {
 			return nil, fmt.Errorf("%s: must be either a procedure entry or a nested block", where)
 		}
 		if procedureSet {
+			productNode := fields["product"]
 			if _, ok := fields["steps"]; ok {
 				return nil, fmt.Errorf("%s: procedure entries cannot have steps", where)
 			}
@@ -342,6 +352,10 @@ func parseBatchStepsSeen(node *yaml.Node, depth int, ancestry []string, seenIDs 
 			if err != nil {
 				return nil, err
 			}
+			proc, found := procedures.Lookup(procedure)
+			if hasProduct && !found {
+				return nil, fmt.Errorf("%s: unknown procedure %q", where, procedure)
+			}
 			roundsNode, ok := fields["rounds"]
 			if !ok {
 				return nil, fmt.Errorf("%s: missing required field \"rounds\"", where)
@@ -350,9 +364,9 @@ func parseBatchStepsSeen(node *yaml.Node, depth int, ancestry []string, seenIDs 
 			if err != nil {
 				return nil, err
 			}
+			stepAncestry := append(append([]string(nil), ancestry...), id)
 			step := &batchNode{ID: id, Procedure: procedure, Rounds: rounds, Params: experiment.ParamMap{}, Ancestry: stepAncestry}
 			if paramsNode, ok := fields["params"]; ok {
-				proc, found := procedures.Lookup(procedure)
 				if !found {
 					return nil, fmt.Errorf("%s: unknown procedure %q", where, procedure)
 				}
@@ -361,9 +375,19 @@ func parseBatchStepsSeen(node *yaml.Node, depth int, ancestry []string, seenIDs 
 					return nil, err
 				}
 			}
+			if hasProduct {
+				step.Product, err = parseBatchProduct(productNode, proc, id, step.Params, where+" product")
+				if err != nil {
+					return nil, err
+				}
+			}
 			steps = append(steps, step)
 			continue
 		}
+		if _, ok := fields["product"]; ok {
+			return nil, fmt.Errorf("%s: product is only allowed on procedure entries", where)
+		}
+		stepAncestry := append(append([]string(nil), ancestry...), id)
 		if _, ok := fields["rounds"]; ok {
 			return nil, fmt.Errorf("%s: nested blocks cannot have rounds", where)
 		}

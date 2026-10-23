@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// The server runs indefinitely with --rounds 0; per-test state must not
-// accumulate. finishTest already removes testCancel, and retrieving a result
-// must remove the resultC entry.
+// Per-test state must not accumulate over the server's lifetime. finishTest
+// already removes testCancel, and retrieving a result must remove the resultC
+// entry.
 func TestResultMapCleanedAfterRetrieval(t *testing.T) {
 	srvCtx, srvCancel := context.WithCancel(context.Background())
 	defer srvCancel()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -71,10 +70,6 @@ func main() {
 			}
 			return
 		}
-		if cli.Client.Rounds == 0 {
-			cli.Client.Rounds = math.MaxUint
-		}
-
 		params, err := parseParams(cli.Client.Params)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed parsing params", "error", err)
@@ -148,6 +143,9 @@ func validateClientFlags(args []string) error {
 	}
 	if batchSet {
 		return nil
+	}
+	if cli.Client.Rounds == 0 {
+		return fmt.Errorf("--rounds must be greater than zero")
 	}
 	if _, ok := procedures.Lookup(cli.Client.Procedure); !ok {
 		return fmt.Errorf("unknown procedure %q. %s", cli.Client.Procedure, hint)

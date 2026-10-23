@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,8 @@ func TestCLIHelp(t *testing.T) {
 		{"missing IP", []string{"client", "--procedure", "burst"}, []string{"Usage:", "missing required client flags: --ip"}, false},
 		{"unknown procedure", []string{"client", "--ip", "127.0.0.1", "--procedure", "no-such-procedure"}, []string{"Usage:", `unknown procedure "no-such-procedure"`, "scalpel-exp procedures"}, false},
 		{"zero port", []string{"client", "--ip", "127.0.0.1", "--procedure", "burst", "--port", "0"}, []string{"Usage:", "--port must be greater than zero"}, false},
+		{"zero rounds with equals", []string{"client", "--ip", "127.0.0.1", "--procedure", "burst", "--rounds=0"}, []string{"Usage:", "--rounds must be greater than zero"}, false},
+		{"zero rounds as argument", []string{"client", "--ip", "127.0.0.1", "--procedure", "burst", "--rounds", "0"}, []string{"Usage:", "--rounds must be greater than zero"}, false},
 		{"batch conflicts with procedure", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--procedure", "burst"}, []string{"--batch and --procedure can't be used together"}, false},
 		{"batch conflicts with params", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--params="}, []string{"--batch and --params can't be used together"}, false},
 		{"batch conflicts with explicitly default rounds", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--rounds=1"}, []string{"--batch and --rounds can't be used together"}, false},
@@ -56,6 +59,55 @@ func TestCLIHelp(t *testing.T) {
 			}
 			if strings.Contains(string(output), "Procedure setup failed") {
 				t.Errorf("CLI validation reached runtime setup:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestCLIRejectsZeroRoundsBeforeSideEffects(t *testing.T) {
+	for _, rounds := range [][]string{{"--rounds=0"}, {"--rounds", "0"}} {
+		name := strings.Join(rounds, " ")
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			logPath := filepath.Join(root, "client.log")
+			resultsPath := filepath.Join(root, "results")
+			cliArgs := append([]string{"--log", logPath, "client", "--ip", "127.0.0.1", "--port", "1", "--procedure", "trace"}, rounds...)
+			cliArgs = append(cliArgs, "--results", resultsPath)
+			args := append([]string{"-test.run=^TestCLIHelp$", "--"}, cliArgs...)
+			cmd := exec.Command(os.Args[0], args...)
+			cmd.Env = append(os.Environ(), "SCALPEL_EXP_TEST_CLI=1")
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected zero rounds to be rejected\n%s", output)
+			}
+			if !strings.Contains(string(output), "--rounds must be greater than zero") {
+				t.Fatalf("missing rounds validation error:\n%s", output)
+			}
+			if strings.Contains(string(output), "rpc dial") || strings.Contains(string(output), "Experiment failed") {
+				t.Fatalf("CLI reached runtime after invalid rounds:\n%s", output)
+			}
+			for _, path := range []string{logPath, resultsPath} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("invalid rounds created %q: %v", path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateClientFlagsAcceptsPositiveRounds(t *testing.T) {
+	previous := cli
+	defer func() { cli = previous }()
+	cli.IP = "127.0.0.1"
+	cli.Port = 8500
+	cli.Client.Batch = ""
+	cli.Client.Procedure = "trace"
+
+	for _, rounds := range []uint{1, 2} {
+		t.Run(strconv.FormatUint(uint64(rounds), 10), func(t *testing.T) {
+			cli.Client.Rounds = rounds
+			if err := validateClientFlags([]string{"client"}); err != nil {
+				t.Fatalf("positive rounds %d rejected: %v", rounds, err)
 			}
 		})
 	}

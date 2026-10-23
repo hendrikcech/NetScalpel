@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/experiment"
 	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/procedures"
@@ -28,6 +32,45 @@ func TestDialRpcClientReturnsErrorOnRefusedConn(t *testing.T) {
 	if err == nil {
 		client.Close()
 		t.Fatal("expected an error dialing a closed port")
+	}
+}
+
+func TestClientRunRejectsZeroRoundsBeforeSideEffects(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	results := filepath.Join(root, "results")
+	logger := slog.Default()
+	client := &Client{
+		IP:      "127.0.0.1",
+		Port:    uint(listener.Addr().(*net.TCPAddr).Port),
+		Results: results,
+		Rounds:  0,
+	}
+	if err := client.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "rounds must be greater than zero") {
+		t.Fatalf("Run error = %v, want positive-rounds validation error", err)
+	}
+	if client.experimentID != "" {
+		t.Errorf("Run generated experiment ID before rejecting rounds: %q", client.experimentID)
+	}
+	if slog.Default() != logger {
+		t.Error("Run configured logging before rejecting rounds")
+	}
+	if _, err := os.Stat(results); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Run created results directory despite invalid rounds: %v", err)
+	}
+	if conn, err := listener.Accept(); err == nil {
+		conn.Close()
+		t.Error("Run dialed server despite invalid rounds")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("listener accept error = %v, want timeout", err)
 	}
 }
 

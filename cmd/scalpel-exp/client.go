@@ -79,6 +79,10 @@ func (c *Client) prepareOverrides() (procedures.Procedure, []experiment.ParamMap
 }
 
 func (c *Client) Run(ctx context.Context) error {
+	if c.Rounds == 0 {
+		return fmt.Errorf("rounds must be greater than zero")
+	}
+
 	c.experimentID = pkg.GenID("experiment")
 	if err := c.setupSlog(ctx, ""); err != nil {
 		return err

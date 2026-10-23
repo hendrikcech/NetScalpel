@@ -60,8 +60,12 @@ func TestCLIOutputFailureExitsNonzero(t *testing.T) {
 	}
 	ip, port := failureRPC(t)
 	cmd := exec.Command(bin, "client", "--ip", ip, "--port", strconv.Itoa(int(port)), "--procedure", "burst", "--results", "/dev/null/no-results")
-	if out, err := cmd.CombinedOutput(); err == nil {
+	out, err := cmd.CombinedOutput()
+	if err == nil {
 		t.Fatalf("CLI returned success: %s", out)
+	}
+	if !bytes.Contains(out, []byte("Experiment failed")) || bytes.Contains(out, []byte("rounds must be greater than zero")) {
+		t.Fatalf("CLI default round count did not reach experiment execution:\n%s", out)
 	}
 }
 
