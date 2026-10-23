@@ -236,7 +236,7 @@
             exec ${pkgs.python3}/bin/python3 ${source}/measurements/repeat.py \
               --range "''${1:-0}" --status out/benchmark-owd/execution.json \
               --fresh-root out/benchmark-owd \
-              -- ${benchmarkOWD}/bin/benchmark-owd
+              -- ${lib.getExe benchmarkOWD}
           '';
 
           mkDeliveryScenario = name: impairment: mkScenario {

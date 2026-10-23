@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 
 def run_range(command, indices, status_path, fresh_root=None):
@@ -31,6 +32,8 @@ def run_range(command, indices, status_path, fresh_root=None):
             run["error"] = str(error)
         record["runs"].append(run)
         save()
+        if run["status"] != "complete":
+            print(f"repetition {index} failed: {run.get('error', 'exit ' + str(run.get('returncode')))}", file=sys.stderr)
     record["status"] = "complete" if record["runs"] and all(run["status"] == "complete" for run in record["runs"]) else "failed"
     save()
     return 0 if record["status"] == "complete" else 1
