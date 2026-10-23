@@ -136,6 +136,18 @@ class ReportTest(unittest.TestCase):
                                      min_packets=2, expected_csv=["owd_ul.csv", "owd_dl.csv"])
             self.assertEqual(result["validity"]["status"], "valid")
 
+    def test_failed_repetition_is_not_masked_by_valid_udp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            udp_csv(root / "raw.csv")
+            status = root / "execution.json"
+            status.write_text(json.dumps({"status": "complete", "runs": [
+                {"status": "complete", "returncode": 0}, {"status": "failed", "returncode": 1}]}))
+            result = report.generate("udp", root / "raw.csv", root / "report", execution_path=status)
+            self.assertEqual(result["validity"]["status"], "valid")
+            self.assertEqual(result["execution"]["status"], "failed")
+            self.assertIn("repetitions", result["execution"]["reason"])
+
     def test_tx_log_positive_fallback_and_missing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -16,7 +16,7 @@ python3 benchmarks/run.py pacing --out out/pacing-low --repetitions 2 \
   --cases single7pps,split7pps,short7pps
 
 # Separate supported Nix backend (requires Nix and the nixnet runtime):
-nix run ./e2e#benchmark-owd
+nix run ./e2e#benchmark-owd 1-3
 
 # Offline reports never infer successful execution from the presence of files.
 python3 benchmarks/report.py pacing out/benchmark-pacing/raw \
@@ -70,6 +70,14 @@ and no timestamp fallback marker. Missing logs, missing positive markers, and
 fallbacks make validity invalid **without suppressing the report**. Without
 `--tx-log`, timestamp provenance is explicitly unknown with a warning; the
 report does not claim kernel timestamps. Backend labels alone prove nothing.
+
+`benchmark-owd` wraps individual nixnet invocations with checked repetition
+handling and saves `out/benchmark-owd/execution.json`. Unlike nixnet's native
+range loop, it returns nonzero if **any** repetition fails. Aggregated offline
+reports can use `--execution-json out/benchmark-owd/execution.json`; failed or
+unfinished repetition records cannot be promoted to complete by valid CSVs.
+The output root must be fresh; run from a different working directory (with
+an absolute flake path) for another study rather than overwriting raw results.
 
 ### Continuous pacing stability
 

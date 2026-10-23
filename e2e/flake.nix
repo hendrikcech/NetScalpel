@@ -226,6 +226,18 @@
                 --tx-log client/owd_ul.log --tx-log server/server.log
             '';
           });
+          # nixnet's own range loop ignores individual failures. Invoke only
+          # single runs underneath a checked wrapper, preserving every status.
+          benchmarkRunner = pkgs.writeShellScriptBin "benchmark-owd" ''
+            if [ "$#" -gt 1 ]; then
+              echo 'usage: benchmark-owd [index|first-last]' >&2
+              exit 2
+            fi
+            exec ${pkgs.python3}/bin/python3 ${source}/measurements/repeat.py \
+              --range "''${1:-0}" --status out/benchmark-owd/execution.json \
+              --fresh-root out/benchmark-owd \
+              -- ${benchmarkOWD}/bin/benchmark-owd
+          '';
 
           mkDeliveryScenario = name: impairment: mkScenario {
             name = "e2e-${name}";
@@ -277,7 +289,7 @@
             mermaid = nixnet.mkMermaid configs.owd;
             all = all;
             smoke = all;
-            benchmark-owd = benchmarkOWD;
+            benchmark-owd = benchmarkRunner;
           };
         };
     };

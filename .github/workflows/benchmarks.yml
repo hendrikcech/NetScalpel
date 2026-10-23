@@ -82,7 +82,7 @@ jobs:
             logs+=(--tx-log "out/benchmark-owd/$run/client/owd_ul.log" --tx-log "out/benchmark-owd/$run/server/server.log")
           done
           python3 benchmarks/report.py udp out/benchmark-owd --out out/benchmark-owd/report \
-            --expected-delay-ms 20 --backend nixnet --execution-status complete \
+            --expected-delay-ms 20 --backend nixnet --execution-json out/benchmark-owd/execution.json \
             --min-packets 250 "${expected[@]}" "${logs[@]}"
       - name: Publish reports to job summary
         if: always()

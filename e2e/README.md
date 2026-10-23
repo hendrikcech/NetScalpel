@@ -89,6 +89,10 @@ still fails. Report generation also works offline; see the benchmark README.
 The CI benchmark workflow publishes reports in job summaries and retains raw
 data plus generated artifacts. Hosted-runner results are descriptive, not
 dedicated-host regression baselines.
+The benchmark wrapper records individual repetition exit statuses in
+`out/benchmark-owd/execution.json` and fails if any run fails. The older smoke
+scenario range commands use nixnet's native range loop, which suppresses
+individual failures; use single-run invocations for gating (as CI does).
 
 ### Duplicate and reordering ground truth
 

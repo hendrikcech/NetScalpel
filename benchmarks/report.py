@@ -212,7 +212,7 @@ def plot(runs, suite):
 
 
 def generate(suite, source, out, *, cases=None, repetitions=6, expected_delay_ms=None,
-             execution=None, provenance=None, backend=None, tx_logs=(), min_packets=1, expected_csv=()):
+             execution=None, provenance=None, backend=None, tx_logs=(), min_packets=1, expected_csv=(), execution_path=None):
     source, out = Path(source), Path(out)
     if source.is_dir() and source.resolve() == out.resolve():
         raise ValueError("report output would overwrite the input directory; choose a different --out directory")
@@ -236,6 +236,23 @@ def generate(suite, source, out, *, cases=None, repetitions=6, expected_delay_ms
         raw_provenance["timestamps"] = timestamps
         reasons.extend(errors)
         paths.extend(Path(path) for path in tx_logs)
+    if execution_path is not None:
+        paths.append(Path(execution_path))
+        try:
+            execution = json.loads(Path(execution_path).read_text())
+            if not isinstance(execution, dict) or execution.get("status") not in ("complete", "failed", "unknown", "running"):
+                raise ValueError("invalid execution status")
+            if "runs" in execution:
+                if not execution["runs"] or not isinstance(execution["runs"], list):
+                    raise ValueError("invalid repetition execution records")
+                if any(not isinstance(run, dict) or run.get("status") != "complete" or run.get("returncode") != 0
+                       for run in execution["runs"]):
+                    execution = {**execution, "status": "failed", "reason": "One or more repetitions did not complete successfully."}
+            if execution["status"] == "running":
+                execution = {**execution, "status": "failed", "reason": "Execution record was not finalized."}
+        except (OSError, ValueError) as error:
+            reasons.append(f"{execution_path}: invalid execution evidence: {error}")
+            execution = {"status": "unknown", "reason": "Execution evidence unavailable or invalid."}
     execution = execution or {"status": "unknown", "reason": "Independent artifacts do not prove execution completion."}
     summary = aggregate(runs)
     outputs = ["manifest.json", "metrics.json", "summary.csv", "report.md", "plot.svg"]
@@ -309,7 +326,8 @@ def main(argv=None):
     udp.add_argument("--out", required=True, type=Path)
     udp.add_argument("--expected-delay-ms", type=float)
     udp.add_argument("--execution-status", choices=["complete", "failed", "unknown"], default="unknown",
-                     help="caller-supplied execution evidence; offline default is unknown")
+                      help="caller-supplied execution evidence; offline default is unknown")
+    udp.add_argument("--execution-json", type=Path, help="execution record from checked repetition runner; overrides status flag")
     udp.add_argument("--backend", default="external-udp-csv")
     udp.add_argument("--tx-log", action="append", type=Path, default=[])
     udp.add_argument("--min-packets", type=int, default=1, help="required rows in every raw CSV")
@@ -326,6 +344,7 @@ def main(argv=None):
               else {"expected_delay_ms": args.expected_delay_ms, "backend": args.backend,
                      "tx_logs": args.tx_log,
                      "min_packets": args.min_packets, "expected_csv": args.expect_csv,
+                     "execution_path": args.execution_json,
                     "execution": {"status": args.execution_status,
                                   "reason": "Caller-supplied status" if args.execution_status != "unknown"
                                   else "Independent artifacts do not prove execution completion."}})
