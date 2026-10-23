@@ -13,6 +13,10 @@
 
 NetScalpel is a custom network measurement tool designed for fine-grained control over packet transmission timing and scheduling. Written in Go, it utilizes a client-server architecture to coordinate test execution and exchange results over a TCP control channel. The toolkit leverages kernel-level timestamps to record per-packet send and receive times with microsecond precision, enabling accurate computation of one-way delay (OWD), packet loss, and receive rates. Accurate analysis requires NTP synchronization between the client and server endpoints.
 
+For development, see [correctness smoke tests](e2e/README.md),
+[measurement benchmarks and reports](benchmarks/README.md), and the
+[shared infrastructure overview](measurements/README.md).
+
 ## Versions
 
 - **v1.0** is the original released version used for the SIGCOMM paper below.
