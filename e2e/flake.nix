@@ -1,5 +1,5 @@
 {
-  description = "End-to-end validation of NetScalpel measurements against netem ground truth";
+  description = "NetScalpel smoke tests and measurement benchmarks on nixnet";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -9,7 +9,7 @@
   };
 
   outputs =
-    inputs@{ flake-parts, ... }:
+    inputs@{ self, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = inputs.nixnet.supportedSystems;
       perSystem =
@@ -24,12 +24,19 @@
             (import ../scalpel.nix {
               inherit pkgs;
               src = ../.;
+              provenance = if self ? rev then { Revision = self.rev; Dirty = "false"; }
+                else if self ? dirtyRev then {
+                  Revision = lib.removeSuffix "-dirty" self.dirtyRev;
+                  Dirty = "true";
+                } else { };
             }).scalpel-run;
 
           clientIP = "10.0.0.1";
           serverIP = "10.0.1.2";
 
-          verify = "${pkgs.python3}/bin/python3 ${./verify.py}";
+          source = ../.;
+          verify = "${pkgs.python3}/bin/python3 ${source}/e2e/verify.py";
+          report = "${pkgs.python3}/bin/python3 ${source}/benchmarks/report.py";
 
           # Topology: client -- router -- server, with netem only on the
           # router's egress interfaces. Emulation must not sit on the sender's
@@ -44,110 +51,16 @@
           # awaited: the experiment fails if any command in it fails. `check`
           # runs in the testbed context (cwd = out/<scenario>/<run>) after the
           # client script finished and can see all node directories.
-          mkScenario =
-            {
-              name,
-              netemUL,
-              netemDL,
-              client,
-              check,
-              extraNodePackages ? [ ],
-              routerSetup ? "",
-            }:
-            {
-              inherit name;
-              workDir = "out/${name}/{run}";
-              # Prefilled ARP tables keep address resolution (which the loss
-              # and delay emulation would also hit) out of the measurements.
-              arp = false;
-              arpPrefill = true;
-              nodePackages = [
-                scalpelRun
-                pkgs.coreutils
-              ]
-              ++ extraNodePackages;
-              nodes = {
-                client = {
-                  networking.interfaces.veth0.ipv4 = {
-                    addresses = [
-                      {
-                        address = clientIP;
-                        prefixLength = 24;
-                      }
-                    ];
-                    routes = [
-                      {
-                        address = "10.0.1.0";
-                        prefixLength = 24;
-                        via = "10.0.0.2";
-                      }
-                    ];
-                  };
-                  scripts.main = {
-                    exec = ''
-                      sleep 1 # wait for the server to open its RPC socket
-                      ${client}
-                    '';
-                    await = true;
-                  };
-                  # Let the ICMP test use unprivileged datagram sockets (the
-                  # path production measurements take) instead of raw sockets.
-                  sysctl."net.ipv4.ping_group_range" = "0 0"; # only mapped GIDs are allowed inside the user namespace
-                };
-                router = {
-                  postSetup = routerSetup;
-                  networking.interfaces = {
-                    veth0 = {
-                      ipv4.addresses = [
-                        {
-                          address = "10.0.0.2";
-                          prefixLength = 24;
-                        }
-                      ];
-                      netem = netemDL;
-                    };
-                    veth1 = {
-                      ipv4.addresses = [
-                        {
-                          address = "10.0.1.1";
-                          prefixLength = 24;
-                        }
-                      ];
-                      netem = netemUL;
-                    };
-                  };
-                  sysctl."net.ipv4.ip_forward" = true;
-                };
-                server = {
-                  networking.interfaces.veth1.ipv4 = {
-                    addresses = [
-                      {
-                        address = serverIP;
-                        prefixLength = 24;
-                      }
-                    ];
-                    routes = [
-                      {
-                        address = "10.0.0.0";
-                        prefixLength = 24;
-                        via = "10.0.1.1";
-                      }
-                    ];
-                  };
-                  scripts.main.exec = "scalpel-run server --log ./server.log --log-level=-4";
-                  sysctl."net.ipv4.ping_group_range" = "0 0"; # only mapped GIDs are allowed inside the user namespace
-                };
-              };
-              veths.veth0 = {
-                a.node = "client";
-                b.node = "router";
-              };
-              veths.veth1 = {
-                a.node = "router";
-                b.node = "server";
-              };
-              postRun = check;
-            };
+          mkScenario = import ./scenario.nix {
+            inherit pkgs scalpelRun clientIP serverIP source;
+          };
+
+          owdClient = ''
+            scalpel-run udp-periodic --ip ${serverIP} --interval 10 --duration 3000 \
+              --out ./owd_ul.csv --log ./owd_ul.log --log-level=-4
+            scalpel-run udp-periodic --ip ${serverIP} --direction dl --interval 10 --duration 3000 \
+              --out ./owd_dl.csv --log ./owd_dl.log --log-level=-4
+          '';
 
           configs = {
             # Capture after the router qdisc, at the actual DL receiver. Avoid
@@ -155,8 +68,7 @@
             duplicates = mkDeliveryScenario "duplicates" "delay 20ms duplicate 100%";
             reordering = mkDeliveryScenario "reordering" "delay 50ms reorder 100% gap 5";
 
-            # Scenario 1: OWD baseline. Both endpoints share the host clock,
-            # so the 20 ms netem delay is exact ground truth for owd_ms.
+            # Same clock removes clock offset, not host/qdisc scheduling jitter.
             owd = mkScenario {
               name = "e2e-owd";
               netemUL = {
@@ -165,12 +77,7 @@
               netemDL = {
                 delayMs = 20;
               };
-              client = ''
-                scalpel-run udp-periodic --ip ${serverIP} --interval 10 --duration 3000 \
-                  --out ./owd_ul.csv --log ./owd_ul.log --log-level=-4
-                scalpel-run udp-periodic --ip ${serverIP} --direction dl --interval 10 --duration 3000 \
-                  --out ./owd_dl.csv --log ./owd_dl.log --log-level=-4
-              '';
+              client = owdClient;
               check = ''
                 ${verify} owd --csv client/owd_ul.csv --delay-ms 20 --min-packets 250
                 ${verify} owd --csv client/owd_dl.csv --delay-ms 20 --min-packets 250
@@ -270,13 +177,8 @@
                   --out ./icmp.csv --log ./icmp.log --log-level=-4
               '';
               check = ''
-                # Shared CI runners see more scheduling jitter: widen margin
-                owdEpsMs=2
-                if [ -n "''${CI:-}" ]; then
-                  owdEpsMs=4
-                fi
-                ${verify} owd --csv client/udp.csv --delay-ms 20 --eps-ms $owdEpsMs --min-packets 250
-                ${verify} owd --csv client/icmp.csv --delay-ms 20 --eps-ms $owdEpsMs --min-packets 250
+                ${verify} owd --csv client/udp.csv --delay-ms 20 --min-packets 250
+                ${verify} owd --csv client/icmp.csv --delay-ms 20 --min-packets 250
                 ${verify} compare --csv-a client/udp.csv --csv-b client/icmp.csv --eps-ms 1
               '';
             };
@@ -310,6 +212,21 @@
           };
           experiments = lib.mapAttrs (name: config: nixnet.mkExperiment config) configs;
 
+          # Identical workload/topology, but no latency acceptance policy.
+          # Bad accuracy is data; malformed/incomplete measurements still fail.
+          benchmarkOWD = nixnet.mkExperiment (mkScenario {
+            name = "benchmark-owd";
+            netemUL.delayMs = 20;
+            netemDL.delayMs = 20;
+            client = owdClient;
+            check = ''
+              ${report} udp client --out report --expected-delay-ms 20 \
+                --backend nixnet --execution-status complete \
+                --min-packets 250 --expect-csv owd_ul.csv --expect-csv owd_dl.csv \
+                --tx-log client/owd_ul.log --tx-log server/server.log
+            '';
+          });
+
           mkDeliveryScenario = name: impairment: mkScenario {
             name = "e2e-${name}";
             netemUL = { };
@@ -327,10 +244,10 @@
                 match u16 0x0010 0xffff at 24 flowid 1:3
             '';
             client = ''
-              python3 ${./.}/udp_delivery.py run --ip ${serverIP} --interface veth0
+              python3 ${source}/e2e/udp_delivery.py run --ip ${serverIP} --interface veth0
             '';
             check = ''
-              ${pkgs.python3}/bin/python3 ${./.}/udp_delivery.py check --scenario ${name} \
+              ${pkgs.python3}/bin/python3 ${source}/e2e/udp_delivery.py check --scenario ${name} \
                 --csv client/delivery.csv --pcap client/delivery.pcap --capture-log client/capture.log
               ${verify} txts --log server/server.log
             '';
@@ -359,6 +276,8 @@
             default = experiments.owd;
             mermaid = nixnet.mkMermaid configs.owd;
             all = all;
+            smoke = all;
+            benchmark-owd = benchmarkOWD;
           };
         };
     };

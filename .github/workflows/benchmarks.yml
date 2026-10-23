@@ -1,0 +1,101 @@
+name: measurement benchmarks
+
+on:
+  pull_request:
+    paths:
+      - 'pkg/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'measurements/**'
+      - 'benchmarks/**'
+      - 'e2e/**'
+      - '*.nix'
+      - 'flake.lock'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/benchmarks.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  pacing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Allow complete kernel TX timestamp collection
+        run: sudo sysctl -w net.core.rmem_max=33554432
+      # No -race, parallel tests, or background builds: this is measurement.
+      - name: Measure UDP pacing (loopback)
+        run: python3 benchmarks/run.py pacing --out out/benchmark-pacing --repetitions 3
+      - name: Publish report to job summary
+        if: always()
+        run: |
+          if [ -f out/benchmark-pacing/report/report.md ]; then
+            cat out/benchmark-pacing/report/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Pacing report unavailable; inspect the job log and retained artifacts.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-pacing
+          path: out/
+          if-no-files-found: warn
+          retention-days: 30
+
+  udp-accuracy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Measure UDP OWD accuracy (nixnet)
+        run: nix run ./e2e#benchmark-owd 1-3
+      - name: Report incomplete runs
+        if: failure()
+        run: |
+          for run in out/benchmark-owd/*; do
+            [ -d "$run" ] || continue
+            [ ! -f "$run/report/manifest.json" ] || continue
+            python3 benchmarks/report.py udp "$run/client" --out "$run/report" \
+              --expected-delay-ms 20 --backend nixnet --execution-status failed \
+              --min-packets 250 --expect-csv owd_ul.csv --expect-csv owd_dl.csv \
+              --tx-log "$run/client/owd_ul.log" --tx-log "$run/server/server.log" || true
+          done
+      - name: Aggregate OWD repetitions
+        if: success()
+        run: |
+          expected=()
+          logs=()
+          for run in 01 02 03; do
+            expected+=(--expect-csv "$run/client/owd_ul.csv" --expect-csv "$run/client/owd_dl.csv")
+            logs+=(--tx-log "out/benchmark-owd/$run/client/owd_ul.log" --tx-log "out/benchmark-owd/$run/server/server.log")
+          done
+          python3 benchmarks/report.py udp out/benchmark-owd --out out/benchmark-owd/report \
+            --expected-delay-ms 20 --backend nixnet --execution-status complete \
+            --min-packets 250 "${expected[@]}" "${logs[@]}"
+      - name: Publish reports to job summary
+        if: always()
+        run: |
+          if [ -f out/benchmark-owd/report/report.md ]; then
+            cat out/benchmark-owd/report/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            find out/benchmark-owd -path '*/report/report.md' -type f -exec cat {} \; >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-udp-accuracy
+          path: out/
+          if-no-files-found: warn
+          retention-days: 30

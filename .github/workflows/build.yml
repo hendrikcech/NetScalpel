@@ -28,6 +28,9 @@ jobs:
       - name: Validate UDP delivery analyzer
         run: python3 -m unittest discover -s e2e -p 'test_*.py' -v
 
+      - name: Validate shared measurement helpers
+        run: python3 -m unittest discover -s measurements -p 'test_*.py' -v
+
       - run: go vet ./...
 
       # ST1005 is excluded in staticcheck.conf.
@@ -93,9 +96,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v23
       - run: nix build .#scalpel-run .#scalpel-exp --no-link
 
-  # End-to-end validation: client and server across an emulated netem link,
-  # asserting that the measured OWD/loss/rate values in the produced CSVs
-  # match the configured ground truth. See e2e/README.md.
+  # Required correctness smoke checks, not tight tail/performance budgets.
   e2e:
     needs: nix-build
     runs-on: ubuntu-latest
@@ -116,3 +117,12 @@ jobs:
 
       - name: Run e2e ${{ matrix.scenario }}
         run: nix run ./e2e#${{ matrix.scenario }}
+
+      - name: Retain smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.scenario }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14

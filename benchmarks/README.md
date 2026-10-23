@@ -1,4 +1,92 @@
-# RateSender pacing benchmarks
+# Measurement benchmarks and reports
+
+## Supported architecture
+
+The supported measurement backends are the real Go `RateSender` benchmark on
+Linux loopback and the Nix/nixnet `benchmark-owd` experiment (20 ms UDP uplink and
+downlink). Python 3.11+ reporting uses only the standard library. There is no
+remote-host runner, hardware timestamp backend, or performance acceptance gate.
+Loopback kernel software TX measurements are **not NIC/on-wire pacing**.
+
+```sh
+# Sequential real Go benchmark; OUT must not already exist, even if empty.
+python3 benchmarks/run.py pacing --out out/benchmark-pacing --repetitions 3
+# Intentional subset, exact sub-benchmark matching (no concurrent workloads):
+python3 benchmarks/run.py pacing --out out/pacing-low --repetitions 2 \
+  --cases single7pps,split7pps,short7pps
+
+# Separate supported Nix backend (requires Nix and the nixnet runtime):
+nix run ./e2e#benchmark-owd
+
+# Offline reports never infer successful execution from the presence of files.
+python3 benchmarks/report.py pacing out/benchmark-pacing/raw \
+  --out out/pacing-offline --repetitions 3
+python3 benchmarks/report.py udp out/benchmark-owd/RUN/client \
+  --out out/owd-offline --expected-delay-ms 20 \
+  --min-packets 250 --expect-csv owd_ul.csv --expect-csv owd_dl.csv
+```
+
+The pacing runner writes `raw/*.csv`, matching sidecars, `invocation.json`,
+`execution.json`, and combined stdout/stderr in `go-bench.txt`. Reports live in
+`OUT/report/`: `manifest.json`, `metrics.json`, `summary.csv`, `report.md`, and
+`plot.svg`; pacing also writes `throughput.csv` and `throughput.svg`. The runner
+clears inherited `NETSCALPEL_PACING_CASE` and selects the requested cases exactly.
+Other pacing environment settings are preserved and recorded. A failed Go launch,
+failed benchmark, or invalid/incomplete artifact set still generates reports and
+returns nonzero. The existing strict `analyze.py` remains the source of pacing
+validation/comparison semantics; it additionally rejects orphan raw CSVs without
+sidecars, including interrupted partial iterations.
+
+### Report contract
+
+`manifest.json` and `metrics.json` have `schema_version: 1`. The manifest separates
+execution (`complete`, `failed`, `unknown`), structural validity (`valid`,
+`invalid`, with reasons), and acceptance (`not_evaluated`). It inventories raw
+artifacts with SHA-256 and retains each pacing sidecar's metadata. JSON keeps
+per-run metrics; CSV includes per-run rows and median/min/max/sample-count
+aggregates. Markdown includes status, errors, metric tables, and SVG plots. An
+empty directory is invalid, not vacuously successful. Raw data/outliers are never
+removed, and repetitions are never pooled into a single packet population.
+
+UDP input is one CSV or a directory recursively containing CSVs. Every raw CSV
+is checked independently and keeps its relative filename, including files with
+the same basename in different directories. Report output subtrees and generated
+`summary.csv` files are excluded from recursive discovery. UDP validity checks
+structure and requires some received packets; **no OWD distribution, loss-rate,
+or measured-minus-expected error threshold is imposed**. `--expected-delay-ms`
+adds signed error distributions. An available `run.json` beside/above the input
+is retained as provenance; absent source/invocation provenance is unknown.
+`--min-packets` sets the minimum rows per file, and repeated `--expect-csv`
+declares the exact relative artifact set. The nixnet suite requires both UL/DL
+files and at least 250 rows in each, rather than accepting partial discovery.
+Endpoint build versions and binary SHA256 files saved by nixnet are retained.
+OWD p90/p99 use the nearest-rank convention, matching the pacing analyzer.
+
+Offline execution defaults to `unknown`. Only a caller with external execution
+evidence should supply UDP `--execution-status complete` (or `failed`). Nixnet's
+postRun uses `--backend nixnet` and repeated `--tx-log PATH` arguments. Each
+supplied TX log must contain `selectMsgsSent: returning with txTsReader infos`
+and no timestamp fallback marker. Missing logs, missing positive markers, and
+fallbacks make validity invalid **without suppressing the report**. Without
+`--tx-log`, timestamp provenance is explicitly unknown with a warning; the
+report does not claim kernel timestamps. Backend labels alone prove nothing.
+
+### Continuous pacing stability
+
+For validated `single100`/`single500` controls, `throughput.csv` contains every
+complete half-open window anchored to the recorded Run-start integer nanoseconds,
+with widths **1, 5, 10, 20, 60 ms** inside the nominal 1200 ms measurement budget.
+Partial final windows are excluded. Rates count 1408 UDP bytes per packet; target
+rates use the schedule's integer packets/second, not a rounded Mbps label.
+Per-run metrics include mean/min/max, population standard deviation, CV
+(standard deviation / mean), and percentage of windows deviating **more than
+10%** from that target. This descriptive cutoff is not an acceptance criterion;
+short windows naturally expose packet-count quantization. Zero-traffic windows
+are included; zero overall mean yields null CV. The SVG shows each run's 20 ms
+time series without clipping. Dynamic schedules are excluded from constant-rate
+window analysis because their cooldowns and rate changes are intentional.
+
+## RateSender pacing details
 
 Linux loopback measurements of the real `RateSender.Run` path, not latency
 assertions. The suite requires **complete kernel software TX timestamps** and

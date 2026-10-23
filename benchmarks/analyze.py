@@ -308,6 +308,9 @@ def load(directory, cases, repetitions):
         records.append(record)
     if not records:
         raise ValueError(f"{directory}: no benchmark JSON artifacts")
+    raw_csvs = {path.resolve() for path in directory.glob("*.csv")}
+    if raw_csvs != csv_refs:
+        raise ValueError(f"{directory}: raw CSV set differs from validated sidecar references")
     actual = {r["case"] for r in records}
     if actual != set(cases):
         raise ValueError(f"{directory}: cases differ: expected {sorted(cases)}, found {sorted(actual)}")
