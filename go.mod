@@ -12,7 +12,7 @@ require (
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b
 	github.com/quic-go/quic-go v0.64.1
 	github.com/samber/slog-channel v1.4.4
-	github.com/samber/slog-multi v1.8.0
+	github.com/samber/slog-multi v1.9.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.61.0
 	golang.org/x/sync v0.24.0
