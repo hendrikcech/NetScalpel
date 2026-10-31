@@ -44,10 +44,7 @@ func ValidateSchedule(p Procedure, overrides experiment.ParamMap, seed int64) (v
 	// validation happened close to an RI boundary. Procedure timing and layout
 	// constraints are still exercised by the real schedule function.
 	anchor := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
-	if err := p.Run(e, anchor, "", params); err != nil {
-		return err
-	}
-	return nil
+	return p.Run(e, anchor, "", params)
 }
 
 // ratesFor returns the rate list prepared for the direction. Every
