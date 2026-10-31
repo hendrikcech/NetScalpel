@@ -276,8 +276,14 @@ func GenID(content string) string {
 }
 
 func SetupSlogBasic(level slog.Level) {
-	// enc := slog.NewJSONHandler(os.Stdout, nil)
-	enc := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	SetupSlogBasicTo(level, os.Stdout)
+}
+
+// SetupSlogBasicTo installs a text logger that writes to writer while
+// preserving the request ID context attribute.
+func SetupSlogBasicTo(level slog.Level, writer io.Writer) {
+	// enc := slog.NewJSONHandler(writer, nil)
+	enc := slog.NewTextHandler(writer, &slog.HandlerOptions{Level: level})
 	log := slog.New(SlogContextHandler{enc, []any{
 		SlogIDKey{},
 	}})
@@ -285,6 +291,13 @@ func SetupSlogBasic(level slog.Level) {
 }
 
 func SetupSlogMulti(stdoutLevel slog.Level, createChan bool, fs ...*os.File) *chan *slog.Record {
+	return SetupSlogMultiTo(stdoutLevel, createChan, os.Stdout, fs...)
+}
+
+// SetupSlogMultiTo installs the multi-output logger with its console output
+// sent to writer. File handlers remain debug-level and the optional channel
+// retains its existing behavior.
+func SetupSlogMultiTo(stdoutLevel slog.Level, createChan bool, writer io.Writer, fs ...*os.File) *chan *slog.Record {
 	var handlers []slog.Handler
 
 	for i := range fs {
@@ -301,7 +314,7 @@ func SetupSlogMulti(stdoutLevel slog.Level, createChan bool, fs ...*os.File) *ch
 		handlers = append(handlers, fileHandler)
 	}
 
-	stdHandler := SlogContextHandler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	stdHandler := SlogContextHandler{slog.NewTextHandler(writer, &slog.HandlerOptions{
 		AddSource: false,
 		Level:     stdoutLevel,
 	}), []any{
