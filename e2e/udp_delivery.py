@@ -135,6 +135,7 @@ def run(ip, interface):
             subprocess.run([
                 "scalpel-run", "udp-periodic", "--ip", ip, "--direction", "dl",
                 "--interval", "5", "--duration", "2000", "--out", "./delivery.csv",
+                "--info", "./delivery.info.json",
                 "--log", "./delivery.log", "--log-level=-4",
             ], check=True, timeout=30)
             time.sleep(0.2)  # flush any delayed final copies before stopping capture

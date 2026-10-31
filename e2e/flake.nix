@@ -53,6 +53,7 @@
               check,
               extraNodePackages ? [ ],
               routerSetup ? "",
+              extraServerScripts ? { },
             }:
             {
               inherit name;
@@ -134,7 +135,9 @@
                       }
                     ];
                   };
-                  scripts.main.exec = "scalpel-run server --log ./server.log --log-level=-4";
+                  scripts = {
+                    main.exec = "scalpel-run server --log ./server.log --log-level=-4";
+                  } // extraServerScripts;
                   sysctl."net.ipv4.ping_group_range" = "0 0"; # only mapped GIDs are allowed inside the user namespace
                 };
               };
@@ -167,15 +170,15 @@
               };
               client = ''
                 scalpel-run udp-periodic --ip ${serverIP} --interval 10 --duration 3000 \
-                  --out ./owd_ul.csv --log ./owd_ul.log --log-level=-4
+                  --out ./owd_ul.csv --log ./owd_ul.log --log-level=-4 --info ./owd_ul.info.json
                 scalpel-run udp-periodic --ip ${serverIP} --direction dl --interval 10 --duration 3000 \
-                  --out ./owd_dl.csv --log ./owd_dl.log --log-level=-4
+                  --out ./owd_dl.csv --log ./owd_dl.log --log-level=-4 --info ./owd_dl.info.json
               '';
               check = ''
                 ${verify} owd --csv client/owd_ul.csv --delay-ms 20 --min-packets 250
                 ${verify} owd --csv client/owd_dl.csv --delay-ms 20 --min-packets 250
-                # UL TX timestamps are taken by the client, DL ones by the server
-                ${verify} txts --log client/owd_ul.log --log server/server.log
+                # Each report includes the actual local or remote TX source.
+                ${verify} txts --info client/owd_ul.info.json --info client/owd_dl.info.json
               '';
             };
 
@@ -257,6 +260,9 @@
             # agree on the median OWD.
             icmp-udp = mkScenario {
               name = "e2e-icmp-udp";
+              # Timestamp sources are fixed per server process. Keep UDP on
+              # software RX and give app-only ICMP a separate RPC listener.
+              extraServerScripts.icmp.exec = "scalpel-run server --port 8501 --log ./icmp-server.log --log-level=-4";
               netemUL = {
                 delayMs = 20;
               };
@@ -266,7 +272,7 @@
               client = ''
                 scalpel-run udp-periodic --ip ${serverIP} --interval 10 --duration 3000 \
                   --out ./udp.csv --log ./udp.log --log-level=-4
-                scalpel-run icmp --ip ${serverIP} --interval 10 --duration 3000 \
+                scalpel-run icmp --ip ${serverIP} --port 8501 --interval 10 --duration 3000 \
                   --out ./icmp.csv --log ./icmp.log --log-level=-4
               '';
               check = ''
@@ -332,7 +338,7 @@
             check = ''
               ${pkgs.python3}/bin/python3 ${./.}/udp_delivery.py check --scenario ${name} \
                 --csv client/delivery.csv --pcap client/delivery.pcap --capture-log client/capture.log
-              ${verify} txts --log server/server.log
+              ${verify} txts --info client/delivery.info.json
             '';
           };
 

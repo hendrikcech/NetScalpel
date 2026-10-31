@@ -12,6 +12,7 @@ Requires Python >= 3.11 (datetime.fromisoformat with nanosecond timestamps).
 
 import argparse
 import csv
+import json
 import math
 import re
 import statistics
@@ -20,14 +21,6 @@ from dataclasses import dataclass
 from datetime import datetime
 
 MAX_PRINTED_ERRORS = 20
-
-# Logged by txtsreader.go when kernel TX timestamping could not be enabled or
-# returned an unexpected number of timestamps (userspace fallback).
-TXTS_FALLBACK_MARKERS = [
-    "Failed enabling tx timestamping",
-    "using timestamps from run function",
-]
-
 
 @dataclass
 class Row:
@@ -330,22 +323,27 @@ def cmd_tcp(args) -> list[str]:
 
 
 def cmd_txts(args) -> list[str]:
-    """Assert that kernel TX timestamping was used (no userspace fallback).
-
-    The fallback still produces valid CSVs, but it is not the code path that
-    production measurements rely on, so the e2e run must catch it.
-    """
+    """Assert complete software TX timestamp evidence in each run's info.json."""
     errors: list[str] = []
-    for path in args.log:
+    for path in args.info:
         try:
-            content = open(path).read()
-        except OSError as e:
-            errors.append(f"{path}: cannot read log: {e}")
+            with open(path) as f:
+                info = json.load(f)
+            tx = info["timestamp_report"]["tx"]
+            count = tx["packet_count"]
+            complete = (
+                info["status"] == "complete"
+                and tx["source"] == "software"
+                and type(count) is int and count > 0
+                and tx["missing_count"] == 0
+                and tx["invalid_count"] == 0
+            )
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            errors.append(f"{path}: cannot read TX timestamp evidence: {e}")
             continue
-        for marker in TXTS_FALLBACK_MARKERS:
-            if marker in content:
-                errors.append(f"{path}: TX timestamp fallback detected: {marker!r}")
-    print(f"txts: checked {len(args.log)} log(s) for userspace-fallback markers")
+        if not complete:
+            errors.append(f"{path}: missing complete software TX timestamp evidence")
+    print(f"txts: checked {len(args.info)} timestamp report(s)")
     return errors
 
 
@@ -393,7 +391,7 @@ def main() -> int:
     p.set_defaults(func=cmd_tcp)
 
     p = sub.add_parser("txts", help="assert kernel TX timestamps were used")
-    p.add_argument("--log", action="append", required=True, help="scalpel-run debug log (repeatable)")
+    p.add_argument("--info", action="append", required=True, help="scalpel-run info.json (repeatable)")
     p.set_defaults(func=cmd_txts)
 
     args = parser.parse_args()

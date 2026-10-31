@@ -19,7 +19,7 @@ the software TX timestamp and thus be invisible to the measurement.
 
 | Package | Emulation | Assertions |
 |---------|-----------|------------|
-| `owd` | 20 ms delay each direction | UL and DL `owd_ms` within `[19, 22]` ms, `ts_sent` strictly monotonic, 0 lost, kernel TX timestamps used (no userspace fallback in the logs) |
+| `owd` | 20 ms delay each direction | UL and DL `owd_ms` within `[19, 22]` ms, `ts_sent` strictly monotonic, 0 lost, complete software TX timestamp evidence in each run's JSON report |
 | `loss` | 5 ms delay + 5% loss each direction | observed loss over 2500 packets per direction within a 4σ binomial interval around 5%, lost rows have empty `ts_rcvd`/`owd_ms` |
 | `rate` | 10 ms delay, 50 Mbit rate, 200-packet queue | `udp-rate` at 80 Mbps: receive rate = 50 Mbps ±10% (wire), first packet near the bare delay, p90 `owd_ms` beyond half the queue-full plateau, max `owd_ms` bounded by the queue limit |
 | `asym` | 30 ms UL / 10 ms DL delay | UL and DL runs show their direction's delay (catches swapped-direction bugs) |
@@ -27,6 +27,13 @@ the software TX timestamp and thus be invisible to the measurement.
 | `tcp` | 20 ms delay, 50 Mbit rate each direction | `tcp` UL and DL: RTT ≈ 40 ms at start, `MinRTT` ≈ 40 ms, acked throughput ≤ link rate and ≥ half of it |
 | `duplicates` | DL: 20 ms delay + 100% duplication | Every sent sequence captured twice; CSV records both exact receive timestamps, `dup_count=1`, earliest-arrival OWD, one row per sent packet |
 | `reordering` | DL: 50 ms delay, every fifth packet bypasses delay | Capture must show first-arrival sequence inversions; CSV preserves each exact arrival timestamp and earliest-arrival OWD, no loss or extra rows |
+
+The ICMP comparison uses its existing application timestamps and a separate
+server process. UDP requires the default kernel software timestamps.
+Timestamp source selection and reports currently cover UDP only.
+The OWD check verifies actual software TX evidence
+in the report; socket setup failures and missing packet evidence must fail, not
+switch to application timestamps.
 
 ## Usage
 
