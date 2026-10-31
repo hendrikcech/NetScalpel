@@ -16,8 +16,10 @@ import (
 type Executor struct {
 	IP        string
 	RpcClient *rpc.Client
-	G         *errgroup.Group
-	Clients   []pkg.Client
+	// TimestampConfig optionally overrides each scheduled sender's local config.
+	TimestampConfig *pkg.TimestampConfig
+	G               *errgroup.Group
+	Clients         []pkg.Client
 	// DryRun is the existing schedule golden-test mode: it records clients
 	// without running them, opening sockets, or sleeping.
 	DryRun bool
@@ -43,6 +45,9 @@ func NewExecutor(ctx context.Context, ip string, rpcClient *rpc.Client) *Executo
 }
 
 func (e *Executor) RunClient(client pkg.Client) {
+	if sender, ok := client.(*pkg.SenderClient); ok && e.TimestampConfig != nil {
+		sender.TimestampConfig = *e.TimestampConfig
+	}
 	e.Clients = append(e.Clients, client)
 	m := describe(client)
 	e.records = append(e.records, m)

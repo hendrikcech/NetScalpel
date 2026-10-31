@@ -28,18 +28,19 @@ type Measurement struct {
 	Configuration Configuration `json:"configuration"`
 	// Nil means not instrumented/unknown, not disabled. Requested configuration
 	// is separate from the runtime state of sockets on either endpoint.
-	TimestampingEnabled *bool            `json:"timestamping_enabled"`
-	PacingEnabled       *bool            `json:"pacing_enabled"`
-	ScheduledStart      time.Time        `json:"scheduled_start"`
-	ScheduledEnd        time.Time        `json:"scheduled_end"`
-	ExecutionStart      *time.Time       `json:"execution_start"`
-	ExecutionEnd        *time.Time       `json:"execution_end"`
-	Status              string           `json:"status"`
-	GatherStatus        string           `json:"gather_status"`
-	Artifacts           []string         `json:"artifacts"`
-	ExpectedArtifacts   []string         `json:"expected_artifacts"`
-	Summary             string           `json:"summary"`
-	Errors              []ExecutionError `json:"errors"`
+	TimestampingEnabled *bool                `json:"timestamping_enabled"`
+	PacingEnabled       *bool                `json:"pacing_enabled"`
+	TimestampReport     *pkg.TimestampReport `json:"timestamp_report,omitempty"`
+	ScheduledStart      time.Time            `json:"scheduled_start"`
+	ScheduledEnd        time.Time            `json:"scheduled_end"`
+	ExecutionStart      *time.Time           `json:"execution_start"`
+	ExecutionEnd        *time.Time           `json:"execution_end"`
+	Status              string               `json:"status"`
+	GatherStatus        string               `json:"gather_status"`
+	Artifacts           []string             `json:"artifacts"`
+	ExpectedArtifacts   []string             `json:"expected_artifacts"`
+	Summary             string               `json:"summary"`
+	Errors              []ExecutionError     `json:"errors"`
 }
 
 type Endpoint struct {
@@ -135,6 +136,16 @@ func (e *Executor) WriteInfo(path string) error {
 		r.ExpectedArtifacts = []string{}
 		switch c := c.(type) {
 		case *pkg.SenderClient:
+			mode := c.Sender.SenderMode()
+			if c.Direction == pkg.DL {
+				mode = c.Sender.ReceiverMode()
+			}
+			switch mode {
+			case pkg.ReceiveUDP, pkg.SendBurst, pkg.SendRate, pkg.SendPeriodic:
+				report := c.TimestampReport()
+				report.LocalConfig = c.TimestampConfig
+				r.TimestampReport = &report
+			}
 			paths = []string{c.Out}
 			if c.Out != "" {
 				if rel, err := filepath.Rel(path, c.Out); err == nil {

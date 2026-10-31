@@ -1,13 +1,19 @@
 package main
 
-import "github.com/alecthomas/kong"
+import (
+	"github.com/alecthomas/kong"
+
+	"github.com/hendrikcech/netscalpel/pkg"
+)
 
 var cli struct {
-	Version  kong.VersionFlag `help:"Print running build version and provenance."`
-	IP       string           `help:"Server IP (required for client)." default:"0.0.0.0"`
-	Port     uint             `help:"Server port." default:"8500"`
-	Log      string           `help:"Write all log output to this file."`
-	LogLevel int              `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
+	Version     kong.VersionFlag `help:"Print running build version and provenance."`
+	IP          string           `help:"Server IP (required for client)." default:"0.0.0.0"`
+	Port        uint             `help:"Server port." default:"8500"`
+	Log         string           `help:"Write all log output to this file."`
+	LogLevel    int              `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
+	TimestampTx string           `help:"Preferred local TX timestamp source: hardware (hw), software (sw), or app." default:"software"`
+	TimestampRx string           `help:"Preferred local RX timestamp source: hardware (hw), software (sw), or app." default:"software"`
 
 	Client struct {
 		Results   string `help:"Path to the results folder." default:"results"`
@@ -23,4 +29,8 @@ var cli struct {
 	Procedures struct {
 		Name string `arg:"" optional:"" help:"Show details for this procedure instead of the list."`
 	} `cmd:"" help:"Output a list of supported procedures."`
+}
+
+func normalizedTimestampConfig() (pkg.TimestampConfig, error) {
+	return pkg.ParseTimestampConfig(cli.TimestampTx, cli.TimestampRx)
 }

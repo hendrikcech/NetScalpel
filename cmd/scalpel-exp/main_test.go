@@ -33,13 +33,17 @@ func TestCLIHelp(t *testing.T) {
 		{"missing procedure", []string{"client", "--ip", "127.0.0.1"}, []string{"Usage:", "missing required client flags: --procedure", "scalpel-exp procedures"}, false},
 		{"missing IP", []string{"client", "--procedure", "burst"}, []string{"Usage:", "missing required client flags: --ip"}, false},
 		{"unknown procedure", []string{"client", "--ip", "127.0.0.1", "--procedure", "no-such-procedure"}, []string{"Usage:", `unknown procedure "no-such-procedure"`, "scalpel-exp procedures"}, false},
+		{"hardware source is a fallback preference", []string{"client", "--ip", "127.0.0.1", "--port", "1", "--procedure", "trace", "--timestamp-tx", "hardware"}, []string{"rpc dial"}, false},
+		{"removed timestamp strict flag is unknown", []string{"client", "--ip", "127.0.0.1", "--procedure", "trace", "--timestamp-strict"}, []string{"unknown flag", "--timestamp-strict"}, false},
+		{"unknown timestamp source", []string{"client", "--ip", "127.0.0.1", "--procedure", "trace", "--timestamp-rx", "auto"}, []string{"invalid timestamp config", "RX timestamp source", "software", "hardware", "app"}, false},
 		{"zero port", []string{"client", "--ip", "127.0.0.1", "--procedure", "burst", "--port", "0"}, []string{"Usage:", "--port must be greater than zero"}, false},
 		{"zero rounds with equals", []string{"client", "--ip", "127.0.0.1", "--procedure", "burst", "--rounds=0"}, []string{"Usage:", "--rounds must be greater than zero"}, false},
 		{"zero rounds as argument", []string{"client", "--ip", "127.0.0.1", "--procedure", "burst", "--rounds", "0"}, []string{"Usage:", "--rounds must be greater than zero"}, false},
 		{"batch conflicts with procedure", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--procedure", "burst"}, []string{"--batch and --procedure can't be used together"}, false},
 		{"batch conflicts with params", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--params="}, []string{"--batch and --params can't be used together"}, false},
 		{"batch conflicts with explicitly default rounds", []string{"client", "--ip", "127.0.0.1", "--batch", "batch.yaml", "--rounds=1"}, []string{"--batch and --rounds can't be used together"}, false},
-		{"client help", []string{"client", "--help"}, []string{"Usage:", "required for client", "required unless --batch is supplied", "scalpel-exp procedures"}, true},
+		{"client help", []string{"client", "--help"}, []string{"Usage:", "required for client", "required unless --batch is supplied", "scalpel-exp procedures", "--timestamp-tx", "--timestamp-rx"}, true},
+		{"server help", []string{"server", "--help"}, []string{"Usage:", "--timestamp-tx", "--timestamp-rx"}, true},
 		{"procedure list", []string{"procedures"}, []string{"burst"}, true},
 	}
 	for _, tc := range cases {

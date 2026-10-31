@@ -29,6 +29,10 @@ defaults to 1. Use `./scalpel-exp procedures` and
 `./scalpel-exp procedures <name>` to check which procedures and parameters are
 registered in your build.
 
+The client's local [timestamp settings](../README.md#timestamp-sources) apply to
+measurements in the batch. Configure the server's settings separately when
+starting it.
+
 ## YAML format
 
 The root requires a `mode` (`sequential`, `shuffled`, or `interleaved`) and a
@@ -340,7 +344,8 @@ directory. It contains:
   round and invocation counts for each entry, each block, and the whole batch.
   This file is updated during execution and finalized when the batch stops.
 - Separate invocation directories with the usual measurement files and
-  `info.json` manifests, including their batch and entry identity.
+  `info.json` manifests, including their batch and entry identity. The manifest
+  includes timestamp reports for UDP measurements only.
 
 Invocation directories use `<timestamp>_<procedure>_<direction>`, for example
 `20261023T131812_rate_dl`. Direction is omitted when it is not a procedure

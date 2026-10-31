@@ -768,6 +768,11 @@ func RunBatchFile(ctx context.Context, file, results string, client *Client) err
 	if err != nil {
 		return err
 	}
+	config, err := client.TimestampConfig.Normalize()
+	if err != nil {
+		return fmt.Errorf("invalid timestamp config: %w", err)
+	}
+	client.TimestampConfig = config
 	batchResults, err := createBatchResultsDir(results, plan.BatchID)
 	if err != nil {
 		return err
@@ -854,6 +859,7 @@ func (c *Client) runBatchInvocation(ctx context.Context, batchID string, invocat
 		return BatchInvocationOutcome{Err: err, Failed: !errors.Is(err, context.Canceled), Cancelled: ctx.Err() != nil, RemoteConfirmed: true}
 	}
 	e := experiment.NewExecutor(ctx, c.IP, rpcClient)
+	e.TimestampConfig = &c.TimestampConfig
 	resultPath, scheduleErr := c.scheduleProcedureInvocation(ctx, e, time.Now(), proc, experiment.ParamMap(invocation.Parameters))
 	out := BatchInvocationOutcome{Err: scheduleErr, Failed: scheduleErr != nil && !errors.Is(scheduleErr, context.Canceled), ResultPath: resultPath, RemoteConfirmed: true}
 	var fatalErr *FatalInvocationError

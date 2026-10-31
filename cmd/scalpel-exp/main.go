@@ -24,6 +24,15 @@ func main() {
 			kongctx.Fatalf("%v", err)
 		}
 	}
+	var timestampConfig pkg.TimestampConfig
+	if kongctx.Command() == "client" || kongctx.Command() == "server" {
+		var err error
+		timestampConfig, err = normalizedTimestampConfig()
+		if err != nil {
+			_ = kongctx.PrintUsage(false)
+			kongctx.Fatalf("invalid timestamp config: %v", err)
+		}
+	}
 
 	pkg.RegisterGob()
 
@@ -57,6 +66,7 @@ func main() {
 			client := &Client{
 				IP: cli.IP, Port: cli.Port, Results: cli.Client.Results,
 				LogLevel: slog.Level(cli.LogLevel), Logfile: logfile,
+				TimestampConfig: timestampConfig,
 			}
 			go func() {
 				sig := <-signalC
@@ -84,14 +94,15 @@ func main() {
 		}()
 
 		client := Client{
-			IP:        cli.IP,
-			Port:      cli.Port,
-			Results:   cli.Client.Results,
-			Rounds:    cli.Client.Rounds,
-			Procedure: cli.Client.Procedure,
-			Params:    params,
-			LogLevel:  slog.Level(cli.LogLevel),
-			Logfile:   logfile,
+			IP:              cli.IP,
+			Port:            cli.Port,
+			Results:         cli.Client.Results,
+			Rounds:          cli.Client.Rounds,
+			Procedure:       cli.Client.Procedure,
+			Params:          params,
+			LogLevel:        slog.Level(cli.LogLevel),
+			Logfile:         logfile,
+			TimestampConfig: timestampConfig,
 		}
 		if err := client.Run(ctx); err != nil {
 			slog.ErrorContext(ctx, "Experiment failed", "error", err)
@@ -101,7 +112,7 @@ func main() {
 	case "server":
 		slogCh := pkg.SetupSlogMulti(slog.Level(cli.LogLevel), true, logfile)
 
-		s := pkg.RunServer(ctx, cli.IP, cli.Port, slogCh)
+		s := pkg.RunServer(ctx, cli.IP, cli.Port, slogCh, timestampConfig)
 
 		sig := <-signalC
 		slog.InfoContext(ctx, "Stopping server", "signal", sig)

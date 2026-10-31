@@ -100,6 +100,11 @@ func TestManifestDeferredLifecycleAndAllErrors(t *testing.T) {
 func TestManifestSenderAndCommandShape(t *testing.T) {
 	e := NewExecutor(context.Background(), "", nil)
 	e.DryRun = true
+	configuredTimestamp, err := (pkg.TimestampConfig{TX: pkg.TimestampSoftware, RX: pkg.TimestampHardware}).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.TimestampConfig = &configuredTimestamp
 	start := time.Now().UTC()
 	dir := t.TempDir()
 	out := filepath.Join(dir, "result.csv")
@@ -114,6 +119,9 @@ func TestManifestSenderAndCommandShape(t *testing.T) {
 	m := readManifest(t, dir)
 	if m.SchemaVersion != 1 || len(m.Measurements) != 2 || m.Measurements[0].ID != c.ID || c.ID == "" || m.Measurements[1].ID != cmd.ID || m.Measurements[1].Endpoint != "server" || m.Measurements[0].Direction != "DL" {
 		t.Fatalf("bad shape %+v", m)
+	}
+	if m.Measurements[0].TimestampReport == nil || m.Measurements[0].TimestampReport.LocalConfig != configuredTimestamp || c.TimestampConfig != configuredTimestamp {
+		t.Fatalf("missing local timestamp config/report: %+v", m.Measurements[0])
 	}
 	if m.Measurements[0].TimestampingEnabled != nil || m.Measurements[0].PacingEnabled != nil {
 		t.Fatal("invented runtime capabilities")
@@ -131,6 +139,32 @@ func TestManifestSenderAndCommandShape(t *testing.T) {
 	m = readManifest(t, dir)
 	if strings.Join(m.Measurements[0].Artifacts, ",") != "result.csv" || m.Measurements[0].GatherStatus != "not_gathered" {
 		t.Fatal("partial artifact falsely complete")
+	}
+}
+
+func TestManifestOmitsTimestampReportForNonUDPMeasurements(t *testing.T) {
+	for name, sender := range map[string]pkg.Sender{
+		"tcp":  &pkg.TCPSender{Params: pkg.TCPSenderParams{Duration_: time.Second}},
+		"icmp": &pkg.ICMPSender{Params: pkg.ICMPParams{Duration_: time.Second}},
+		"quic": &pkg.QUICSender{Params: pkg.QUICParams{Duration_: time.Second}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := NewExecutor(context.Background(), "", nil)
+			e.DryRun = true
+			e.RunClient(&pkg.SenderClient{Direction: pkg.UL, StartAt: time.Now().UTC(), Sender: sender})
+			e.Manifest = &Manifest{SchemaVersion: 1}
+			dir := t.TempDir()
+			if err := e.WriteInfo(dir); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "info.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), `"timestamp_report"`) {
+				t.Fatalf("non-UDP manifest contains timestamp_report: %s", data)
+			}
+		})
 	}
 }
 

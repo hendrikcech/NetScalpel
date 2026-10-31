@@ -27,6 +27,8 @@ type Client struct {
 	Procedure string
 	Params    experiment.ParamMap
 
+	TimestampConfig pkg.TimestampConfig
+
 	LogLevel slog.Level
 	// Permanent log file supplied by the caller. Needs to be closed by the caller.
 	Logfile *os.File
@@ -79,8 +81,18 @@ func (c *Client) prepareOverrides() (procedures.Procedure, []experiment.ParamMap
 }
 
 func (c *Client) Run(ctx context.Context) error {
+	config, err := c.TimestampConfig.Normalize()
+	if err != nil {
+		return fmt.Errorf("invalid timestamp config: %w", err)
+	}
+	c.TimestampConfig = config
 	if c.Rounds == 0 {
 		return fmt.Errorf("rounds must be greater than zero")
+	}
+	proc, paramsSet, err := c.prepareOverrides()
+	if err != nil {
+		slog.ErrorContext(ctx, "Procedure setup failed", "procedure", c.Procedure, "error", err)
+		return err
 	}
 
 	c.experimentID = pkg.GenID("experiment")
@@ -94,12 +106,6 @@ func (c *Client) Run(ctx context.Context) error {
 			c.slogFile.Close()
 		}
 	}()
-
-	proc, paramsSet, err := c.prepareOverrides()
-	if err != nil {
-		slog.ErrorContext(ctx, "Procedure setup failed", "procedure", c.Procedure, "error", err)
-		return err
-	}
 
 	for c.round = range c.Rounds {
 		for _, overrides := range paramsSet {
@@ -116,6 +122,7 @@ func (c *Client) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			e := experiment.NewExecutor(ctx, c.IP, rpcClient)
+			e.TimestampConfig = &c.TimestampConfig
 			resultPath, scheduleErr := c.scheduleProcedureInvocation(ctx, e, time.Now(), proc, overrides)
 			var finishErr error
 			if resultPath != "" {
