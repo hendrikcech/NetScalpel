@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/rpc"
 	"os"
@@ -18,13 +20,16 @@ import (
 )
 
 var cli struct {
-	Version   kong.VersionFlag `help:"Print running build version and provenance."`
-	IP        string           `help:"Server IP." default:"0.0.0.0"`
-	Port      uint             `help:"Server port." default:"8500"`
-	Direction string           `help:"Direction: UL or DL." default:"ul" enum:"dl,ul,DL,UL"`
-	Log       string           `help:"Write debug log to this file."`
-	LogLevel  int              `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
-	Out       string           `help:"CSV file to write results to (default: stdout)."`
+	Version     kong.VersionFlag `help:"Print running build version and provenance."`
+	IP          string           `help:"Server IP." default:"0.0.0.0"`
+	Port        uint             `help:"Server port." default:"8500"`
+	Direction   string           `help:"Direction: UL or DL." default:"ul" enum:"dl,ul,DL,UL"`
+	Log         string           `help:"Write debug log to this file."`
+	LogLevel    int              `help:"Log level (-4: Debug, 0: Info, 4: Warn, 8: Error)" default:"0"`
+	Out         string           `help:"CSV file to write results to (default: stdout)."`
+	Info        string           `help:"Client-only UDP timestamp report path (no report unless supplied)."`
+	TimestampTx string           `help:"Preferred local TX timestamp source: hardware (hw), software (sw), or app." default:"software"`
+	TimestampRx string           `help:"Preferred local RX timestamp source: hardware (hw), software (sw), or app." default:"software"`
 
 	UDPBurst struct {
 		Num     uint `help:"Number of packets to send in burst." default:"10"`
@@ -60,23 +65,40 @@ var cli struct {
 func main() {
 	kongctx := kong.Parse(&cli, kong.Vars{"version": buildinfo.String()})
 	if kongctx.Error != nil {
-		fmt.Printf("kong error: %v\n", kongctx.Error.Error())
+		fmt.Fprintf(os.Stderr, "kong error: %v\n", kongctx.Error.Error())
 		os.Exit(1)
 	}
-
+	if kongctx.Command() == "server" {
+		if err := validateServerFlags(kongctx.Args); err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid server flags: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	infoPath := timestampInfoPath(kongctx.Command(), cli.Info)
+	if isMeasurementCommand(kongctx.Command()) {
+		if err := validateOutputPathCollisions(cli.Out, cli.Log, infoPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid output paths: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	config, configErr := timestampConfigFromCLI()
+	if configErr != nil {
+		fmt.Fprintf(os.Stderr, "Invalid timestamp config: %v\n", configErr)
+		os.Exit(1)
+	}
 	pkg.RegisterGob()
 
+	var slogFile *os.File
 	if cli.Log != "" {
-		slogFile, err := os.Create(cli.Log)
+		var err error
+		slogFile, err = os.Create(cli.Log)
 		if err != nil {
-			fmt.Printf("Failed opening logfile %v: %v\n", cli.Log, err.Error())
+			fmt.Fprintf(os.Stderr, "Failed opening logfile %v: %v\n", cli.Log, err.Error())
 			os.Exit(1)
 		}
 		defer slogFile.Close()
-		pkg.SetupSlogMulti(slog.Level(cli.LogLevel), false, slogFile)
-	} else {
-		pkg.SetupSlogBasic(slog.Level(cli.LogLevel))
 	}
+	setupStandaloneLogging(slog.Level(cli.LogLevel), os.Stderr, slogFile)
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
@@ -84,15 +106,15 @@ func main() {
 		sigs := make(chan os.Signal, 2)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-		s := pkg.RunServer(ctx, cli.IP, cli.Port, nil)
+		s := pkg.RunServer(ctx, cli.IP, cli.Port, nil, config)
 
 		sig := <-sigs
-		fmt.Printf("Stopping server on %v\n", sig)
+		fmt.Fprintf(os.Stderr, "Stopping server on %v\n", sig)
 		ctxCancel()
 		// A second signal force-exits, in case graceful shutdown hangs
 		go func() {
 			sig := <-sigs
-			fmt.Printf("Forcing exit on second signal %v\n", sig)
+			fmt.Fprintf(os.Stderr, "Forcing exit on second signal %v\n", sig)
 			os.Exit(130)
 		}()
 		s.Stop()
@@ -100,21 +122,22 @@ func main() {
 	}
 
 	if cli.IP == "0.0.0.0" {
-		fmt.Println("Argument --ip required")
+		fmt.Fprintln(os.Stderr, "Argument --ip required")
 		os.Exit(1)
 	}
 
 	direction, err := pkg.ParseDirection(cli.Direction)
 	if err != nil {
-		fmt.Println(err.Error())
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 
 	client := &pkg.SenderClient{
-		IP:        cli.IP,
-		Out:       cli.Out,
-		Direction: direction,
-		ID:        uuid.New().String(),
+		IP:              cli.IP,
+		Out:             cli.Out,
+		Direction:       direction,
+		ID:              uuid.New().String(),
+		TimestampConfig: config,
 	}
 
 	switch kongctx.Command() {
@@ -140,11 +163,11 @@ func main() {
 	case "tcp":
 		cca, err := pkg.ParseTCPCCA(cli.TCP.CCA)
 		if err != nil {
-			fmt.Println(err.Error())
+			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
 		if cli.TCP.Duration == 4294967296 && cli.TCP.Bytes == 4294967296 {
-			fmt.Println("Either --duration or --bytes need to be set.")
+			fmt.Fprintln(os.Stderr, "Either --duration or --bytes need to be set.")
 			os.Exit(1)
 		}
 		client.Sender = &pkg.TCPSender{Params: pkg.TCPSenderParams{
@@ -160,26 +183,86 @@ func main() {
 	default:
 		panic(kongctx.Command())
 	}
-
-	rpcClient := dialRpcClient(cli.IP, cli.Port)
+	rpcClient, err := dialRpcClient(cli.IP, cli.Port)
+	if err != nil {
+		runErr := fmt.Errorf("rpc.Dial failed: %w", err)
+		if writeErr := writeTimestampInfo(infoPath, client, config, runErr); writeErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("Info write error: %w", writeErr))
+		}
+		fmt.Fprintln(os.Stderr, runErr)
+		os.Exit(1)
+	}
 	defer rpcClient.Close()
-	if err := client.Run(ctx, rpcClient); err != nil {
-		fmt.Printf("Run error: %v\n", err)
-		os.Exit(1)
+	runErr := runSenderAndGather(ctx, rpcClient, client)
+	if err := writeTimestampInfo(infoPath, client, config, runErr); err != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("Info write error: %w", err))
 	}
-	if err := client.Gather(ctx, rpcClient); err != nil {
-		fmt.Printf("Gather error: %v\n", err)
+	if runErr != nil {
+		fmt.Fprintln(os.Stderr, runErr)
 		os.Exit(1)
 	}
 
-	fmt.Println(client.Summary())
+	fmt.Fprintln(os.Stderr, client.Summary())
 }
 
-func dialRpcClient(ip string, port uint) *rpc.Client {
+func setupStandaloneLogging(level slog.Level, console io.Writer, logFile *os.File) {
+	if logFile != nil {
+		pkg.SetupSlogMultiTo(level, false, console, logFile)
+		return
+	}
+	pkg.SetupSlogBasicTo(level, console)
+}
+
+func isMeasurementCommand(command string) bool {
+	switch command {
+	case "udp-burst", "udp-rate", "udp-periodic", "tcp", "icmp":
+		return true
+	default:
+		return false
+	}
+}
+
+func isUDPMeasurementCommand(command string) bool {
+	switch command {
+	case "udp-burst", "udp-rate", "udp-periodic":
+		return true
+	default:
+		return false
+	}
+}
+
+func timestampInfoPath(command, info string) string {
+	if !isUDPMeasurementCommand(command) {
+		return ""
+	}
+	return info
+}
+
+func validateServerFlags(args []string) error {
+	if flagWasSet(args, "info") {
+		return fmt.Errorf("--info is client-only and cannot be used with the server command")
+	}
+	return nil
+}
+
+func timestampConfigFromCLI() (pkg.TimestampConfig, error) {
+	return pkg.ParseTimestampConfig(cli.TimestampTx, cli.TimestampRx)
+}
+
+func flagWasSet(args []string, name string) bool {
+	long := "--" + name
+	for _, arg := range args {
+		if arg == long || len(arg) > len(long) && arg[:len(long)+1] == long+"=" {
+			return true
+		}
+	}
+	return false
+}
+
+func dialRpcClient(ip string, port uint) (*rpc.Client, error) {
 	client, err := rpc.Dial("tcp", fmt.Sprintf("%s:%v", ip, port))
 	if err != nil {
-		fmt.Printf("rpc.Dial failed: %v\n", err.Error())
-		os.Exit(1)
+		return nil, err
 	}
-	return client
+	return client, nil
 }

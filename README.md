@@ -11,7 +11,7 @@
 
 ## Overview
 
-NetScalpel is a custom network measurement tool designed for fine-grained control over packet transmission timing and scheduling. Written in Go, it utilizes a client-server architecture to coordinate test execution and exchange results over a TCP control channel. The toolkit leverages kernel-level timestamps to record per-packet send and receive times with microsecond precision, enabling accurate computation of one-way delay (OWD), packet loss, and receive rates. Accurate analysis requires NTP synchronization between the client and server endpoints.
+NetScalpel is a custom network measurement tool designed for fine-grained control over packet transmission timing and scheduling. Written in Go, it utilizes a client-server architecture to coordinate test execution and exchange results over a TCP control channel. UDP measurements can use kernel timestamps to compute one-way delay (OWD), packet loss, and receive rates; timestamp availability and accuracy depend on the selected source, hardware, and clock configuration. Accurate one-way delay analysis requires clock synchronization between the client and server endpoints, for example using NTP.
 
 ## Versions
 
@@ -158,13 +158,73 @@ Both tools provide detailed packet and connection information in CSV format, fac
 `scalpel-exp` also writes an `info.json` execution manifest for each procedure
 invocation, recording its configuration, schedule, results and output files.
 
+### Timestamp sources
+
+Set timestamping independently when starting each client and server:
+
+| Option           | Values                                      | Default    |
+|------------------|---------------------------------------------|------------|
+| `--timestamp-tx` | `hardware` (`hw`), `software` (`sw`), `app` | `software` |
+| `--timestamp-rx` | `hardware` (`hw`), `software` (`sw`), `app` | `software` |
+
+These settings apply to the **local host**, not the peer. In UL measurements the
+client uses its TX setting and the server its RX setting; DL reverses those
+roles. The client does not send timestamp configuration to the server or
+negotiate a source. UDP results carry the timestamp evidence used in reports;
+use matching client/server versions because there is no timestamp-capability
+handshake.
+
+For UDP, the requested source is required. The only implementation-only
+downgrade is hardware TX to software TX, because hardware TX is not implemented.
+This downgrade is logged and recorded in the timestamp report. Here, `software`
+means kernel packet timestamps; `app` means timestamps captured in application
+code.
+
+Socket setup errors, unavailable NIC/driver support, and missing or invalid
+packet timestamps fail the measurement. They never trigger fallback, even before
+collection starts. Selection happens once, before collecting samples; the source
+never changes during a run.
+
+For example, these commands require software TX and hardware RX for UDP on both
+endpoints:
+
+```sh
+./scalpel-run --timestamp-tx=software --timestamp-rx=hardware server
+./scalpel-run --ip <server-ip> --timestamp-tx=software --timestamp-rx=hardware udp-periodic
+```
+
+**NetScalpel saves hardware timestamps unchanged.** It does not convert clocks,
+correct offsets, verify synchronization, or access `/dev/ptpN` for calibration.
+Before using hardware timestamps, enable hardware timestamping on the receiving
+NIC and synchronize its PTP hardware clock to a reliable system clock externally
+(for example with linuxptp's `phc2sys`, configured with the correct clock
+direction). Keep both hosts' system clocks synchronized to a reliable common
+time reference.
+
+**Implementation limits:** Hardware TX timestamping is not yet implemented;
+requesting it for UDP selects software TX and logs the downgrade. ICMP and QUIC
+timestamp reports are deferred; no timestamp report is emitted for them. If a
+selected UDP source fails, the measurement fails without trying another source.
+TCP output contains sampled connection metrics rather than packet TX/RX
+timestamps and has no timestamp report.
+
+| Measurement | Timestamp report                                           |
+|-------------|------------------------------------------------------------|
+| UDP         | Supported (TX: software, app; RX: hardware, software, app) |
+| ICMP / QUIC | Deferred; no report                                        |
+| TCP metrics | No report                                                  |
+
+Hardware socket setup can succeed even when the NIC does not produce timestamps
+for the traffic. In that case, missing packet evidence still fails the run
+rather than silently falling back.
+
 ### UDP Tests
 UDP tests output one row per sent packet (including lost packets). The first six
 columns remain `seq,ts_sent,ts_rcvd,owd_ms,size,lost`, followed by `dup_count`
 and any duplicate receive timestamps:
 - `seq`: Sequence number starting at 0.
-- `ts_sent`: Timestamp taken when the packet is sent (via kernel software transmission timestamps).
-- `ts_rcvd`: Earliest arrival timestamp at the receiver (via Linux receive timestamping). Empty if lost.
+- `ts_sent`: Send timestamp from the selected TX source, recorded in the optional report.
+- `ts_rcvd`: Earliest arrival timestamp from the selected RX source, recorded in the optional report. Empty if lost.
 - `owd_ms`: Calculated one-way delay in milliseconds, using the earliest arrival. Empty if lost.
 - `size`: Packet payload size in bytes.
 - `lost`: Boolean indicating if the packet was lost.
