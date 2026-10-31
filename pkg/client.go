@@ -57,6 +57,8 @@ type SenderClient struct {
 	Direction Direction
 	StartAt   time.Time
 
+	TimestampConfig TimestampConfig
+
 	Sender Sender
 
 	UDPMsgsSent []MsgSent
@@ -68,23 +70,55 @@ type SenderClient struct {
 
 	ID string
 
-	port uint // Remote port, returned by server through RequestServerReply
+	port            uint // Remote port, returned by server through RequestServerReply
+	timestampReport TimestampReport
+	runErr          error
+	remoteStarted   bool
 }
 
+// TimestampReport returns the local configuration and timestamp evidence collected from
+// both endpoints. A failed measurement still retains any evidence collected
+// before the failure.
+func (c *SenderClient) TimestampReport() TimestampReport {
+	report := c.timestampReport
+	if report.RemoteConfig != nil {
+		remote := *report.RemoteConfig
+		report.RemoteConfig = &remote
+	}
+	return report
+}
+
+// RemoteStarted reports whether this run received a successful RequestServer
+// RPC reply. It remains true if a subsequent local step fails, allowing the
+// caller to abort and gather the remote terminal result without treating a
+// caller-assigned ID as proof of remote work.
+func (c *SenderClient) RemoteStarted() bool { return c.remoteStarted }
+
 func (c *SenderClient) Run(ctx context.Context, client *rpc.Client) error {
+	c.runErr = nil
+	c.remoteStarted = false
+	if c.Sender == nil {
+		return fmt.Errorf("SenderClient has no sender")
+	}
+	c.timestampReport = TimestampReport{LocalConfig: c.TimestampConfig}
 	if c.ID == "" {
 		c.ID = GenID(c.Sender.SenderMode().String())
 	}
 	ctx = context.WithValue(ctx, SlogIDKey{}, slog.Any("id", c.ID))
 
+	var err error
 	switch c.Direction {
 	case UL:
-		return c.runUL(ctx, client)
+		err = c.runUL(ctx, client)
 	case DL:
-		return c.runDL(ctx, client)
+		err = c.runDL(ctx, client)
 	default:
 		panic("Unknown Direction")
 	}
+	if err != nil {
+		c.runErr = err
+	}
+	return err
 }
 
 func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
@@ -99,6 +133,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	if err := callCtx(ctx, client, "Server.RequestServer", args, &reply); err != nil {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %w", err)
 	}
+	c.remoteStarted = true
 
 	c.port = reply.Port
 
@@ -152,6 +187,7 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	if err := waitUntil(ctx, c.StartAt); err != nil {
 		return err
 	}
+	configureUDPSender(c.Sender, c.TimestampConfig.TX)
 
 	slog.InfoContext(ctx, "Start UL client", "type", fmt.Sprintf("%T", c.Sender),
 		"params", c.Sender.GetParams(), "remoteAddr", raddr)
@@ -160,6 +196,9 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	defer sendCancel()
 
 	res, err := c.Sender.Run(sendCtx, conn, raddr)
+	if packetTimestampMode(c.Sender.SenderMode()) {
+		c.timestampReport.TX = makeTimestampReport(c.TimestampConfig, c.Sender.SenderMode(), c.Sender).TX
+	}
 	if err != nil {
 		return fmt.Errorf("UL failed: %w", err)
 	}
@@ -191,6 +230,7 @@ func (c *SenderClient) runDL(ctx context.Context, client *rpc.Client) error {
 	if err := callCtx(ctx, client, "Server.RequestServer", args, &reply); err != nil {
 		return fmt.Errorf("Call Server.RequestServerReply failed: %w", err)
 	}
+	c.remoteStarted = true
 
 	c.port = reply.Port
 
@@ -219,19 +259,25 @@ func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Du
 	defer conn.Close()
 	// laddr := conn.LocalAddr().(*net.UDPAddr)
 
-	if err := c.punchUDPHole(ctx, conn, raddr); err != nil {
-		return fmt.Errorf("Return due to failed UDP probing: %w", err)
-	}
-
 	// slog.DebugContext(ctx, "Wrote UDP to server at %v, receiving at %v, timeout duration is %v\n", raddr, laddr, args.Timeout)
 	var receiver Receiver
+	var udpReceiver *UDPReceiver
 	switch c.Sender.ReceiverMode() {
 	case ReceiveUDP:
-		receiver = &UDPReceiver{}
+		udpReceiver = &UDPReceiver{Config: c.TimestampConfig}
+		if err := udpReceiver.prepare(conn, c.TimestampConfig); err != nil {
+			c.timestampReport.RX = udpReceiver.TimestampReport()
+			return err
+		}
+		receiver = udpReceiver
 	case ReceiveQUIC:
 		receiver = &QUICReceiver{}
 	default:
 		panic("Unknown ServerMode")
+	}
+
+	if err := c.punchUDPHole(ctx, conn, raddr); err != nil {
+		return fmt.Errorf("Return due to failed UDP probing: %w", err)
 	}
 
 	receiver.Init()
@@ -245,6 +291,9 @@ func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Du
 	recvCtx, recvCancel := context.WithTimeout(ctx, timeout)
 	defer recvCancel()
 	res, err := receiver.Run(recvCtx, ln)
+	if udpReceiver != nil {
+		c.timestampReport.RX = makeTimestampReport(c.TimestampConfig, ReceiveUDP, udpReceiver).RX
+	}
 	if err != nil {
 		return fmt.Errorf("Failed ReceiveFrom: %w", err)
 	}
@@ -471,10 +520,26 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	if !result.Complete {
 		return fmt.Errorf("server did not confirm completion for result %q", c.ID)
 	}
+	if c.Sender == nil {
+		if result.Error != "" {
+			return &RemoteExecutionError{Err: fmt.Errorf("server measurement failed: %s", result.Error)}
+		}
+		return fmt.Errorf("SenderClient has no sender while gathering result %q", c.ID)
+	}
+	remoteMode := c.Sender.SenderMode()
+	if c.Direction == UL {
+		remoteMode = c.Sender.ReceiverMode()
+	}
+	if packetTimestampMode(remoteMode) {
+		c.mergeRemoteTimestampReport(result.TimestampReport, remoteMode)
+	}
 	if result.Error != "" {
 		return &RemoteExecutionError{Err: fmt.Errorf("server measurement failed: %s", result.Error)}
 	}
 	res := result.Result
+	if c.runErr != nil {
+		return &RemoteExecutionError{Err: fmt.Errorf("local measurement failed; CSV output withheld: %w", c.runErr)}
+	}
 
 	switch res := res.(type) {
 	case []MsgRcvd:
@@ -525,6 +590,16 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	}
 
 	return nil
+}
+
+func (c *SenderClient) mergeRemoteTimestampReport(report TimestampReport, mode Mode) {
+	remote := report.LocalConfig
+	c.timestampReport.RemoteConfig = &remote
+	if mode == ReceiveUDP {
+		c.timestampReport.RX = report.RX
+	} else {
+		c.timestampReport.TX = report.TX
+	}
 }
 
 func (c *SenderClient) Summary() string {

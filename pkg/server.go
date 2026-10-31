@@ -24,8 +24,8 @@ func logErrContext(ctx context.Context, fmtStr string, args ...interface{}) erro
 	return e
 }
 
-func RunServer(ctx context.Context, ip string, port uint, slogCh *chan *slog.Record) *Server {
-	s := NewServer(ctx, slogCh)
+func RunServer(ctx context.Context, ip string, port uint, slogCh *chan *slog.Record, configs ...TimestampConfig) *Server {
+	s := NewServer(ctx, slogCh, configs...)
 
 	var err error
 	s.listener, err = net.Listen("tcp", fmt.Sprintf("%s:%v", ip, port))
@@ -75,8 +75,9 @@ func RunServer(ctx context.Context, ip string, port uint, slogCh *chan *slog.Rec
 }
 
 type Result struct {
-	Err error
-	Res any
+	Err    error
+	Res    any
+	Report TimestampReport
 }
 
 type ResultPath struct {
@@ -85,10 +86,11 @@ type ResultPath struct {
 }
 
 type Server struct {
-	listener net.Listener
-	wg       sync.WaitGroup
-	ctx      context.Context
-	slogCh   *chan *slog.Record
+	listener        net.Listener
+	wg              sync.WaitGroup
+	ctx             context.Context
+	slogCh          *chan *slog.Record
+	timestampConfig TimestampConfig
 
 	conns     map[net.Conn]struct{}
 	connsLock sync.Mutex
@@ -102,13 +104,18 @@ type Server struct {
 	resultLock sync.RWMutex
 }
 
-func NewServer(ctx context.Context, slogCh *chan *slog.Record) *Server {
+func NewServer(ctx context.Context, slogCh *chan *slog.Record, configs ...TimestampConfig) *Server {
+	config := TimestampConfig{}
+	if len(configs) > 0 {
+		config = configs[0]
+	}
 	return &Server{
-		ctx:        ctx,
-		slogCh:     slogCh,
-		conns:      make(map[net.Conn]struct{}),
-		resultC:    make(map[string]chan *Result),
-		testCancel: make(map[string]context.CancelFunc),
+		ctx:             ctx,
+		slogCh:          slogCh,
+		timestampConfig: config,
+		conns:           make(map[net.Conn]struct{}),
+		resultC:         make(map[string]chan *Result),
+		testCancel:      make(map[string]context.CancelFunc),
 	}
 }
 
@@ -148,7 +155,6 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	if args.ID == "" {
 		return logErrContext(ctx, "RequestServer: ID is empty")
 	}
-
 	// Everything the test does runs on a per-test child context so that the
 	// Abort RPC can end this one test without touching the rest of the server.
 	testCtx, testCancel := context.WithCancel(ctx)
@@ -172,7 +178,16 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 		}
 		laddr = conn.LocalAddr()
 		reply.Port = uint(laddr.(*net.UDPAddr).Port)
-		go s.handleRequestServerUDP(testCtx, conn, args)
+		var receiver *UDPReceiver
+		if args.ServerMode == ReceiveUDP {
+			receiver, err = s.prepareUDPReceiverForRequest(ctx, args.ID, conn, s.timestampConfig, func(receiver *UDPReceiver, conn *net.UDPConn, config TimestampConfig) error {
+				return receiver.prepare(conn, config)
+			})
+			if err != nil {
+				return err
+			}
+		}
+		go s.handleRequestServerUDP(testCtx, conn, args, receiver)
 	case TCP:
 		ln, err := listenTCP(ctx)
 		if err != nil {
@@ -197,6 +212,40 @@ func (s *Server) RequestServer(args RequestServerArgs, reply *RequestServerReply
 	// Note: returns no error even if requested ServerMode is invalid
 
 	return nil
+}
+
+func prepareUDPReceiverWith(conn *net.UDPConn, config TimestampConfig, prepare func(*UDPReceiver, *net.UDPConn, TimestampConfig) error) (*UDPReceiver, error) {
+	receiver := &UDPReceiver{Config: config}
+	if err := prepare(receiver, conn, config); err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close UDP socket after timestamp setup failure: %w", closeErr))
+		}
+		return receiver, err
+	}
+	return receiver, nil
+}
+
+func (s *Server) prepareUDPReceiverForRequest(ctx context.Context, id string, conn *net.UDPConn, config TimestampConfig, prepare func(*UDPReceiver, *net.UDPConn, TimestampConfig) error) (*UDPReceiver, error) {
+	receiver, err := prepareUDPReceiverWith(conn, config, prepare)
+	if err != nil {
+		return receiver, s.rejectTest(ctx, id, "UDP receive timestamp setup failed: %w", err)
+	}
+	return receiver, nil
+}
+
+// rejectTest removes pre-registered state when RequestServer itself returns an
+// RPC error, so clients without a successful reply cannot leave an unread result.
+func (s *Server) rejectTest(ctx context.Context, id, fmtStr string, args ...interface{}) error {
+	err := logErrContext(ctx, fmtStr, args...)
+	s.resultLock.Lock()
+	delete(s.resultC, id)
+	cancel := s.testCancel[id]
+	delete(s.testCancel, id)
+	s.resultLock.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return err
 }
 
 // deliverResult hands the test's result to a waiting RequestServerResult and
@@ -261,11 +310,13 @@ func (s *Server) Abort(args AbortArgs, reply *AbortReply) error {
 	return nil
 }
 
-func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, args RequestServerArgs) {
+func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, args RequestServerArgs, preparedReceiver *UDPReceiver) {
 	defer conn.Close()
 
 	var result Result
-	defer s.deliverResult(args.ID, &result)
+	defer func() {
+		s.deliverResult(args.ID, &result)
+	}()
 
 	var sender Sender
 	var receiver Receiver
@@ -279,7 +330,10 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 	case SendQUIC:
 		sender = &QUICSender{Params: args.Params.(QUICParams)}
 	case ReceiveUDP:
-		receiver = &UDPReceiver{}
+		if preparedReceiver == nil {
+			preparedReceiver = &UDPReceiver{Config: s.timestampConfig}
+		}
+		receiver = preparedReceiver
 	case ReceiveQUIC:
 		receiver = &QUICReceiver{}
 	default:
@@ -289,6 +343,7 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 	}
 
 	if sender != nil {
+		configureUDPSender(sender, s.timestampConfig.TX)
 		raddr, err := waitForUDPProbe(ctx, conn, args.StartAt)
 		if err != nil {
 			slog.ErrorContext(ctx, "RequestServer: failed waiting for probe:", "error", err)
@@ -296,9 +351,11 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 			return
 		}
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, raddr)
+		result.Report = makeTimestampReport(s.timestampConfig, args.ServerMode, sender)
 	} else {
 		ln := NewDummyListener(conn, conn.LocalAddr())
 		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
+		result.Report = makeTimestampReport(s.timestampConfig, args.ServerMode, receiver)
 	}
 }
 
@@ -309,7 +366,9 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 	}()
 
 	var result Result
-	defer s.deliverResult(args.ID, &result)
+	defer func() {
+		s.deliverResult(args.ID, &result)
+	}()
 
 	switch args.ServerMode {
 	case ReceiveTCP:
@@ -349,7 +408,9 @@ func (s *Server) handleRequestServerICMP(ctx context.Context, conn *net.IPConn, 
 	defer conn.Close()
 
 	var result Result
-	defer s.deliverResult(args.ID, &result)
+	defer func() {
+		s.deliverResult(args.ID, &result)
+	}()
 
 	switch args.ServerMode {
 	case SendICMP:
@@ -529,7 +590,8 @@ type RequestServerResultArgs struct {
 	ID string
 }
 type RequestServerResultReply struct {
-	Result any
+	Result          any
+	TimestampReport TimestampReport
 	// Complete confirms that the remote work reached a terminal state; it does not mean it succeeded.
 	Complete bool
 	// Error is non-empty only when completed measurement work failed.
@@ -539,6 +601,7 @@ type RequestServerResultReply struct {
 func (s *Server) RequestServerResult(args RequestServerResultArgs, reply *RequestServerResultReply) error {
 	reply.Complete = false
 	reply.Error = ""
+	reply.TimestampReport = TimestampReport{}
 
 	ctx := context.WithValue(s.ctx, SlogIDKey{}, slog.Any("id", args.ID))
 	slog.DebugContext(ctx, "RequestServerResult: request")
@@ -593,10 +656,12 @@ func handleChanResult(ctx context.Context, c chan *Result, id string, reply *Req
 		return true, fmt.Errorf("Result %v was already retrieved", id)
 	}
 	if result.Err != nil {
+		reply.TimestampReport = result.Report
 		reply.Complete = true
 		return true, fmt.Errorf("handleChanResult: %w", result.Err)
 	}
 	reply.Result = result.Res
+	reply.TimestampReport = result.Report
 	reply.Complete = true
 	return true, nil
 }

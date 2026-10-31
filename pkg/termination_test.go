@@ -178,7 +178,7 @@ func TestListenFailureProducesErrorResult(t *testing.T) {
 
 	srvCtx, srvCancel := context.WithCancel(context.Background())
 	defer srvCancel()
-	s := NewServer(srvCtx, nil)
+	s := NewServer(srvCtx, nil, TimestampConfig{TX: TimestampApp})
 
 	args := RequestServerArgs{
 		ID:         "b3",

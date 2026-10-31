@@ -47,11 +47,13 @@ func TestGobRegistrationSenderParams(t *testing.T) {
 		covered[s.SenderMode()] = true
 		covered[s.ReceiverMode()] = true
 
-		args := RequestServerArgs{ID: "id", ServerMode: s.SenderMode(), Params: s.GetParams()}
+		args := RequestServerArgs{
+			ID: "id", ServerMode: s.SenderMode(), Params: s.GetParams(),
+		}
 		var got RequestServerArgs
 		gobRoundTrip(t, args, &got)
 		if !reflect.DeepEqual(args.Params, got.Params) {
-			t.Errorf("%T did not survive the gob round trip: sent %+v, got %+v", args.Params, args.Params, got.Params)
+			t.Errorf("RequestServerArgs did not survive the gob round trip: sent %+v, got %+v", args, got)
 		}
 	}
 
@@ -90,7 +92,14 @@ func TestGobRegistrationResults(t *testing.T) {
 	}
 
 	for _, res := range results {
-		reply := RequestServerResultReply{Result: res}
+		reply := RequestServerResultReply{
+			Result: res,
+			TimestampReport: TimestampReport{
+				LocalConfig: TimestampConfig{TX: TimestampSoftware, RX: TimestampSoftware},
+				TX:          TimestampDirectionReport{Source: TimestampSoftware, PacketCount: 2},
+				RX:          TimestampDirectionReport{Source: TimestampHardware, ClockDomain: "nic_phc", PacketCount: 2},
+			},
+		}
 		var got RequestServerResultReply
 		gobRoundTrip(t, reply, &got)
 		if !reflect.DeepEqual(reply.Result, got.Result) {

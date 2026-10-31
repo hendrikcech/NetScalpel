@@ -1,19 +1,15 @@
 package pkg
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"sync"
-	"syscall"
 	"time"
 
 	mmsg "github.com/anacrolix/mmsg/socket"
-	"golang.org/x/sys/unix"
 )
 
 // Dummy type to unify UDP and TCP receiver interfaces. Is constructed with a conn
@@ -54,28 +50,87 @@ func (l *DummyListener) Addr() net.Addr {
 var _ net.Listener = (*DummyListener)(nil)
 
 type UDPReceiver struct {
+	Config   TimestampConfig
+	report   TimestampDirectionReport
+	prepared bool
 }
+
+func (r *UDPReceiver) TimestampReport() TimestampDirectionReport { return r.report }
 
 func (r *UDPReceiver) Init() {
 }
 
+// prepare enables the one configured kernel RX source before a measurement
+// can deliver its first data packet. A direct Run call prepares lazily before
+// its first read; network callers prepare before their existing kickoff.
+func (r *UDPReceiver) prepare(conn *net.UDPConn, config TimestampConfig) error {
+	return r.prepareWith(conn, config, func(conn *net.UDPConn, source TimestampSource) error {
+		return enableRxTimestampingSource(conn, source)
+	})
+}
+
+func (r *UDPReceiver) prepareWith(conn *net.UDPConn, config TimestampConfig, enable func(*net.UDPConn, TimestampSource) error) error {
+	r.prepared = false
+	config, err := config.Normalize()
+	if err != nil {
+		r.report = TimestampDirectionReport{}
+		return err
+	}
+	selection, err := selectTimestampSource(context.Background(), config.RX, false)
+	if err != nil {
+		r.Config = config
+		r.report = selection
+		return err
+	}
+	r.Config = config
+	r.report = selection
+	if selection.Source != TimestampApp {
+		if err := enable(conn, selection.Source); err != nil {
+			return fmt.Errorf("could not enable selected %s RX timestamps: %w", selection.Source, err)
+		}
+	}
+	r.prepared = true
+	return nil
+}
+
 // Receives until ctx is cancelled. ReadDeadline = time.Now() is set to wake up and return from ReceiveFrom.
 func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
+	config, err := r.Config.Normalize()
+	if err != nil {
+		r.report = TimestampDirectionReport{}
+		return nil, err
+	}
+	r.Config = config
+	r.report.PacketCount = 0
+	r.report.MissingCount = 0
+	r.report.InvalidCount = 0
+
 	// DummyListener used
 	conn, err := ln.Accept()
 	if err != nil {
-		panic(err)
+		if !r.prepared {
+			r.report, _ = selectTimestampSource(ctx, config.RX, false)
+		}
+		return nil, err
 	}
-
-	tsEnabled := true
-	if err := enableRxTimestamping(conn.(*net.UDPConn)); err != nil {
-		slog.WarnContext(ctx, "Failed enabling rx timestamping", "error", err.Error())
-		tsEnabled = false
+	udpConn, ok := conn.(*net.UDPConn)
+	if !ok {
+		err := fmt.Errorf("UDPReceiver requires *net.UDPConn, got %T", conn)
+		if !r.prepared {
+			r.report, _ = selectTimestampSource(ctx, config.RX, false)
+		}
+		return nil, err
 	}
+	if !r.prepared {
+		if err := r.prepare(udpConn, config); err != nil {
+			return nil, err
+		}
+	}
+	source := r.report.Source
 
-	// conn ReadDeadline must be set, otherwise this function never returns
-	// msgs := make([]MsgRcvd, 0, int(float64(expectedNumPackets)*1.1))
+	// conn ReadDeadline must be set, otherwise this function never returns.
 	msgs := make([]MsgRcvd, 0, 1024)
+	var firstTimestampErr error
 
 	// batch size
 	rx := make([]mmsg.Message, 1024)
@@ -100,7 +155,11 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 		if err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Timeout() {
 				// not a timeout
-				return nil, fmt.Errorf("ReceiveFrom: ReadMsgs: %w", err)
+				readErr := fmt.Errorf("ReceiveFrom: ReadMsgs: %w", err)
+				if firstTimestampErr != nil {
+					readErr = errors.Join(readErr, firstTimestampErr)
+				}
+				return nil, readErr
 			}
 			if ctx.Err() == nil {
 				slog.WarnContext(ctx, "RecvMsgs returned Timeout error from unknown origin -> clearing deadline",
@@ -128,42 +187,52 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 				// Ignore probe packets
 				continue
 			}
+			if packet.N < 8 || len(packet.Buffers) == 0 || packet.N > len(packet.Buffers[0]) {
+				payloadErr := fmt.Errorf("invalid UDP payload length %d", packet.N)
+				r.report.PacketCount++
+				r.report.MissingCount++
+				r.report.InvalidCount++
+				if firstTimestampErr != nil {
+					payloadErr = errors.Join(payloadErr, firstTimestampErr)
+				}
+				return nil, payloadErr
+			}
 
 			var msg Msg
 			msg.Decode(packet.Buffers[0][:packet.N])
 			rcvd := MsgRcvd{
-				Seq:    msg.Seq,
-				TsRcvd: tsRcvd,
-				Len:    uint(packet.N),
+				Seq: msg.Seq,
+				Len: uint(packet.N),
 			}
-
-			if tsEnabled {
-				cms, err := unix.ParseSocketControlMessage(packet.OOB[:packet.NN])
-				if err != nil {
-					slog.ErrorContext(ctx, "receiveFrom: Failed parsing cmsg", "error", err)
-				}
-
-				timestampParsed := false
-				for _, cm := range cms {
-					if cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPING {
-						var times unix.ScmTimestamping
-						tsBuf := bytes.NewReader(cm.Data)
-						binary.Read(tsBuf, binary.LittleEndian, &times)
-						ts := times.Ts[0]
-						rcvd.TsRcvd = time.Unix(ts.Sec, ts.Nsec)
-						timestampParsed = true
+			r.report.PacketCount++
+			if source == TimestampApp {
+				rcvd.TsRcvd = tsRcvd
+			} else {
+				timestamp, timestampErr := parseRxTimestampOOB(packet, source)
+				if timestampErr != nil {
+					r.report.MissingCount++
+					r.report.InvalidCount++
+					if firstTimestampErr == nil {
+						firstTimestampErr = fmt.Errorf("invalid %s RX timestamp for packet %d: %w", source, msg.Seq, timestampErr)
 					}
-				}
-
-				if !timestampParsed {
-					slog.WarnContext(ctx, "Missing rx timestamp", "seq", msg.Seq)
+					slog.WarnContext(ctx, "RX timestamp invalid", "seq", msg.Seq, "reason", timestampErr)
+				} else {
+					rcvd.TsRcvd = timestamp
 				}
 			}
-
+			if rcvd.TsRcvd.IsZero() && source == TimestampApp {
+				r.report.MissingCount++
+			}
 			msgs = append(msgs, rcvd)
 		}
 	}
 
+	if r.report.MissingCount != 0 {
+		if firstTimestampErr == nil {
+			firstTimestampErr = fmt.Errorf("selected %s RX timestamps are missing for %d of %d packets", source, r.report.MissingCount, r.report.PacketCount)
+		}
+		return msgs, firstTimestampErr
+	}
 	return msgs, nil
 }
 
@@ -181,8 +250,12 @@ func (b BurstParams) GetDuration() time.Duration {
 
 // Sends numPackets packets as quickly as possible
 type BurstSender struct {
-	Params BurstParams
+	Params          BurstParams
+	TimestampSource TimestampSource
+	report          TimestampDirectionReport
 }
+
+func (s *BurstSender) TimestampReport() TimestampDirectionReport { return s.report }
 
 func (r *BurstSender) GetParams() SenderParams {
 	return r.Params
@@ -197,15 +270,24 @@ func (s *BurstSender) ReceiverMode() Mode {
 }
 
 func (s *BurstSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn), s.Params.Num)
-	defer tsReaderCancel()
-
-	msgsSent, err := s.run(ctx, conn, raddr)
+	tsReader, tsReaderCancel, selection, err := beginTxTimestampCollection(ctx, conn.(*net.UDPConn), s.Params.Num, s.TimestampSource)
+	s.report = selection
 	if err != nil {
 		return nil, err
 	}
+	defer tsReaderCancel()
 
-	msgsSent = selectMsgsSent(ctx, tsReader, tsReaderCancel, msgsSent)
+	msgsSent, runErr := s.run(ctx, conn, raddr)
+	msgsSent, s.report, err = selectTxTimestamps(ctx, tsReader, tsReaderCancel, msgsSent, selection)
+	if runErr != nil {
+		if err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+		return nil, runErr
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	return msgsSent, nil
 }
@@ -293,8 +375,12 @@ func (p PeriodicParams) GetDuration() time.Duration {
 
 // Sends one packet every interval
 type PeriodicSender struct {
-	Params PeriodicParams
+	Params          PeriodicParams
+	TimestampSource TimestampSource
+	report          TimestampDirectionReport
 }
+
+func (s *PeriodicSender) TimestampReport() TimestampDirectionReport { return s.report }
 
 var _ Sender = (*PeriodicSender)(nil)
 
@@ -311,15 +397,24 @@ func (s *PeriodicSender) ReceiverMode() Mode {
 }
 
 func (r *PeriodicSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (any, error) {
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn), r.Params.NumPackets())
-	defer tsReaderCancel()
-
-	msgsSent, err := r.run(ctx, conn, raddr)
+	tsReader, tsReaderCancel, selection, err := beginTxTimestampCollection(ctx, conn.(*net.UDPConn), r.Params.NumPackets(), r.TimestampSource)
+	r.report = selection
 	if err != nil {
 		return nil, err
 	}
+	defer tsReaderCancel()
 
-	msgsSent = selectMsgsSent(ctx, tsReader, tsReaderCancel, msgsSent)
+	msgsSent, runErr := r.run(ctx, conn, raddr)
+	msgsSent, r.report, err = selectTxTimestamps(ctx, tsReader, tsReaderCancel, msgsSent, selection)
+	if runErr != nil {
+		if err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+		return nil, runErr
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	return msgsSent, nil
 }
@@ -416,11 +511,15 @@ func (r RateParamsW) GetDuration() time.Duration {
 
 // Generate Params.Pps many packets per second
 type RateSender struct {
-	Params RateParamsW
-	seq    uint64
-	msgs   []MsgSent
-	tx     []mmsg.Message
+	Params          RateParamsW
+	TimestampSource TimestampSource
+	seq             uint64
+	msgs            []MsgSent
+	tx              []mmsg.Message
+	report          TimestampDirectionReport
 }
+
+func (r *RateSender) TimestampReport() TimestampDirectionReport { return r.report }
 
 var _ Sender = (*RateSender)(nil)
 
@@ -444,18 +543,28 @@ func (r *RateSender) Run(ctx context.Context, conn net.Conn, raddr net.Addr) (an
 		r.tx[i].Buffers = [][]byte{make([]byte, 1500)}
 	}
 
-	tsReader, tsReaderCancel := startTxTsReader(ctx, conn.(*net.UDPConn), uint(cap(r.msgs)))
-	defer tsReaderCancel()
-
 	mconn, err := mmsg.NewConn(conn)
 	if err != nil {
 		return nil, fmt.Errorf("Failed mmsg.NewConn: %w", err)
 	}
-	if err := r.runSegments(ctx, conn, mconn, raddr, start); err != nil {
+	tsReader, tsReaderCancel, selection, err := beginTxTimestampCollection(ctx, conn.(*net.UDPConn), uint(cap(r.msgs)), r.TimestampSource)
+	r.report = selection
+	if err != nil {
 		return nil, err
 	}
+	defer tsReaderCancel()
 
-	r.msgs = selectMsgsSent(ctx, tsReader, tsReaderCancel, r.msgs)
+	runErr := r.runSegments(ctx, conn, mconn, raddr, start)
+	r.msgs, r.report, err = selectTxTimestamps(ctx, tsReader, tsReaderCancel, r.msgs, selection)
+	if runErr != nil {
+		if err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+		return nil, runErr
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	return r.msgs, nil
 }

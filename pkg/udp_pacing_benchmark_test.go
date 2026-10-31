@@ -53,7 +53,7 @@ func (h *pacingLog) Handle(_ context.Context, r slog.Record) error {
 		h.indexed = append(h.indexed, pacingBoundary{r.Time, h.sender.seq, segment})
 	case "Dynamic interval calculation":
 		h.legacy = append(h.legacy, pacingBoundary{r.Time, h.sender.seq, -1})
-	case "selectMsgsSent: returning with txTsReader infos":
+	case "selected software TX timestamps":
 		h.kernel = true
 	}
 	return nil

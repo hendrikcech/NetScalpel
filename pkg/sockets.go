@@ -85,9 +85,7 @@ func enableTxTimestamping(conn syscall.Conn) error {
 	var cbErr error
 	err = rawConn.Control(func(fd uintptr) {
 		flags := unix.SOF_TIMESTAMPING_TX_SOFTWARE |
-			unix.SOF_TIMESTAMPING_TX_HARDWARE |
 			unix.SOF_TIMESTAMPING_SOFTWARE |
-			unix.SOF_TIMESTAMPING_RAW_HARDWARE |
 			unix.SOF_TIMESTAMPING_OPT_ID |
 			unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
 
@@ -113,6 +111,10 @@ func enableTxTimestamping(conn syscall.Conn) error {
 }
 
 func enableRxTimestamping(conn syscall.Conn) error {
+	return enableRxTimestampingSource(conn, TimestampSoftware)
+}
+
+func enableRxTimestampingSource(conn syscall.Conn, source TimestampSource) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err
@@ -120,12 +122,16 @@ func enableRxTimestamping(conn syscall.Conn) error {
 
 	var cbErr error
 	err = rawConn.Control(func(fd uintptr) {
-		flags := unix.SOF_TIMESTAMPING_RX_SOFTWARE |
-			unix.SOF_TIMESTAMPING_RX_HARDWARE |
-			unix.SOF_TIMESTAMPING_SOFTWARE |
-			unix.SOF_TIMESTAMPING_RAW_HARDWARE |
-			unix.SOF_TIMESTAMPING_OPT_ID |
-			unix.SOF_TIMESTAMPING_OPT_TSONLY // needed to determine size of packet
+		flags := unix.SOF_TIMESTAMPING_OPT_ID | unix.SOF_TIMESTAMPING_OPT_TSONLY
+		switch source {
+		case TimestampSoftware:
+			flags |= unix.SOF_TIMESTAMPING_RX_SOFTWARE | unix.SOF_TIMESTAMPING_SOFTWARE
+		case TimestampHardware:
+			flags |= unix.SOF_TIMESTAMPING_RX_HARDWARE | unix.SOF_TIMESTAMPING_RAW_HARDWARE
+		default:
+			cbErr = fmt.Errorf("unsupported kernel RX timestamp source %q", source)
+			return
+		}
 
 		cbErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TIMESTAMPING, flags)
 	})

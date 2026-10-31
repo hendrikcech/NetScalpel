@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Unlike the sender integration tests, these tests never call selectMsgsSent:
+// Unlike sender integration tests, these tests exercise the error-queue reader directly:
 // missing/unparseable kernel timestamps must fail, not use userspace fallback.
 // SO_TIMESTAMPING software TX timestamps need no special privileges on Linux.
 func TestTxTsReaderSocket(t *testing.T) {

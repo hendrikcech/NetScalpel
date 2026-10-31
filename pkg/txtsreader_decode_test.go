@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func timestampMessage(ipv6 bool) mmsg.Message {
 		level, kind = syscall.SOL_IPV6, syscall.IPV6_RECVERR
 	}
 	oob = append(oob, timestampCmsg(level, kind, unix.SockExtendedErr{
-		Errno: uint32(syscall.ENOMSG), Origin: unix.SO_EE_ORIGIN_TIMESTAMPING, Data: 42,
+		Errno: uint32(syscall.ENOMSG), Origin: unix.SO_EE_ORIGIN_TIMESTAMPING, Info: unix.SCM_TSTAMP_SND, Data: 42,
 	})...)
 	return mmsg.Message{OOB: oob, NN: len(oob), N: 1500}
 }
@@ -78,6 +79,9 @@ func TestParseTimestampMalformed(t *testing.T) {
 		{OOB: valid.OOB, NN: valid.NN, Flags: unix.MSG_CTRUNC},
 		{OOB: valid.OOB, NN: -1},
 		{OOB: valid.OOB, NN: len(valid.OOB) + 1},
+		{OOB: append(timestampCmsg(syscall.SOL_SOCKET, syscall.SCM_TIMESTAMPING, unix.ScmTimestamping{}), timestampCmsg(syscall.SOL_IP, syscall.IP_RECVERR, unix.SockExtendedErr{
+			Errno: uint32(syscall.ENOMSG), Origin: unix.SO_EE_ORIGIN_TIMESTAMPING, Info: unix.SCM_TSTAMP_SND,
+		})...), NN: unix.CmsgSpace(binary.Size(unix.ScmTimestamping{})) + unix.CmsgSpace(binary.Size(unix.SockExtendedErr{}))},
 		{OOB: timestampCmsg(syscall.SOL_SOCKET, syscall.SCM_TIMESTAMPING, uint64(1))},
 		{OOB: timestampCmsg(syscall.SOL_IP, syscall.IP_RECVERR, uint32(syscall.ENOMSG))},
 	} {
@@ -90,13 +94,24 @@ func TestParseTimestampMalformed(t *testing.T) {
 	}
 }
 
+func TestParseTimestampRejectsDuplicateAfterZeroTimestamp(t *testing.T) {
+	valid := timestampMessage(false)
+	validTimespecs := valid.OOB[:unix.CmsgSpace(binary.Size(unix.ScmTimestamping{}))]
+	zeroTimestamp := timestampCmsg(syscall.SOL_SOCKET, syscall.SCM_TIMESTAMPING, unix.ScmTimestamping{})
+	oob := append(append([]byte(nil), zeroTimestamp...), validTimespecs...)
+	if _, err := NewTxTsReader().parseOOB(context.Background(), mmsg.Message{OOB: oob, NN: len(oob)}); err == nil || !strings.Contains(err.Error(), "duplicate SCM_TIMESTAMPING") {
+		t.Fatalf("zero first timestamp hid duplicate cmsg: %v", err)
+	}
+}
+
 func TestParseTimestampRejectsNonTimestampErrors(t *testing.T) {
 	msg := timestampMessage(false)
 	// Replace only the error cmsg, keeping a valid timestamp present.
 	msg.OOB = msg.OOB[:unix.CmsgSpace(binary.Size(unix.ScmTimestamping{}))]
 	for _, sockErr := range []unix.SockExtendedErr{
-		{Errno: uint32(syscall.ENOMSG), Origin: unix.SO_EE_ORIGIN_ICMP},
-		{Errno: uint32(syscall.ECONNREFUSED), Origin: unix.SO_EE_ORIGIN_TIMESTAMPING},
+		{Errno: uint32(syscall.ENOMSG), Origin: unix.SO_EE_ORIGIN_ICMP, Info: unix.SCM_TSTAMP_SND},
+		{Errno: uint32(syscall.ECONNREFUSED), Origin: unix.SO_EE_ORIGIN_TIMESTAMPING, Info: unix.SCM_TSTAMP_SND},
+		{Errno: uint32(syscall.ENOMSG), Origin: unix.SO_EE_ORIGIN_TIMESTAMPING, Info: unix.SCM_TSTAMP_SCHED},
 	} {
 		oob := append(append([]byte(nil), msg.OOB...), timestampCmsg(syscall.SOL_IP, syscall.IP_RECVERR, sockErr)...)
 		if _, err := NewTxTsReader().parseOOB(context.Background(), mmsg.Message{OOB: oob, NN: len(oob)}); err == nil {

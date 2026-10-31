@@ -10,7 +10,6 @@ import (
 	"os"
 	"syscall"
 	"time"
-	"unsafe"
 
 	mmsg "github.com/anacrolix/mmsg/socket"
 	"golang.org/x/sys/unix"
@@ -23,6 +22,8 @@ import (
 type TxTsReader struct {
 	C        chan []MsgSent
 	sentMsgs []MsgSent
+	runErr   error
+	invalid  uint64
 }
 
 func NewTxTsReader() *TxTsReader {
@@ -39,8 +40,9 @@ func newTxTsReader(expectedPackets uint) *TxTsReader {
 	}
 }
 
-func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
+func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) (runErr error) {
 	defer func() {
+		t.runErr = runErr
 		t.C <- t.sentMsgs
 		close(t.C)
 	}()
@@ -96,6 +98,7 @@ func (t *TxTsReader) Run(ctx context.Context, conn net.Conn) error {
 			sentMsg, err := t.parseOOB(ctx, rx[i])
 			if err != nil {
 				slog.ErrorContext(ctx, "parseOOB", "error", err)
+				t.invalid++
 				continue
 			}
 			// slog.DebugContext(ctx, "", "sentMsg", sentMsg)
@@ -115,46 +118,45 @@ func (t *TxTsReader) parseOOB(ctx context.Context, msg mmsg.Message) (MsgSent, e
 	}
 
 	tsSet := false
+	timestampSeen := false
 	seqSet := false
 	remaining := msg.OOB[:msg.NN]
-	for len(remaining) >= unix.CmsgLen(0) {
+	for len(remaining) > 0 {
+		if len(remaining) < unix.CmsgLen(0) {
+			return sentMsg, fmt.Errorf("TxTsReader: partial trailing ancillary header")
+		}
 		hdr, data, rest, err := unix.ParseOneSocketControlMessage(remaining)
 		if err != nil {
 			return sentMsg, fmt.Errorf("TxTsReader: Failed parsing cmsg: %w", err)
 		}
 		remaining = rest
 		if hdr.Level == syscall.SOL_SOCKET && hdr.Type == syscall.SCM_TIMESTAMPING {
-			// SCM_TIMESTAMPING carries three native timespecs, not wire-order
-			// integers. Read only the software timestamp, without reflection or
-			// an allocating slice of control messages. Sizeof is a constant and
-			// accounts for the legacy 32-bit Linux timespec layout as well.
-			const timespecSize = int(unsafe.Sizeof(unix.Timespec{}))
-			if len(data) < 3*timespecSize {
-				return sentMsg, fmt.Errorf("TxTsReader: short SCM_TIMESTAMPING")
+			if timestampSeen {
+				return sentMsg, fmt.Errorf("TxTsReader: duplicate SCM_TIMESTAMPING control message")
 			}
-			var sec, nsec int64
-			if timespecSize == 16 {
-				sec = int64(binary.NativeEndian.Uint64(data))
-				nsec = int64(binary.NativeEndian.Uint64(data[8:]))
-			} else {
-				sec = int64(int32(binary.NativeEndian.Uint32(data)))
-				nsec = int64(int32(binary.NativeEndian.Uint32(data[4:])))
+			timestampSeen = true
+			sentMsg.TsSent, err = parseTimestampingTime(data, 0)
+			if err != nil {
+				return sentMsg, fmt.Errorf("TxTsReader: %w", err)
 			}
-			if nsec < 0 || nsec >= int64(time.Second) {
-				return sentMsg, fmt.Errorf("TxTsReader: invalid timestamp nanoseconds %d", nsec)
-			}
-			sentMsg.TsSent = time.Unix(sec, nsec)
-			tsSet = true
+			tsSet = !sentMsg.TsSent.IsZero()
 		} else if (hdr.Level == syscall.SOL_IP && hdr.Type == syscall.IP_RECVERR) ||
 			(hdr.Level == syscall.SOL_IPV6 && hdr.Type == syscall.IPV6_RECVERR) {
 			// sock_extended_err has a fixed 16-byte layout on Linux.
 			if len(data) < 16 {
 				return sentMsg, fmt.Errorf("TxTsReader: short sock_extended_err")
 			}
-			if binary.NativeEndian.Uint32(data) == uint32(syscall.ENOMSG) && data[4] == unix.SO_EE_ORIGIN_TIMESTAMPING {
-				sentMsg.Seq = uint64(binary.NativeEndian.Uint32(data[12:16]))
-				seqSet = true
+			if binary.NativeEndian.Uint32(data) != uint32(syscall.ENOMSG) || data[4] != unix.SO_EE_ORIGIN_TIMESTAMPING {
+				return sentMsg, fmt.Errorf("TxTsReader: non-timestamping socket error")
 			}
+			if seqSet {
+				return sentMsg, fmt.Errorf("TxTsReader: duplicate timestamping socket error")
+			}
+			if binary.NativeEndian.Uint32(data[8:12]) != unix.SCM_TSTAMP_SND {
+				return sentMsg, fmt.Errorf("TxTsReader: unexpected timestamp event type %d", binary.NativeEndian.Uint32(data[8:12]))
+			}
+			sentMsg.Seq = uint64(binary.NativeEndian.Uint32(data[12:16]))
+			seqSet = true
 		} else {
 			slog.WarnContext(ctx, "TxTsReader: Unknown cm", "header", hdr)
 		}
@@ -163,63 +165,110 @@ func (t *TxTsReader) parseOOB(ctx context.Context, msg mmsg.Message) (MsgSent, e
 	if !tsSet || !seqSet {
 		return sentMsg, fmt.Errorf("TxTsReader: Missing data in cm")
 	}
+	if sentMsg.TsSent.IsZero() {
+		return sentMsg, fmt.Errorf("TxTsReader: zero TX timestamp")
+	}
 
 	return sentMsg, nil
 }
 
-// The caller must call the cancel func to stop the reader
-func startTxTsReader(ctx context.Context, conn *net.UDPConn, expectedPackets uint) (*TxTsReader, context.CancelFunc) {
-	var reader *TxTsReader
-	ctxReader, cancelReader := context.WithCancel(ctx)
+// beginTxTimestampCollection selects and enables the source before sending.
+// Hardware TX currently uses software kernel timestamps; collection failures do
+// not trigger another source selection.
+func beginTxTimestampCollection(ctx context.Context, conn *net.UDPConn, expectedPackets uint, requested TimestampSource) (*TxTsReader, context.CancelFunc, TimestampDirectionReport, error) {
+	selection, err := selectTimestampSource(ctx, requested, true)
+	if err != nil {
+		return nil, func() {}, selection, err
+	}
+	if selection.Source == TimestampApp {
+		return nil, func() {}, selection, nil
+	}
 	if err := enableTxTimestamping(conn); err != nil {
-		slog.WarnContext(ctx, "Failed enabling tx timestamping", "error", err.Error())
-	} else {
-		reader = newTxTsReader(expectedPackets)
-		go reader.Run(ctxReader, conn)
+		return nil, func() {}, selection, fmt.Errorf("could not enable selected %s TX timestamps: %w", selection.Source, err)
 	}
-	return reader, cancelReader
+	reader := newTxTsReader(expectedPackets)
+	readerCtx, cancel := context.WithCancel(ctx)
+	go reader.Run(readerCtx, conn)
+	return reader, cancel, selection, nil
 }
 
-// Uses the result of TxTsReader if it was run. Uses the packet size from sentMsgs if unix.SOF_TIMESTAMPING_OPT_TSONLY was set
-func selectMsgsSent(ctx context.Context, reader *TxTsReader, cancelReader context.CancelFunc, sentMsgs []MsgSent) []MsgSent {
-	if reader == nil {
-		slog.DebugContext(ctx, "TxTsReader was not used, use sentMsgs from Run func")
-		return sentMsgs
-	}
-	cancelReader()
-	slog.DebugContext(ctx, "selectMsgsSent: waiting on TxTsReader.C")
-	var selectedMsgs []MsgSent
-	tsMsgs := <-reader.C
+func matchTxTimestamps(sentMsgs, tsMsgs []MsgSent) ([]MsgSent, error) {
 	if len(sentMsgs) != len(tsMsgs) {
-		// Something went wrong with txTsReader: it does for example not work reliably within containers
-		slog.ErrorContext(ctx, fmt.Sprintf("run function returned %v, txTsReader %v msgs -> using timestamps from run function",
-			len(sentMsgs), len(tsMsgs)))
-		selectedMsgs = sentMsgs
-	} else if i := firstDifferentLen(sentMsgs); i != -1 {
-		// Copying sentMsgs[0].Len onto every tsMsg below is only correct
-		// because each sender uses one packet size per run; a variable-size
-		// sender would silently produce wrong sizes in the CSV. Guard the
-		// assumption and fall back to the run function's own records.
-		slog.ErrorContext(ctx, "selectMsgsSent assumes a uniform packet size per run -> using timestamps from run function",
-			"len0", sentMsgs[0].Len, "lenDiff", sentMsgs[i].Len, "seqDiff", sentMsgs[i].Seq)
-		selectedMsgs = sentMsgs
-	} else {
-		for i := range tsMsgs {
-			tsMsgs[i].Len = sentMsgs[0].Len
-		}
-		selectedMsgs = tsMsgs
-		slog.DebugContext(ctx, "selectMsgsSent: returning with txTsReader infos")
+		return nil, fmt.Errorf("TX timestamp count %d does not match sent packet count %d", len(tsMsgs), len(sentMsgs))
 	}
-	return selectedMsgs
+	byID := make(map[uint64]MsgSent, len(tsMsgs))
+	for _, tsMsg := range tsMsgs {
+		if tsMsg.TsSent.IsZero() {
+			return nil, fmt.Errorf("TX timestamp ID %d has a zero timestamp", tsMsg.Seq)
+		}
+		if _, duplicate := byID[tsMsg.Seq]; duplicate {
+			return nil, fmt.Errorf("duplicate TX timestamp ID %d", tsMsg.Seq)
+		}
+		byID[tsMsg.Seq] = tsMsg
+	}
+	matched := make([]MsgSent, len(sentMsgs))
+	seen := make(map[uint64]struct{}, len(sentMsgs))
+	for i, sent := range sentMsgs {
+		if _, duplicate := seen[sent.Seq]; duplicate {
+			return nil, fmt.Errorf("duplicate sent packet ID %d", sent.Seq)
+		}
+		seen[sent.Seq] = struct{}{}
+		tsMsg, ok := byID[sent.Seq]
+		if !ok {
+			return nil, fmt.Errorf("missing TX timestamp ID %d", sent.Seq)
+		}
+		matched[i] = MsgSent{Seq: sent.Seq, TsSent: tsMsg.TsSent, Len: sent.Len}
+	}
+	return matched, nil
 }
 
-// firstDifferentLen returns the index of the first message whose Len differs
-// from the first message's, or -1 if all lengths are equal.
-func firstDifferentLen(msgs []MsgSent) int {
-	for i := range msgs {
-		if msgs[i].Len != msgs[0].Len {
-			return i
+// selectTxTimestamps applies the pre-measurement selection to the whole run.
+// Missing evidence and reader errors never switch sources.
+func selectTxTimestamps(ctx context.Context, reader *TxTsReader, cancel context.CancelFunc, sentMsgs []MsgSent, selection TimestampDirectionReport) ([]MsgSent, TimestampDirectionReport, error) {
+	packets := uint64(len(sentMsgs))
+	selection.PacketCount = packets
+	if selection.Source == TimestampApp {
+		for _, sent := range sentMsgs {
+			if !sent.TsSent.IsZero() {
+				continue
+			}
+			selection.MissingCount++
+		}
+		if selection.MissingCount != 0 {
+			return nil, selection, fmt.Errorf("selected app TX timestamps are missing for %d of %d packets", selection.MissingCount, packets)
+		}
+		return sentMsgs, selection, nil
+	}
+	if reader == nil {
+		return failSelectedTx(selection, fmt.Errorf("selected TX timestamp reader was not started"), packets, 0, 0)
+	}
+	// The reader is drained after sending stops, and the cancellation grace is
+	// needed to collect the final error-queue notifications.
+	cancel()
+	tsMsgs, ok := <-reader.C
+	stamped := uint64(len(tsMsgs))
+	var err error
+	if !ok {
+		err = fmt.Errorf("TX timestamp reader returned no result")
+	} else if reader.runErr != nil {
+		err = reader.runErr
+	} else if reader.invalid > 0 {
+		err = fmt.Errorf("TX timestamp reader rejected %d malformed timestamp notifications", reader.invalid)
+	} else {
+		var matched []MsgSent
+		matched, err = matchTxTimestamps(sentMsgs, tsMsgs)
+		if err == nil {
+			selection.MissingCount = 0
+			slog.DebugContext(ctx, "selected software TX timestamps", "packets", packets)
+			return matched, selection, nil
 		}
 	}
-	return -1
+	return failSelectedTx(selection, err, packets, stamped, reader.invalid)
+}
+
+func failSelectedTx(selection TimestampDirectionReport, cause error, packets, stamped, invalid uint64) ([]MsgSent, TimestampDirectionReport, error) {
+	selection.PacketCount = packets
+	selection.MissingCount = packets - min(packets, stamped)
+	selection.InvalidCount = invalid
+	return nil, selection, fmt.Errorf("%s TX timestamp selection failed: %w", selection.Source, cause)
 }
