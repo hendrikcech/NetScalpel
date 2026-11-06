@@ -3,7 +3,7 @@ module github.com/hendrikcech/netscalpel
 go 1.27.3
 
 require (
-	github.com/alecthomas/kong v1.16.1
+	github.com/alecthomas/kong v1.17.0
 	github.com/alistanis/cartesian v0.0.0-20220409094110-a224e60a7f74
 	github.com/anacrolix/mmsg v1.1.1
 	github.com/google/uuid v1.6.0
