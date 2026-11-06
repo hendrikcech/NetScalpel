@@ -10,7 +10,7 @@ require (
 	github.com/klauspost/compress v1.20.3
 	github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b
-	github.com/quic-go/quic-go v0.64.1
+	github.com/quic-go/quic-go v0.65.0
 	github.com/samber/slog-channel v1.4.4
 	github.com/samber/slog-multi v1.8.0
 	go.uber.org/goleak v1.3.0
