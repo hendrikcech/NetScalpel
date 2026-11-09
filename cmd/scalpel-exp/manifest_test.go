@@ -51,6 +51,8 @@ func (c *manifestCheckClient) Run(context.Context, *rpc.Client) error {
 func (*manifestCheckClient) Gather(context.Context, *rpc.Client) error { return nil }
 func (*manifestCheckClient) Abort(context.Context, *rpc.Client) error  { return nil }
 func (*manifestCheckClient) Summary() string                           { return "summary" }
+func (*manifestCheckClient) StartTime() time.Time                      { return time.Time{} }
+func (*manifestCheckClient) SetStartTime(time.Time)                    {}
 
 func TestInvocationManifestOldServerFallback(t *testing.T) {
 	s := rpc.NewServer()

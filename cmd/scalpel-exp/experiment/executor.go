@@ -107,6 +107,42 @@ func (e *Executor) Wait() error {
 	return errors.Join(e.runErrors...)
 }
 
+// Rebase translates a not-yet-started schedule so its earliest event starts at
+// start. All offsets and durations, including capture lead-in, stay intact.
+func (e *Executor) Rebase(start time.Time) error {
+	if e.Started {
+		return fmt.Errorf("cannot rebase a started schedule")
+	}
+	if start.IsZero() || len(e.Clients) == 0 {
+		return fmt.Errorf("rebasing requires a nonempty schedule and a nonzero start")
+	}
+	var earliest time.Time
+	for _, client := range e.Clients {
+		t := client.StartTime()
+		if t.IsZero() {
+			return fmt.Errorf("cannot rebase unscheduled client %T", client)
+		}
+		if earliest.IsZero() || t.Before(earliest) {
+			earliest = t
+		}
+	}
+	shift := start.Sub(earliest)
+	for i, client := range e.Clients {
+		client.SetStartTime(client.StartTime().Add(shift))
+		if i >= len(e.records) {
+			continue
+		}
+		record := e.records[i]
+		if !record.ScheduledStart.IsZero() {
+			record.ScheduledStart = record.ScheduledStart.Add(shift)
+		}
+		if !record.ScheduledEnd.IsZero() {
+			record.ScheduledEnd = record.ScheduledEnd.Add(shift)
+		}
+	}
+	return nil
+}
+
 // AbortServerTests asks the server to cancel every test this executor
 // scheduled, so server-side goroutines end promptly after a user abort
 // instead of running to their natural end. It is

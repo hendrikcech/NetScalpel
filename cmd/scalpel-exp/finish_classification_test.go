@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/experiment"
 	"github.com/hendrikcech/netscalpel/pkg"
@@ -42,6 +43,8 @@ func (c *finishClassificationClient) Gather(context.Context, *rpc.Client) error 
 }
 func (*finishClassificationClient) Abort(context.Context, *rpc.Client) error { return nil }
 func (*finishClassificationClient) Summary() string                          { return "test" }
+func (*finishClassificationClient) StartTime() time.Time                     { return time.Time{} }
+func (*finishClassificationClient) SetStartTime(time.Time)                   {}
 
 func newFinishClassificationRPC(t *testing.T, service *finishClassificationRPCServer) *rpc.Client {
 	t.Helper()

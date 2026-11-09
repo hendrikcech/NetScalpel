@@ -19,11 +19,46 @@ import (
 	"github.com/hendrikcech/netscalpel/pkg"
 )
 
+// StartMode selects the anchor a procedure schedule is built against.
+type StartMode string
+
+const (
+	// StartModeStarlink aligns procedures to Starlink reconfiguration intervals.
+	StartModeStarlink StartMode = "starlink"
+	// StartModeImmediate keeps the schedule intact but starts it as soon as
+	// setup allows, with no RI alignment and no exact start-time guarantee.
+	StartModeImmediate StartMode = "immediate"
+)
+
+// ParseStartMode accepts either value case-insensitively and returns its
+// canonical lower-case form.
+func ParseStartMode(s string) (StartMode, error) {
+	switch strings.ToLower(s) {
+	case string(StartModeStarlink):
+		return StartModeStarlink, nil
+	case string(StartModeImmediate):
+		return StartModeImmediate, nil
+	default:
+		return "", fmt.Errorf("unknown start mode %q (want starlink or immediate)", s)
+	}
+}
+
+// UnmarshalText lets the CLI parse --start-mode case-insensitively.
+func (m *StartMode) UnmarshalText(text []byte) error {
+	mode, err := ParseStartMode(string(text))
+	if err != nil {
+		return err
+	}
+	*m = mode
+	return nil
+}
+
 type Client struct {
 	IP        string
 	Port      uint
 	Results   string
 	Rounds    uint
+	StartMode StartMode
 	Procedure string
 	Params    experiment.ParamMap
 
@@ -42,6 +77,18 @@ type Client struct {
 	slogFile *os.File
 }
 
+func (c *Client) normalizeStartMode() error {
+	if c.StartMode == "" {
+		c.StartMode = StartModeStarlink
+	}
+	mode, err := ParseStartMode(string(c.StartMode))
+	if err != nil {
+		return err
+	}
+	c.StartMode = mode
+	return nil
+}
+
 // prepareOverrides resolves the registered procedure and returns the
 // parameter overrides of every invocation in execution order: a
 // PerDirection procedure without a direction override runs once for DL and
@@ -51,6 +98,9 @@ type Client struct {
 // result directory creation; Client.Run goes through this method, so direct
 // Go callers cannot bypass the checks.
 func (c *Client) prepareOverrides() (procedures.Procedure, []experiment.ParamMap, error) {
+	if err := c.normalizeStartMode(); err != nil {
+		return procedures.Procedure{}, nil, err
+	}
 	proc, ok := procedures.Lookup(c.Procedure)
 	if !ok {
 		return procedures.Procedure{}, nil, fmt.Errorf("unknown procedure %q", c.Procedure)
@@ -346,9 +396,15 @@ func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.
 	if direction, ok := params["direction"]; ok {
 		name += "_" + strings.ToLower(direction.(string))
 	}
-	slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Schedule %s in %.2fs", c.round+1, c.Rounds,
-		name, time.Until(ri).Seconds()), "start", ri, "params", params)
-	resultPath, err = mkResultPath(c.Results, ri, name)
+	resultTS := ri
+	if c.StartMode == StartModeImmediate {
+		// The RI anchor shapes the planned window; the schedule is rebased below.
+		resultTS = ts
+	} else {
+		slog.InfoContext(ctx, fmt.Sprintf("[Round %v/%v] Schedule %s in %.2fs", c.round+1, c.Rounds,
+			name, time.Until(ri).Seconds()), "start", ri, "params", params)
+	}
+	resultPath, err = mkResultPath(c.Results, resultTS, name)
 	if err != nil {
 		slog.ErrorContext(ctx, "mkResultPath", "error", err.Error())
 		return "", &FatalInvocationError{Err: err}
@@ -382,6 +438,17 @@ func (c *Client) scheduleProcedureInvocation(ctx context.Context, e *experiment.
 		e.AddError("client", "schedule", err)
 		slog.Error("Procedure errored", "error", err)
 		return resultPath, err
+	}
+	if c.StartMode == StartModeImmediate {
+		// A setup allowance, not a readiness guarantee: missed starts still fail.
+		start := time.Now().Add(2 * time.Second)
+		if err := e.Rebase(start); err != nil {
+			e.AddError("client", "schedule", err)
+			slog.Error("Failed rebasing immediate schedule", "error", err)
+			return resultPath, err
+		}
+		e.Manifest.ReferenceTime = start
+		slog.InfoContext(ctx, "Rebased immediate schedule", "start", start, "params", params)
 	}
 	if err := e.WriteInfo(resultPath); err != nil {
 		e.AddError("client", "manifest", err)

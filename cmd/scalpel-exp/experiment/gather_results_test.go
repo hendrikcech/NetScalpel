@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/rpc"
 	"testing"
+	"time"
 
 	"github.com/hendrikcech/netscalpel/pkg"
 )
@@ -19,6 +20,8 @@ func (c *gatherResultsTestClient) Gather(ctx context.Context, _ *rpc.Client) err
 }
 func (*gatherResultsTestClient) Abort(context.Context, *rpc.Client) error { return nil }
 func (*gatherResultsTestClient) Summary() string                          { return "test" }
+func (*gatherResultsTestClient) StartTime() time.Time                     { return time.Time{} }
+func (*gatherResultsTestClient) SetStartTime(time.Time)                   {}
 
 func TestGatherResultsJoinsErrorsInClientOrderAndConfirmsConsumedResults(t *testing.T) {
 	remoteErr := &pkg.RemoteExecutionError{Err: errors.New("remote execution failed")}

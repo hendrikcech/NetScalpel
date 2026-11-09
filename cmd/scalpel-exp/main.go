@@ -65,7 +65,8 @@ func main() {
 		if flagWasSet(kongctx.Args, "batch") {
 			client := &Client{
 				IP: cli.IP, Port: cli.Port, Results: cli.Client.Results,
-				LogLevel: slog.Level(cli.LogLevel), Logfile: logfile,
+				StartMode: cli.Client.StartMode,
+				LogLevel:  slog.Level(cli.LogLevel), Logfile: logfile,
 				TimestampConfig: timestampConfig,
 			}
 			go func() {
@@ -98,6 +99,7 @@ func main() {
 			Port:            cli.Port,
 			Results:         cli.Client.Results,
 			Rounds:          cli.Client.Rounds,
+			StartMode:       cli.Client.StartMode,
 			Procedure:       cli.Client.Procedure,
 			Params:          params,
 			LogLevel:        slog.Level(cli.LogLevel),

@@ -409,6 +409,52 @@ steps: [{id: bad, procedure: cdsf, rounds: 1, params: {max: 0}}]
 	}
 }
 
+func TestBatchStartModeValidation(t *testing.T) {
+	for _, tc := range []struct {
+		mode StartMode
+		want StartMode
+	}{
+		{"", StartModeStarlink},
+		{"STARLINK", StartModeStarlink},
+		{"Immediate", StartModeImmediate},
+		{"invalid", ""},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			root := t.TempDir()
+			batchPath := filepath.Join(root, "batch.yaml")
+			results := filepath.Join(root, "results")
+			if err := os.WriteFile(batchPath, []byte("mode: sequential\nsteps: [{id: one, procedure: trace, rounds: 1}]\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			client := &Client{IP: "127.0.0.1", Port: 1, Results: results, StartMode: tc.mode}
+			err := RunBatchFile(context.Background(), batchPath, results, client)
+			if tc.want == "" {
+				if err == nil || !strings.Contains(err.Error(), "unknown start mode") {
+					t.Fatalf("expected start-mode validation error, got %v", err)
+				}
+				if _, err := os.Stat(results); !os.IsNotExist(err) {
+					t.Fatalf("results created despite invalid start mode: %v", err)
+				}
+				return
+			}
+			if client.StartMode != tc.want {
+				t.Fatalf("start mode = %q, want %q", client.StartMode, tc.want)
+			}
+			if err == nil {
+				t.Fatal("expected the closed RPC port to fail the batch")
+			}
+			dirs, err := os.ReadDir(results)
+			if err != nil || len(dirs) != 1 {
+				t.Fatalf("batch results: dirs=%v err=%v", dirs, err)
+			}
+			summary, err := os.ReadFile(filepath.Join(results, dirs[0].Name(), batchSummaryFileName))
+			if err != nil || !strings.Contains(string(summary), "rpc dial") {
+				t.Fatalf("expected RPC dial failure in summary: %s, %v", summary, err)
+			}
+		})
+	}
+}
+
 func TestRunBatchFileKeepsRunsInExclusiveBatchDirectories(t *testing.T) {
 	root := t.TempDir()
 	batchPath := filepath.Join(root, "batch.yaml")

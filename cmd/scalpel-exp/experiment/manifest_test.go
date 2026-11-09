@@ -23,6 +23,8 @@ func (c *lifecycleClient) Run(context.Context, *rpc.Client) error    { close(c.s
 func (c *lifecycleClient) Gather(context.Context, *rpc.Client) error { return c.gatherErr }
 func (c *lifecycleClient) Abort(context.Context, *rpc.Client) error  { return nil }
 func (c *lifecycleClient) Summary() string                           { return "retained summary" }
+func (c *lifecycleClient) StartTime() time.Time                      { return time.Time{} }
+func (c *lifecycleClient) SetStartTime(time.Time)                    {}
 
 func readManifest(t *testing.T, dir string) Manifest {
 	t.Helper()

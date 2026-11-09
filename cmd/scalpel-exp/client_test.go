@@ -12,9 +12,93 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alecthomas/kong"
 	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/experiment"
 	"github.com/hendrikcech/netscalpel/cmd/scalpel-exp/procedures"
 )
+
+func TestStartModeCLI(t *testing.T) {
+	for _, mode := range []string{"", "starlink", "STARLINK", "Immediate", "invalid"} {
+		t.Run(mode, func(t *testing.T) {
+			args := cli
+			parser, err := kong.New(&args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			argv := []string{"client", "--procedure", "burst"}
+			if mode != "" {
+				argv = append(argv, "--start-mode", mode)
+			}
+			_, err = parser.Parse(argv)
+			if mode == "invalid" {
+				if err == nil {
+					t.Fatal("invalid mode accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := StartModeStarlink
+			if strings.EqualFold(mode, string(StartModeImmediate)) {
+				want = StartModeImmediate
+			}
+			if args.Client.StartMode != want {
+				t.Fatalf("start mode = %q, want %q", args.Client.StartMode, want)
+			}
+		})
+	}
+	client := &Client{Procedure: "burst", StartMode: "invalid"}
+	if _, _, err := client.prepareOverrides(); err == nil {
+		t.Fatal("Go caller bypassed start-mode validation")
+	}
+}
+
+// Immediate mode must keep every built-in schedule's shape and start its
+// earliest event after the setup allowance.
+func TestImmediateRebasesBuiltinSchedules(t *testing.T) {
+	for _, proc := range procedures.All() {
+		t.Run(proc.Name, func(t *testing.T) {
+			params, err := procedures.PrepareParams(proc, proc.ScheduleTest.Params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := experiment.NewExecutor(context.Background(), "127.0.0.1", nil)
+			e.DeferStart = true
+			anchor := experiment.NextRI(time.Now().Add(15 * time.Second))
+			if err := proc.Run(e, anchor, "unused", params); err != nil {
+				t.Fatal(err)
+			}
+			if len(e.Clients) == 0 {
+				t.Fatal("schedule was empty")
+			}
+			original := make([]time.Time, len(e.Clients))
+			for i, client := range e.Clients {
+				original[i] = client.StartTime()
+			}
+			start := time.Now().Add(2 * time.Second)
+			if err := e.Rebase(start); err != nil {
+				t.Fatal(err)
+			}
+			if len(e.Clients) != len(original) {
+				t.Fatal("schedule changed size")
+			}
+			shift := e.Clients[0].StartTime().Sub(original[0])
+			earliest := start.Add(time.Hour)
+			for i, client := range e.Clients {
+				if client.StartTime().Sub(original[i]) != shift {
+					t.Fatalf("client %d lost its relative timing", i)
+				}
+				if client.StartTime().Before(earliest) {
+					earliest = client.StartTime()
+				}
+			}
+			if !earliest.Equal(start) {
+				t.Fatalf("earliest event starts at %v, want %v", earliest, start)
+			}
+		})
+	}
+}
 
 // dialRpcClient must return an error on a failed dial. It used to os.Exit(1)
 // from a helper goroutine — including after the caller had already returned

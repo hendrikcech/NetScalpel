@@ -140,6 +140,10 @@ Batch mode supports sequential blocks, shuffled
 blocks, and randomly interleaved rounds, including nested groups. See the
 [batch mode guide](docs/batch-mode.md) for examples and result summaries.
 
+`scalpel-exp client --start-mode starlink` (the default) anchors procedures to
+Starlink reconfiguration intervals. `--start-mode immediate` instead shifts the
+same schedule so its earliest event starts after a two-second setup gap.
+
 ## Implementing New Procedures
 
 Experiment procedures live in [`cmd/scalpel-exp/procedures`](cmd/scalpel-exp/procedures/)

@@ -25,6 +25,10 @@ type Client interface {
 	// live one: the round context is already cancelled at this point.
 	Abort(ctx context.Context, client *rpc.Client) error
 	Summary() string
+	// StartTime is the instant this client is scheduled to begin.
+	StartTime() time.Time
+	// SetStartTime moves the scheduled start; valid only before Run.
+	SetStartTime(time.Time)
 }
 
 var _ Client = (*SenderClient)(nil)
@@ -75,6 +79,9 @@ type SenderClient struct {
 	runErr          error
 	remoteStarted   bool
 }
+
+func (c *SenderClient) StartTime() time.Time     { return c.StartAt }
+func (c *SenderClient) SetStartTime(t time.Time) { c.StartAt = t }
 
 // TimestampReport returns the local configuration and timestamp evidence collected from
 // both endpoints. A failed measurement still retains any evidence collected
@@ -672,6 +679,9 @@ type CommandClient struct {
 	Artifacts []string
 	tempDir   string
 }
+
+func (c *CommandClient) StartTime() time.Time     { return c.StartAt }
+func (c *CommandClient) SetStartTime(t time.Time) { c.StartAt = t }
 
 func (c *CommandClient) Run(ctx context.Context, client *rpc.Client) error {
 	if c.ID == "" {

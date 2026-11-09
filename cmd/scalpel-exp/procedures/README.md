@@ -33,6 +33,10 @@ func PrivateProbe(
 
 - `e` provides the server IP and schedules clients through `RunClient`.
 - `ts` is the reference Starlink reconfiguration instant (RI), not necessarily now.
+  With `--start-mode immediate`, the runner records the procedure once using an
+  RI anchor, then translates the complete schedule so its earliest event starts
+  after a two-second setup allowance. Relative offsets and durations stay intact;
+  the translated anchor is not an actual RI. Missed starts still fail.
 - `resultPath` is the output directory for this invocation.
 - `params` contains parsed overrides and ordinary parameter defaults. Direction
   is handled separately as described below.

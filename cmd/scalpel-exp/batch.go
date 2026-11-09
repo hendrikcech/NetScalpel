@@ -764,6 +764,9 @@ func planRound(entry *batchNode, round uint, plan *BatchPlan) {
 }
 
 func RunBatchFile(ctx context.Context, file, results string, client *Client) error {
+	if err := client.normalizeStartMode(); err != nil {
+		return err
+	}
 	plan, err := LoadBatchPlan(file)
 	if err != nil {
 		return err
