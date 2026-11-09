@@ -53,9 +53,13 @@ type UDPReceiver struct {
 	Config   TimestampConfig
 	report   TimestampDirectionReport
 	prepared bool
+	peer     net.Addr
 }
 
 func (r *UDPReceiver) TimestampReport() TimestampDirectionReport { return r.report }
+
+// PeerAddr returns the first sender address seen by the receiver.
+func (r *UDPReceiver) PeerAddr() net.Addr { return r.peer }
 
 func (r *UDPReceiver) Init() {
 }
@@ -183,6 +187,9 @@ func (r *UDPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 
 		for i := 0; i < n; i++ {
 			packet := rx[i]
+			if r.peer == nil && packet.Addr != nil {
+				r.peer = packet.Addr
+			}
 			if packet.N == 0 {
 				// Ignore probe packets
 				continue

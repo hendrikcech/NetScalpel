@@ -78,6 +78,9 @@ type Result struct {
 	Err    error
 	Res    any
 	Report TimestampReport
+	// PeerPort is the client port as observed by the server, which may differ
+	// from the client's local port when a NAT rewrites it.
+	PeerPort uint
 }
 
 type ResultPath struct {
@@ -351,10 +354,12 @@ func (s *Server) handleRequestServerUDP(ctx context.Context, conn *net.UDPConn, 
 			return
 		}
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, raddr)
+		result.PeerPort = addrPort(raddr)
 		result.Report = makeTimestampReport(s.timestampConfig, args.ServerMode, sender)
 	} else {
 		ln := NewDummyListener(conn, conn.LocalAddr())
 		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
+		result.PeerPort = receiverPeerPort(receiver)
 		result.Report = makeTimestampReport(s.timestampConfig, args.ServerMode, receiver)
 	}
 }
@@ -374,6 +379,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 	case ReceiveTCP:
 		receiver := &TCPReceiver{}
 		result.Res, result.Err = handleReceiver(ctx, ln, args, receiver)
+		result.PeerPort = receiverPeerPort(receiver)
 	case SendTCP:
 		sender := &TCPSender{Params: args.Params.(TCPSenderParams)}
 		// Bound the accept: if the client has not connected by the
@@ -394,6 +400,7 @@ func (s *Server) handleRequestServerTCP(ctx context.Context, ln *net.TCPListener
 			slog.DebugContext(ctx, "Closing TCP connection")
 			conn.Close()
 		}()
+		result.PeerPort = addrPort(conn.RemoteAddr())
 		result.Res, result.Err = handleSender(ctx, conn, args, sender, conn.RemoteAddr())
 		if result.Err != nil {
 			slog.ErrorContext(ctx, "handleSender failed", "error", result.Err)
@@ -483,6 +490,19 @@ func handleReceiver(ctx context.Context, ln net.Listener, args RequestServerArgs
 	slog.DebugContext(ctx, "Finished handleReceiver")
 	// , "packets", len(result.Res)
 	return res, err
+}
+
+func receiverPeerPort(receiver Receiver) uint {
+	switch r := receiver.(type) {
+	case *UDPReceiver:
+		return addrPort(r.PeerAddr())
+	case *TCPReceiver:
+		return addrPort(r.PeerAddr())
+	case *QUICReceiver:
+		return addrPort(r.PeerAddr())
+	default:
+		return 0
+	}
 }
 
 // The client contacts the server (NAT probe or TCP connect) right after the
@@ -592,6 +612,8 @@ type RequestServerResultArgs struct {
 type RequestServerResultReply struct {
 	Result          any
 	TimestampReport TimestampReport
+	// PeerPort is the client port observed by the server.
+	PeerPort uint
 	// Complete confirms that the remote work reached a terminal state; it does not mean it succeeded.
 	Complete bool
 	// Error is non-empty only when completed measurement work failed.
@@ -657,11 +679,13 @@ func handleChanResult(ctx context.Context, c chan *Result, id string, reply *Req
 	}
 	if result.Err != nil {
 		reply.TimestampReport = result.Report
+		reply.PeerPort = result.PeerPort
 		reply.Complete = true
 		return true, fmt.Errorf("handleChanResult: %w", result.Err)
 	}
 	reply.Result = result.Res
 	reply.TimestampReport = result.Report
+	reply.PeerPort = result.PeerPort
 	reply.Complete = true
 	return true, nil
 }

@@ -24,7 +24,12 @@ type Measurement struct {
 	Kind          string        `json:"kind"`
 	Direction     string        `json:"direction,omitempty"`
 	Endpoint      string        `json:"endpoint"`
-	Peer          string        `json:"peer,omitempty"`
+	RemoteIP      string        `json:"remote_ip,omitempty"`
+	LocalIP       string        `json:"local_ip,omitempty"`
+	LocalSrcPort  *uint         `json:"local_src_port,omitempty"`
+	LocalDstPort  *uint         `json:"local_dst_port,omitempty"`
+	RemoteSrcPort *uint         `json:"remote_src_port,omitempty"`
+	RemoteDstPort *uint         `json:"remote_dst_port,omitempty"`
 	Configuration Configuration `json:"configuration"`
 	// Nil means not instrumented/unknown, not disabled. Requested configuration
 	// is separate from the runtime state of sockets on either endpoint.
@@ -89,7 +94,7 @@ func describe(client pkg.Client) *Measurement {
 		m.ID = c.ID
 		m.Kind = c.Sender.SenderMode().String()
 		m.Direction = c.Direction.String()
-		m.Peer = c.IP
+		m.RemoteIP = c.IP
 		m.Configuration = senderConfiguration(c.Sender.GetParams())
 		m.ScheduledStart = c.StartAt
 		m.ScheduledEnd = c.StartAt.Add(c.Sender.GetParams().GetDuration())
@@ -136,6 +141,19 @@ func (e *Executor) WriteInfo(path string) error {
 		r.ExpectedArtifacts = []string{}
 		switch c := c.(type) {
 		case *pkg.SenderClient:
+			r.LocalIP = c.LocalIP()
+			if port := c.SourcePort(); port != 0 {
+				r.LocalSrcPort = ptr(port)
+			}
+			if port := c.DestinationPort(); port != 0 {
+				r.LocalDstPort = ptr(port)
+			}
+			if port := c.RemoteSourcePort(); port != 0 {
+				r.RemoteSrcPort = ptr(port)
+			}
+			if port := c.RemoteDestinationPort(); port != 0 {
+				r.RemoteDstPort = ptr(port)
+			}
 			mode := c.Sender.SenderMode()
 			if c.Direction == pkg.DL {
 				mode = c.Sender.ReceiverMode()
