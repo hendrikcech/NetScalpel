@@ -63,6 +63,7 @@ func TestRequestServerResultPreservesTimestampReportOnFailure(t *testing.T) {
 }
 
 func TestGatherPreservesPeerReportWithoutReapplyingSelectionPolicy(t *testing.T) {
+	RegisterGob()
 	for _, remoteError := range []string{"", "collection failed"} {
 		t.Run(remoteError, func(t *testing.T) {
 			// Deliberately omit explanatory metadata and leave the inactive

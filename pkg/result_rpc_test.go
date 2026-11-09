@@ -41,3 +41,19 @@ func TestResultRPCsReturnTerminalFailuresInReplies(t *testing.T) {
 		}
 	})
 }
+
+func TestRequestServerResultReturnsPeerPort(t *testing.T) {
+	const id = "peer-port-result"
+	server := NewServer(context.Background(), nil)
+	server.resultC[id] = make(chan *Result, 1)
+	server.resultC[id] <- &Result{PeerPort: 43210}
+
+	client := rpcTestClient(t, server)
+	var reply RequestServerResultReply
+	if err := client.Call("Server.RequestServerResult", RequestServerResultArgs{ID: id}, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.PeerPort != 43210 {
+		t.Fatalf("peer port = %d, want 43210", reply.PeerPort)
+	}
+}

@@ -212,9 +212,14 @@ func runTCPMonitorAndIO(ctx context.Context, conn net.Conn, ioFn func(chan error
 }
 
 type TCPReceiver struct {
+	peer net.Addr
 }
 
 func (r *TCPReceiver) Init() {}
+
+// PeerAddr returns the accepted connection's remote address.
+func (r *TCPReceiver) PeerAddr() net.Addr { return r.peer }
+
 func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 	// Close the listener when the context ends so that a blocked Accept
 	// returns instead of waiting for a client forever.
@@ -228,6 +233,7 @@ func (r *TCPReceiver) Run(ctx context.Context, ln net.Listener) (any, error) {
 		slog.DebugContext(ctx, "TCPReceiver accept", "error", err.Error())
 		return nil, err
 	}
+	r.peer = conn.RemoteAddr()
 
 	// TODO: introduce support for handling multiple TCP clients
 

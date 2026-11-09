@@ -25,11 +25,15 @@ const quicProto = "quic-echo-example"
 
 type QUICReceiver struct {
 	tlsConf *tls.Config
+	peer    net.Addr
 }
 
 func (r *QUICReceiver) Init() {
 	r.tlsConf = generateTLSConfig()
 }
+
+// PeerAddr returns the accepted QUIC connection's remote address.
+func (r *QUICReceiver) PeerAddr() net.Addr { return r.peer }
 
 // Setup a bare-bones TLS config for the server
 func generateTLSConfig() *tls.Config {
@@ -92,6 +96,7 @@ func (r *QUICReceiver) listen(ctx context.Context, listener *quic.Listener) erro
 	if err != nil {
 		return err
 	}
+	r.peer = conn.RemoteAddr()
 	// Deliberately no conn.CloseWithError here: the sender closes the
 	// connection, and a receiver-side close races with the sender's final
 	// CONNECTION_CLOSE packet, making the tracers' sent/received packet

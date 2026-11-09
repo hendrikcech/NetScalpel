@@ -75,9 +75,95 @@ type SenderClient struct {
 	ID string
 
 	port            uint // Remote port, returned by server through RequestServerReply
+	peerPort        uint // Our port as observed by the server
+	localPort       uint // Local socket port; 0 when the socket has no ports (ICMP)
+	localIP         string
 	timestampReport TimestampReport
 	runErr          error
 	remoteStarted   bool
+}
+
+// LocalIP returns the local source IP for this measurement, or "" when it could
+// not be determined.
+func (c *SenderClient) LocalIP() string { return c.localIP }
+
+// SourcePort returns the sending socket's port for this measurement, or 0 when
+// no port applies (ICMP) or the socket was never set up.
+func (c *SenderClient) SourcePort() uint {
+	if c.Direction == DL {
+		return c.port
+	}
+	return c.localPort
+}
+
+// DestinationPort returns the receiving socket's port for this measurement, or
+// 0 when no port applies (ICMP) or the socket was never set up.
+func (c *SenderClient) DestinationPort() uint {
+	if c.Direction == DL {
+		return c.localPort
+	}
+	return c.port
+}
+
+// RemoteSourcePort returns the source port as observed by the remote endpoint,
+// or 0 when it could not be determined.
+func (c *SenderClient) RemoteSourcePort() uint {
+	if c.Direction == DL {
+		return c.port
+	}
+	return c.peerPort
+}
+
+// RemoteDestinationPort returns the destination port as observed by the remote
+// endpoint, or 0 when it could not be determined.
+func (c *SenderClient) RemoteDestinationPort() uint {
+	if c.Direction == DL {
+		return c.peerPort
+	}
+	return c.port
+}
+
+func addrPort(addr net.Addr) uint {
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		return uint(a.Port)
+	case *net.TCPAddr:
+		return uint(a.Port)
+	default:
+		return 0
+	}
+}
+
+func addrIP(addr net.Addr) net.IP {
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		return a.IP
+	case *net.TCPAddr:
+		return a.IP
+	case *net.IPAddr:
+		return a.IP
+	default:
+		return nil
+	}
+}
+
+// setLocalIP prefers the bound socket address. Wildcard UDP and ICMP sockets
+// report 0.0.0.0 (or ::), so fall back to the source address the kernel selects
+// for the route to the server.
+func (c *SenderClient) setLocalIP(addr net.Addr) {
+	if ip := addrIP(addr); ip != nil && !ip.IsUnspecified() {
+		c.localIP = ip.String()
+		return
+	}
+	conn, err := net.Dial("udp", net.JoinHostPort(c.IP, "0"))
+	if err != nil {
+		slog.Debug("Failed discovering local IP", "remote", c.IP, "error", err)
+		return
+	}
+	defer conn.Close()
+	if ip := addrIP(conn.LocalAddr()); ip != nil && !ip.IsUnspecified() {
+		c.localIP = ip.String()
+	}
 }
 
 func (c *SenderClient) StartTime() time.Time     { return c.StartAt }
@@ -186,6 +272,8 @@ func (c *SenderClient) runUL(ctx context.Context, client *rpc.Client) error {
 	default:
 		panic("socket type not implemented")
 	}
+	c.localPort = addrPort(conn.LocalAddr())
+	c.setLocalIP(conn.LocalAddr())
 	defer func() {
 		slog.DebugContext(ctx, "Closing conn")
 		conn.Close()
@@ -263,6 +351,8 @@ func (c *SenderClient) runDLUDP(ctx context.Context, rport uint, timeout time.Du
 	if err != nil {
 		return fmt.Errorf("ListenUDP failed: %w", err)
 	}
+	c.localPort = addrPort(conn.LocalAddr())
+	c.setLocalIP(conn.LocalAddr())
 	defer conn.Close()
 	// laddr := conn.LocalAddr().(*net.UDPAddr)
 
@@ -337,6 +427,8 @@ func (c *SenderClient) runDLTCP(ctx context.Context, rport uint, timeout time.Du
 	if err != nil {
 		return fmt.Errorf("net.DialTCP failed: %w", err)
 	}
+	c.localPort = addrPort(conn.LocalAddr())
+	c.setLocalIP(conn.LocalAddr())
 	defer conn.Close()
 
 	// Also set the CCA on the receiving socket
@@ -376,6 +468,7 @@ func (c *SenderClient) runDLICMP(ctx context.Context, echoID uint16, timeout tim
 	if err != nil {
 		return err
 	}
+	c.setLocalIP(conn.LocalAddr())
 	defer conn.Close()
 
 	if err := c.punchICMPHole(ctx, conn.(net.PacketConn), raddr, echoID); err != nil {
@@ -524,6 +617,7 @@ func (c *SenderClient) Gather(ctx context.Context, client *rpc.Client) error {
 	if err := callCtx(ctx, client, "Server.RequestServerResult", RequestServerResultArgs{ID: c.ID}, &result); err != nil {
 		return fmt.Errorf("Call Server.RequestServerResult failed: %w", err)
 	}
+	c.peerPort = result.PeerPort
 	if !result.Complete {
 		return fmt.Errorf("server did not confirm completion for result %q", c.ID)
 	}
