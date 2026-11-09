@@ -15,10 +15,24 @@ NetScalpel is a custom network measurement tool designed for fine-grained contro
 
 ## Versions
 
-- **v1.0** is the original released version used for the SIGCOMM paper below.
+- **v1.0** is the original released version used for the SIGCOMM paper below
+  (commit `121a171`, tag `v1.0.0`).
 - **v2.0 is currently in development.** It breaks output compatibility by replacing
   `scalpel-exp`'s `info.txt` with `info.json` and adding duplicate-reporting CSV
   columns (`dup_count` and additional receive timestamps).
+
+<details>
+<summary>Changes since v1.0</summary>
+
+- Added JSON execution manifests, binary version reporting, and UDP duplicate
+  packet timestamps in CSV output.
+- Added configurable UDP timestamp sources and reports, including hardware RX
+  timestamps, with explicit errors when the selected source is unavailable.
+- Added batch experiments with nested groups, parameter products, and result
+  summaries.
+- Improved UDP send pacing, performance, and partial-write handling.
+
+</details>
 
 In v2, use `--version` with either binary to check its version.
 
